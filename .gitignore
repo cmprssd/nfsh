@@ -1,0 +1,15 @@
+# Whitelist: only the kinds of files this project writes can be committed, so game
+# data (.toc, .sb, .cas, the executables) never ends up in the repository by accident.
+# To track a new kind of file, add it here deliberately.
+*
+!*/
+/target/
+
+!.gitignore
+!.local-ci
+!LICENSE
+!Cargo.lock
+!*.toml
+!*.rs
+!*.md
+!*.sh

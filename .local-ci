@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# The checks every PR must pass, run on this machine by `local-ci` (claude-toolkit) in
+# place of GitHub Actions. Run it directly to check without posting a status.
+# Linux (WSL) and Windows (MSVC, via scripts/cargo-msvc.sh) run in parallel; each
+# writes to its own target directory.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+step() { echo; echo "== $*"; }
+
+step "format"; cargo fmt --all -- --check
+step "shell syntax"; for f in scripts/*.sh .local-ci; do bash -n "$f"; done
+
+# Build what is committed, not what happens to be in the working folder: a file the
+# whitelist .gitignore leaves out fails here.
+step "committed tree builds"
+tree=$(mktemp -d)
+logs=$(mktemp -d)
+trap 'rm -rf "$logs" "$tree"' EXIT
+# Extracted with the current time (-m), so cargo never reuses another branch's build
+# of the shared target against these sources.
+git archive HEAD | tar -x -m -C "$tree"
+CARGO_TARGET_DIR="$PWD/target" cargo check --manifest-path "$tree/Cargo.toml" --workspace --all-targets --locked --quiet
+
+linux() {
+	cargo clippy --workspace --all-targets --locked -- -D warnings
+	cargo test --workspace --locked
+}
+# The retail-data tests read the owner's game install (Windows side). If it is not
+# reachable (drive unplugged), the run still checks everything else and says so.
+install='D:\SteamLibrary\steamapps\common\Need for Speed Heat'
+windows() {
+	scripts/cargo-msvc.sh clippy --workspace --all-targets --locked -- -D warnings
+	if (cd /mnt/c && powershell.exe -NoProfile -Command "exit !(Test-Path -LiteralPath '$install\Data\layout.toc')"); then
+		NFSH_INSTALL=$install WSLENV="${WSLENV:-}:NFSH_INSTALL" \
+			scripts/cargo-msvc.sh test --workspace --locked
+	else
+		echo "WARNING: $install not reachable; retail-data tests skipped"
+		scripts/cargo-msvc.sh test --workspace --locked
+	fi
+}
+
+linux >"$logs/linux" 2>&1 & lpid=$!
+windows >"$logs/windows" 2>&1 & wpid=$!
+lstatus=0; wait $lpid || lstatus=$?
+wstatus=0; wait $wpid || wstatus=$?
+
+step "linux (exit $lstatus)"; cat "$logs/linux"
+step "windows (exit $wstatus)"; cat "$logs/windows"
+step "disk budget"; scripts/disk.sh prune
+[ "$lstatus" -eq 0 ] && [ "$wstatus" -eq 0 ]
