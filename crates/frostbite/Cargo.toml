@@ -1,0 +1,11 @@
+[package]
+name = "frostbite"
+description = "Readers for the Frostbite data files in a Need for Speed: Heat install"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
