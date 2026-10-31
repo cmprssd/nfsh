@@ -290,3 +290,24 @@ The plan, one PR each (decided by Claude, pending review):
 - **`nfsh level STORE [ZONE]`** prints the bundle tree, or one zone's placements as
   one line each (position, axes, mesh). Why: text is what the next PRs (meshes, then
   the viewer) need to check against, and it can be diffed.
+
+## 2026-10-31: Meshes (decided by Claude, pending review)
+
+- **A composite mesh is drawn as one rigid mesh, its parts left in place.** Why: its
+  geometry is already assembled (a palm tree, a lap counter, rendered from the decoded
+  vertices, look whole), and the part data only matters once something breaks it,
+  which the viewer does not do. The 6,738 per-zone uses then need no separate path.
+- **Only positions and the first texture coordinates are decoded**; the other vertex
+  elements are listed by usage and format, not guessed. Why: the viewer's next steps
+  need positions (PR 5) and texture coordinates (PR 6); normals can be computed from
+  the triangles until the tangent frame's packing is worked out, and a wrong guess
+  would light everything wrongly without an error.
+- **Inline geometry (character meshes) is reported as not read yet.** Why: no zone
+  places one; the 322 LODs that have it are all characters.
+- **The mesh reader keeps its own index of mesh set res and chunks by id**, built
+  from the store's index when it opens (about 400,000 chunks, under a second), not a
+  new store format. Why: the store already lists every res and chunk with its id; a
+  lookup table in memory is enough, and the store format stays as it is.
+- **`nfsh mesh STORE NAME [OBJ]`** prints a mesh's LODs and sections and decodes its
+  first LOD; with OBJ it writes that LOD as a Wavefront .obj. Why: text can be diffed,
+  and an .obj opens in any viewer for a look before nfsh has a window of its own.
