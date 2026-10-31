@@ -27,6 +27,9 @@ pub struct Res {
     pub asset: Asset,
     /// Hash of the lowercased resource type name (see [`res_type_hash`]).
     pub res_type: u32,
+    /// Per-resource metadata (meaning not worked out yet).
+    pub meta: [u8; 16],
+    pub id: u64,
 }
 
 /// A chunk (bulk data such as texture mips) listed in a bundle.
@@ -45,6 +48,8 @@ pub struct Bundle {
     pub ebx: Vec<Asset>,
     pub res: Vec<Res>,
     pub chunks: Vec<Chunk>,
+    /// The bundle's metadata DbObject (`chunkMeta`), as stored.
+    pub meta: Vec<u8>,
 }
 
 /// The hash Heat uses for resource type names: `h = h * 33 ^ byte` from 5381, over the
@@ -79,8 +84,8 @@ pub fn parse(data: &[u8]) -> Result<Bundle> {
     let res_count = r.u32_be()? as usize;
     let chunk_count = r.u32_be()? as usize;
     let strings_at = r.u32_be()? as usize;
-    let _meta_at = r.u32_be()?;
-    let _meta_size = r.u32_be()?;
+    let meta_at = r.u32_be()? as usize;
+    let meta_size = r.u32_be()? as usize;
     if ebx_count
         .checked_add(res_count)
         .and_then(|n| n.checked_add(chunk_count))
@@ -92,6 +97,9 @@ pub fn parse(data: &[u8]) -> Result<Bundle> {
         );
     }
     let strings = binary.get(strings_at..).unwrap_or_default();
+    let Some(meta) = binary.get(meta_at..).and_then(|rest| rest.get(..meta_size)) else {
+        bail!("metadata ({meta_size} bytes at {meta_at:#x}) runs past the end");
+    };
     let mut sha1s = Vec::with_capacity(total.min(binary.len() / 20));
     for _ in 0..total {
         sha1s.push(r.array::<20>()?);
@@ -110,8 +118,14 @@ pub fn parse(data: &[u8]) -> Result<Bundle> {
     for _ in 0..res_count {
         res_types.push(r.u32_be()?);
     }
-    r.bytes(res_count * 16)?; // per-resource metadata
-    r.bytes(res_count * 8)?; // resource ids
+    let mut res_meta = Vec::with_capacity(res_count);
+    for _ in 0..res_count {
+        res_meta.push(r.array::<16>()?);
+    }
+    let mut res_ids = Vec::with_capacity(res_count);
+    for _ in 0..res_count {
+        res_ids.push(r.u64_be()?);
+    }
     let mut chunk_heads = Vec::with_capacity(chunk_count);
     for _ in 0..chunk_count {
         chunk_heads.push((r.array::<16>()?, r.u32_be()?, r.u32_be()?));
@@ -139,9 +153,12 @@ pub fn parse(data: &[u8]) -> Result<Bundle> {
     let res = res_names
         .into_iter()
         .zip(res_types)
-        .map(|(name, res_type)| Res {
+        .zip(res_meta.into_iter().zip(res_ids))
+        .map(|((name, res_type), (meta, id))| Res {
             asset: asset(name),
             res_type,
+            meta,
+            id,
         })
         .collect();
     let chunks = chunk_heads
@@ -157,7 +174,12 @@ pub fn parse(data: &[u8]) -> Result<Bundle> {
             }
         })
         .collect();
-    Ok(Bundle { ebx, res, chunks })
+    Ok(Bundle {
+        ebx,
+        res,
+        chunks,
+        meta: meta.to_vec(),
+    })
 }
 
 /// Never used: the counts were checked to match before any entry is built.
@@ -222,16 +244,18 @@ mod tests {
     /// ebx's archive.
     fn sample() -> Vec<u8> {
         let mut bin = Vec::new();
-        // Header with string/meta offsets filled below; tables are 0x24 + 3*20 +
-        // 8 + 8 + 4 + 16 + 8 + 24 = 0xa0 bytes long.
-        words(&mut bin, &[BUNDLE_MAGIC, 3, 1, 1, 1, 0xa0, 0xa0, 0]);
+        // Tables are 0x24 + 3*20 + 8 + 8 + 4 + 16 + 8 + 24 = 0xa0 bytes long, then
+        // two bytes of metadata and the strings.
+        words(&mut bin, &[BUNDLE_MAGIC, 3, 1, 1, 1, 0xa2, 0xa0, 2]);
         for i in 0..3 {
             bin.extend_from_slice(&[i; 20]);
         }
         words(&mut bin, &[0, 400, 2, 14164, res_type_hash("Texture")]);
-        bin.extend_from_slice(&[0; 24]);
+        bin.extend_from_slice(&[5; 16]);
+        bin.extend_from_slice(&0x0102_0304_0506_0708u64.to_be_bytes());
         bin.extend_from_slice(&[7; 16]);
         words(&mut bin, &[0, 65536]);
+        bin.extend_from_slice(&[0x82, 0]);
         bin.extend_from_slice(b"a\0bc\0");
         let mut data = Vec::new();
         let locs_rel = 4 + bin.len() as u32;
@@ -269,6 +293,9 @@ mod tests {
         assert_eq!(bundle.res[0].asset.name, "bc");
         assert_eq!(bundle.res[0].asset.sha1, [1; 20]);
         assert_eq!(bundle.res[0].res_type, 0x6bde_20ba);
+        assert_eq!(bundle.res[0].meta, [5; 16]);
+        assert_eq!(bundle.res[0].id, 0x0102_0304_0506_0708);
+        assert_eq!(bundle.meta, [0x82, 0]);
         assert_eq!(bundle.chunks[0].id, [7; 16]);
         assert_eq!(bundle.chunks[0].logical_size, 65536);
         assert_eq!(

@@ -37,21 +37,21 @@ pub struct Install {
     pub packages: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleEntry {
     pub name: String,
     pub layer: Layer,
     pub bundle: sb::Bundle,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkEntry {
     pub chunk: TocChunk,
     pub layer: Layer,
 }
 
 /// A superbundle with the patch applied.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Superbundle {
     pub name: String,
     pub bundles: Vec<BundleEntry>,

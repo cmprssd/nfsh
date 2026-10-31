@@ -1,6 +1,8 @@
-//! nfsh: a new engine for Need for Speed: Heat. For now it has two commands: an
-//! inventory of the owner's install, and a check that every entry in it decompresses.
+//! nfsh: a new engine for Need for Speed: Heat. For now it has three commands: an
+//! inventory of the owner's install, a check that every entry in it decompresses, and
+//! the import into nfsh's own store.
 
+mod import;
 mod inventory;
 mod verify;
 
@@ -13,24 +15,38 @@ const USAGE: &str = "usage: nfsh inventory [INSTALL]
 usage: nfsh verify [INSTALL]
   Decompresses every entry the install's tables point at and checks its size
   (Windows only: it uses the install's own Oodle library).
+usage: nfsh import [INSTALL] STORE
+  Copies the data the install still uses into nfsh's own store in the folder STORE
+  (created if missing; an earlier store there is replaced), checks the copy, and
+  prints its size.
 INSTALL is the game folder (with Data/ and Patch/); default: $NFSH_INSTALL.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (cmd, install) = match args.as_slice() {
-        [cmd] => (cmd, std::env::var_os("NFSH_INSTALL").map(PathBuf::from)),
-        [cmd, path] => (cmd, Some(PathBuf::from(path))),
-        _ => (&String::new(), None),
-    };
-    let (Some(install), "inventory" | "verify") = (install, cmd.as_str()) else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
+    let env_install = || std::env::var_os("NFSH_INSTALL").map(PathBuf::from);
+    // The import's last argument is the store; the install may come before it.
+    let (cmd, install, store) = match args.as_slice() {
+        [cmd, store] if cmd == "import" => (cmd.as_str(), env_install(), Some(store)),
+        [cmd, path, store] if cmd == "import" => (cmd.as_str(), Some(path.into()), Some(store)),
+        [cmd] => (cmd.as_str(), env_install(), None),
+        [cmd, path] => (cmd.as_str(), Some(PathBuf::from(path)), None),
+        _ => ("", None, None),
     };
     let start = Instant::now();
-    let result = if cmd == "inventory" {
-        inventory::scan(&install).map(|report| (report.markdown(), 0))
-    } else {
-        verify::run(&install).map(|report| (report.markdown(), report.failed()))
+    let result = match (cmd, install, store) {
+        ("inventory", Some(install), None) => {
+            inventory::scan(&install).map(|report| (report.markdown(), 0))
+        }
+        ("verify", Some(install), None) => {
+            verify::run(&install).map(|report| (report.markdown(), report.failed()))
+        }
+        ("import", Some(install), Some(store)) => {
+            import::run(&install, store.as_ref()).map(|imported| (import::markdown(&imported), 0))
+        }
+        _ => {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
     };
     match result {
         Ok((markdown, failed)) => {

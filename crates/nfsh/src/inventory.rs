@@ -281,7 +281,7 @@ pub fn scan(root: &Path) -> Result<Report> {
 }
 
 /// Bytes as GiB (or MiB below one GiB), with two decimals.
-fn size(bytes: u64) -> String {
+pub fn size(bytes: u64) -> String {
     const MIB: f64 = 1024.0 * 1024.0;
     let mib = bytes as f64 / MIB;
     if mib >= 1024.0 {

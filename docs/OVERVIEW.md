@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-10-31 (5 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-10-31 (6 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -40,7 +40,7 @@ flowchart LR
     rd["crates/frostbite<br/>bounds-checked readers,<br/>no panics"]
     test{"every retail file<br/>reads, totals<br/>add up?"}
     inv["nfsh inventory<br/>INVENTORY.md"]
-    next["next step:<br/>import, viewer"]
+    next["next step:<br/>recompress, viewer"]
     data --> look --> fmt --> rd --> test
     data --> test
     test -- no --> look
@@ -54,14 +54,14 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
-2 crates in one Cargo workspace, 2,407 lines of Rust (sources and tests), 28 tests.
+2 crates in one Cargo workspace, 3,105 lines of Rust (sources and tests), 35 tests.
 <!-- /progress -->
 
 ```mermaid
 flowchart BT
-    fb["<b>frostbite</b><br/>layout.toc, .toc, .sb,<br/>DbObject, Patch over Data,<br/>cas blocks"]
+    fb["<b>frostbite</b><br/>layout.toc, .toc, .sb,<br/>DbObject, Patch over Data,<br/>cas blocks, nfsh's store"]
     oo["oo2core_6_win64.dll<br/>(the install's own,<br/>loaded at run time)"]
-    app["<b>nfsh</b><br/>the commands:<br/>nfsh inventory, nfsh verify"]
+    app["<b>nfsh</b><br/>the commands:<br/>nfsh inventory, nfsh verify,<br/>nfsh import"]
     oo --> fb
     fb --> app
 ```
@@ -69,8 +69,8 @@ flowchart BT
 <!-- progress:crates -->
 | Crate | Rust lines | Tests | What it does |
 |------|------:|------:|------|
-| `frostbite` | 1,564 | 20 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library) |
-| `nfsh` | 843 | 8 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size |
+| `frostbite` | 2,184 | 26 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store |
+| `nfsh` | 921 | 9 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store |
 <!-- /progress -->
 
 Every reader checks bounds and returns an error on malformed input, so a damaged or
@@ -104,7 +104,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 9 decision entries, 5 chosen by the owner, 3 made by Claude for review.
+  So far: 11 decision entries, 6 chosen by the owner, 4 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -122,15 +122,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-6 commits, 5 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 3 feat, 1 ci,
-1 docs. About 4,593 lines added and 31 removed; 31 tracked files.
+7 commits, 6 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 4 feat, 1 ci,
+1 docs. About 5,402 lines added and 69 removed; 33 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
     x-axis ["Oct 30", "Oct 31"]
-    y-axis "PRs" 0 --> 6
-    bar [1, 4]
+    y-axis "PRs" 0 --> 7
+    bar [1, 5]
 ```
 <!-- /progress -->
 
@@ -156,6 +156,16 @@ that nfsh's own format has to beat. Palm City is almost certainly
 `Win32/levels/mainlevel/mainlevel` (not yet confirmed by reading its contents). Details
 in [INVENTORY.md](INVENTORY.md).
 
+### The store
+
+`nfsh import` (0.3.0, 2026-10-31) copied the 1,317,687 distinct entries the patched
+tables use into nfsh's store: 30 packs of 29.35 GiB plus a 148 MiB index, **29.49 GiB
+in place of the 33.15 GiB of cas archives** (3.66 GiB less), checked byte for byte
+against the install, in 27 minutes. The packs are about 70 MiB above the 29.28 GiB of
+live bytes because some distinct entries overlap in the archives and each is copied
+whole. The blocks are still Heat's Oodle; recompressing them with zstd is the next
+step.
+
 ## Where it is going
 
 From [BRIEF.md](BRIEF.md) and [DECISIONS.md](DECISIONS.md) (2026-10-31):
@@ -164,7 +174,7 @@ From [BRIEF.md](BRIEF.md) and [DECISIONS.md](DECISIONS.md) (2026-10-31):
 |---|------|------|
 | 1 | Data inventory: read the install's tables | done (0.1.0) |
 | 2 | Read entry contents: decompress the cas blocks | done (0.2.0) |
-| 3 | Import step: nfsh's own compact copy of the data | next |
+| 3 | Import step: nfsh's own compact copy of the data | in progress (0.3.0: dead data dropped) |
 | 4 | Palm City viewer: fly-through, frame time, day/night | not started |
 | 5 | Baseline against the original: same camera path, same PC, screenshots | not started |
 | 6 | One drivable car, then races, police, campaign | later |
