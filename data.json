@@ -1,0 +1,383 @@
+{
+ "as_of": "2026-10-31",
+ "last_pr": "13",
+ "commits": 14,
+ "prs": 13,
+ "first_day": "2026-10-30",
+ "pr_types": {
+  "feat": 10,
+  "docs": 2,
+  "ci": 1
+ },
+ "prs_per_day": {
+  "2026-10-30": 1,
+  "2026-10-31": 12
+ },
+ "added": 16685,
+ "removed": 398,
+ "tracked_files": 56,
+ "crates": {
+  "frostbite": {
+   "lines": 7002,
+   "tests": 62
+  },
+  "nfsh": {
+   "lines": 2056,
+   "tests": 15
+  },
+  "render": {
+   "lines": 2119,
+   "tests": 11
+  }
+ },
+ "rust_lines": 11177,
+ "tests": 88,
+ "decisions": {
+  "entries": 19,
+  "owner": 8,
+  "claude": 10
+ },
+ "install": {
+  "measured": "2026-10-30",
+  "files": 392,
+  "gib": 34.45,
+  "bytes": 36994681502,
+  "cas_gib": 33.15,
+  "live_gib": 29.28,
+  "live_pct": 88.3,
+  "dead_gib": 3.87,
+  "superbundles": 22,
+  "bundles": 20739,
+  "refs": {
+   "ebx": 725215,
+   "res": 260398,
+   "chunks": 411889
+  },
+  "distinct": {
+   "ebx": 221745,
+   "res": 108281,
+   "chunks": 242640
+  },
+  "kinds": [
+   {
+    "what": "cas archives, Data/",
+    "files": 27,
+    "gib": 25.29
+   },
+   {
+    "what": "cas archives, Patch/",
+    "files": 32,
+    "gib": 7.85
+   },
+   {
+    "what": "executables and libraries",
+    "files": 6,
+    "gib": 0.706640625
+   },
+   {
+    "what": "installer and redistributables",
+    "files": 224,
+    "gib": 0.37154296875
+   },
+   {
+    "what": "tables (.toc, .sb, layout, initfs)",
+    "files": 93,
+    "gib": 0.223984375
+   },
+   {
+    "what": "other (licences, launcher files)",
+    "files": 10,
+    "gib": 0.005810546875
+   }
+  ],
+  "superbundle_sizes": [
+   {
+    "name": "Win32/chunks1",
+    "gib": 12.41
+   },
+   {
+    "name": "Win32/chunks0",
+    "gib": 11.71
+   },
+   {
+    "name": "Win32/chunks2",
+    "gib": 3.88
+   },
+   {
+    "name": "Win32/gamemodeeventdata",
+    "gib": 2.62
+   },
+   {
+    "name": "Win32/levels/mainlevel/mainlevel",
+    "gib": 2.53
+   },
+   {
+    "name": "Win32/vehicles1",
+    "gib": 1.87
+   },
+   {
+    "name": "Win32/sequences_normal",
+    "gib": 0.979677734375
+   },
+   {
+    "name": "Win32/loc/en",
+    "gib": 0.80265625
+   },
+   {
+    "name": "Win32/characters",
+    "gib": 0.27228515625
+   },
+   {
+    "name": "Win32/garageblueprintbundles",
+    "gib": 0.106826171875
+   },
+   {
+    "name": "Win32/levels/frontend/frontend",
+    "gib": 0.09884765625
+   },
+   {
+    "name": "Win32/activitydata",
+    "gib": 0.091162109375
+   },
+   {
+    "name": "Win32/sequences_gameplay",
+    "gib": 0.05267578125
+   },
+   {
+    "name": "Win32/globals",
+    "gib": 0.033662109375
+   },
+   {
+    "name": "Win32/ui",
+    "gib": 0.0326953125
+   },
+   {
+    "name": "Win32/vehicles2",
+    "gib": 0.016591796875
+   },
+   {
+    "name": "Win32/voiceover",
+    "gib": 0.012529296875
+   },
+   {
+    "name": "Win32/showroomblueprintbundles",
+    "gib": 0.009375
+   },
+   {
+    "name": "Win32/voiceover2",
+    "gib": 0.00365234375
+   },
+   {
+    "name": "Win32/loadingmusic",
+    "gib": 0.000126953125
+   },
+   {
+    "name": "Win32/vehicles3",
+    "gib": 1.953125e-05
+   },
+   {
+    "name": "Win32/vehicles0",
+    "gib": 0.0
+   }
+  ]
+ },
+ "history": [
+  {
+   "hash": "0ffb18e",
+   "date": "2026-10-30",
+   "subject": "ci: Rust workspace, whitelist .gitignore and local-ci checks (#1)",
+   "pr": "1",
+   "type": "ci",
+   "added": 194,
+   "removed": 0
+  },
+  {
+   "hash": "a06360c",
+   "date": "2026-10-31",
+   "subject": "feat: readers for Heat's toc, sb and layout files (#2)",
+   "pr": "2",
+   "type": "feat",
+   "added": 1305,
+   "removed": 0
+  },
+  {
+   "hash": "9f3ccb6",
+   "date": "2026-10-31",
+   "subject": "feat: nfsh inventory lists what the install holds; release 0.1.0 (#3)",
+   "pr": "3",
+   "type": "feat",
+   "added": 762,
+   "removed": 8
+  },
+  {
+   "hash": "f7d3a5d",
+   "date": "2026-10-31",
+   "subject": "docs: OVERVIEW.md and the GitHub Pages progress page (#4)",
+   "pr": "4",
+   "type": "docs",
+   "added": 635,
+   "removed": 2
+  },
+  {
+   "hash": "682549d",
+   "date": "2026-10-31",
+   "subject": "feat: decompress cas entries with the install's Oodle; nfsh verify; release 0.2.0 (#5)",
+   "pr": "5",
+   "type": "feat",
+   "added": 729,
+   "removed": 21
+  },
+  {
+   "hash": "7cfeb80",
+   "date": "2026-10-31",
+   "subject": "feat: nfsh import copies the live data into nfsh's own store; release 0.3.0 (#6)",
+   "pr": "6",
+   "type": "feat",
+   "added": 809,
+   "removed": 38
+  },
+  {
+   "hash": "53603cd",
+   "date": "2026-10-31",
+   "subject": "feat: nfsh import recompresses the store with zstd; verify reads stores; release 0.4.0 (#7)",
+   "pr": "7",
+   "type": "feat",
+   "added": 822,
+   "removed": 140
+  },
+  {
+   "hash": "afaca70",
+   "date": "2026-10-31",
+   "subject": "docs: the ebx partition format and Palm City's layout; viewer plan (#8)",
+   "pr": "8",
+   "type": "docs",
+   "added": 134,
+   "removed": 2
+  },
+  {
+   "hash": "09469cb",
+   "date": "2026-10-31",
+   "subject": "feat: an ebx reader and nfsh ebx; release 0.5.0 (#9)",
+   "pr": "9",
+   "type": "feat",
+   "added": 1342,
+   "removed": 34
+  },
+  {
+   "hash": "f344440",
+   "date": "2026-10-31",
+   "subject": "feat: the level graph and nfsh level; partition GUIDs in the store; release 0.6.0 (#10)",
+   "pr": "10",
+   "type": "feat",
+   "added": 1958,
+   "removed": 35
+  },
+  {
+   "hash": "23411bf",
+   "date": "2026-10-31",
+   "subject": "feat: mesh geometry and nfsh mesh; release 0.7.0 (#11)",
+   "pr": "11",
+   "type": "feat",
+   "added": 1122,
+   "removed": 6
+  },
+  {
+   "hash": "903996f",
+   "date": "2026-10-31",
+   "subject": "feat: texture headers and pixels, and nfsh texture; release 0.8.0 (#12)",
+   "pr": "12",
+   "type": "feat",
+   "added": 1057,
+   "removed": 81
+  },
+  {
+   "hash": "d9e42e1",
+   "date": "2026-10-31",
+   "subject": "feat: a window flying through one zone, untextured, and nfsh view; release 0.9.0 (#13)",
+   "pr": "13",
+   "type": "feat",
+   "added": 4848,
+   "removed": 31
+  }
+ ],
+ "growth": [
+  {
+   "date": "2026-10-30",
+   "pr": "1",
+   "rust_lines": 6,
+   "tests": 0
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "2",
+   "rust_lines": 1189,
+   "tests": 15
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "3",
+   "rust_lines": 1765,
+   "tests": 19
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "4",
+   "rust_lines": 1765,
+   "tests": 19
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "5",
+   "rust_lines": 2407,
+   "tests": 28
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "6",
+   "rust_lines": 3105,
+   "tests": 35
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "7",
+   "rust_lines": 3602,
+   "tests": 41
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "8",
+   "rust_lines": 3602,
+   "tests": 41
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "9",
+   "rust_lines": 4838,
+   "tests": 47
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "10",
+   "rust_lines": 6653,
+   "tests": 57
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "11",
+   "rust_lines": 7636,
+   "tests": 64
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "12",
+   "rust_lines": 8498,
+   "tests": 72
+  },
+  {
+   "date": "2026-10-31",
+   "pr": "13",
+   "rust_lines": 11177,
+   "tests": 88
+  }
+ ]
+}

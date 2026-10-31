@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nfsh Progress</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; the install first (what nfsh has to shrink), then how the work went. */
+:root {
+  --bg: #f1efec; --panel: #ffffff; --fg: #17161a; --muted: #5f5b63; --rule: #dcd8d2;
+  --accent: #d2491f; --accent-soft: #f8e3da; --second: #2b6cb0; --good: #1f8a5b; --dead: #a8a29a;
+  --display: "Archivo", "Arial Narrow", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121115; --panel: #1b1a1f; --fg: #ebe8e4; --muted: #a29da6; --rule: #2e2c33;
+  --accent: #ff7a4d; --accent-soft: #3a2119; --second: #79a8e8; --good: #4cc38a; --dead: #5d5862; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #121115; --panel: #1b1a1f; --fg: #ebe8e4; --muted: #a29da6; --rule: #2e2c33;
+  --accent: #ff7a4d; --accent-soft: #3a2119; --second: #79a8e8; --good: #4cc38a; --dead: #5d5862; color-scheme: dark }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 var(--body); }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 28px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 56px; }
+h1, h2, h3 { font-family: var(--display); font-stretch: 75%; text-wrap: balance; margin: 0; line-height: 1.05; }
+h1 { font-size: clamp(40px, 7vw, 72px); font-weight: 800; letter-spacing: -0.01em; }
+h2 { font-size: 30px; font-weight: 700; }
+h3 { font-size: 18px; font-weight: 700; font-stretch: 90%; margin-bottom: 10px; }
+p { margin: 0; max-width: 68ch; }
+a { color: var(--accent); }
+.muted { color: var(--muted); }
+.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+section { display: grid; gap: 18px; min-width: 0; }
+header { display: grid; gap: 18px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+.tile { background: var(--panel); padding: 14px 16px; display: grid; gap: 4px; align-content: start; }
+.tile b { font: 700 30px/1 var(--display); font-stretch: 80%; font-variant-numeric: tabular-nums; }
+.tile span { font-size: 13px; color: var(--muted); }
+
+/* One horizontal bar split into parts, with a legend under it. */
+.stack { display: flex; height: 34px; border: 1px solid var(--rule); background: var(--panel); overflow: hidden; }
+.stack i { display: block; height: 100%; min-width: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; }
+.legend span { display: inline-flex; gap: 6px; align-items: center; }
+.legend i { width: 11px; height: 11px; display: inline-block; border-radius: 2px; }
+.legend b { font: 500 13px var(--mono); }
+
+.bars { display: grid; gap: 6px; }
+.bars .row { display: grid; grid-template-columns: minmax(0, 15em) 1fr 6.5em; gap: 10px; align-items: center; font-size: 13px; }
+.bars .row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bars .row .track { height: 14px; background: var(--rule); }
+.bars .row .track i { display: block; height: 100%; background: var(--accent); }
+.bars .row .v { text-align: right; font: 13px var(--mono); font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) { .bars .row { grid-template-columns: minmax(0, 1fr) 6em; } .bars .row .track { grid-column: 1 / -1; grid-row: 2; } }
+
+.chart { overflow-x: auto; }
+.chart svg { display: block; min-width: 420px; width: 100%; height: auto; }
+.chart text { fill: var(--muted); font: 11px var(--mono); }
+.chart .grid { stroke: var(--rule); }
+
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font: 500 12px var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tablewrap { overflow-x: auto; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; }
+.two > * { min-width: 0; }
+.state { font: 500 12px var(--mono); padding: 3px 7px; border-radius: 3px; white-space: nowrap; }
+.done { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+.next { background: var(--accent-soft); color: var(--accent); }
+.later { color: var(--muted); border: 1px solid var(--rule); }
+footer { font-size: 13px; color: var(--muted); display: grid; gap: 6px; border-top: 1px solid var(--rule); padding-top: 18px; }
+code { font: 13px var(--mono); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Need for Speed: Heat · new engine in Rust</div>
+    <h1>nfsh Progress</h1>
+    <p id="lede" class="muted"></p>
+    <div class="tiles" id="tiles"></div>
+  </header>
+
+  <section aria-labelledby="h-install">
+    <div class="eyebrow">What has to shrink</div>
+    <h2 id="h-install">The owner's install, read</h2>
+    <p class="muted" id="installNote"></p>
+    <div><h3>Where the bytes are</h3><div class="stack" id="kinds"></div></div>
+    <div class="legend" id="kindsKey"></div>
+    <div><h3>The cas archives: still read, or replaced by the patch</h3><div class="stack" id="live"></div></div>
+    <div class="legend" id="liveKey"></div>
+    <div><h3>Superbundles by stored size</h3><div class="bars" id="sbs"></div></div>
+  </section>
+
+  <section aria-labelledby="h-road">
+    <div class="eyebrow">Where it is going</div>
+    <h2 id="h-road">Milestones</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>#</th><th>Milestone</th><th>State</th></tr></thead>
+      <tbody id="road"></tbody>
+    </table></div>
+  </section>
+
+  <section aria-labelledby="h-num">
+    <div class="eyebrow">The numbers</div>
+    <h2 id="h-num">How the work went</h2>
+    <div class="two">
+      <div><h3>PRs merged per working day</h3><div class="chart" id="perday"></div></div>
+      <div><h3>Lines of Rust and tests, after each PR</h3><div class="chart" id="growth"></div></div>
+    </div>
+    <div class="two">
+      <div class="tablewrap"><h3>Crates</h3><table id="crates"></table></div>
+      <div class="tablewrap"><h3>Merged PRs</h3><table id="prs"></table></div>
+    </div>
+  </section>
+
+  <footer>
+    <div id="foot"></div>
+    <div>Built by <code>scripts/publish-progress.sh</code> from <code>scripts/progress.py</code>'s counts
+      (git, the tree and <code>docs/INVENTORY.md</code>). Served from the <code>gh-pages</code> branch.
+      How it all works: <a href="https://github.com/cmprssd/nfsh/blob/main/docs/OVERVIEW.md">docs/OVERVIEW.md</a>.</div>
+  </footer>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const el = (tag, attrs = {}, kids = []) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "text") e.textContent = v; else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v);
+  }
+  for (const k of [].concat(kids)) if (k) e.append(k);
+  return e;
+};
+const fmt = (n) => Number(n).toLocaleString("en-US");
+const size = (g) => g >= 1 ? `${g.toFixed(2)} GiB` : `${(g * 1024).toFixed(1)} MiB`;
+const SVG = "http://www.w3.org/2000/svg";
+const svg = (tag, attrs) => { const e = document.createElementNS(SVG, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
+const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const day = (d) => `${months[+d.slice(5, 7) - 1]} ${+d.slice(8)}`;
+// Milestones as docs/OVERVIEW.md lists them; edit both together.
+const ROAD = [
+  ["Data inventory: read the install's tables", "done", "done (0.1.0)"],
+  ["Read entry contents: decompress the cas blocks", "done", "done (0.2.0)"],
+  ["Import step: nfsh's own compact copy of the data", "next", "in progress (0.3.0: dead data dropped)"],
+  ["Palm City viewer: fly-through, frame time, day/night", "later", "not started"],
+  ["Baseline against the original: same camera path, same PC, screenshots", "later", "not started"],
+  ["One drivable car, then races, police, campaign", "later", "later"],
+];
+
+fetch("data.json").then((r) => r.json()).then(render);
+
+function render(d) {
+  const i = d.install;
+  $("#lede").textContent = "A clean-room engine for the 2019 game, in Rust and Vulkan: the same game and look, much smaller on disk, " +
+    `much faster, and it must not crash. As of ${d.as_of}` + (d.last_pr ? `, through PR #${d.last_pr}.` : ".");
+  const tiles = [
+    [size(i.gib), `install on disk, ${fmt(i.files)} files`],
+    [size(i.dead_gib), "of archives the patch left dead"],
+    [fmt(i.bundles), `bundles in ${i.superbundles} superbundles`],
+    [fmt(d.prs), `PRs merged in ${Object.keys(d.prs_per_day).length} working days`],
+    [fmt(d.rust_lines), `lines of Rust in ${Object.keys(d.crates).length} crates`],
+    [fmt(d.tests), "tests"],
+  ];
+  for (const [b, s] of tiles) $("#tiles").append(el("div", { class: "tile" }, [el("b", { text: b }), el("span", { text: s })]));
+  install(i);
+  road();
+  perDay(d.prs_per_day);
+  growth(d.growth);
+  crates(d.crates);
+  prs(d.history);
+  $("#foot").textContent = `${fmt(d.commits)} commits, ${fmt(d.prs)} PRs: ` +
+    Object.entries(d.pr_types).map(([t, n]) => `${n} ${t}`).join(", ") +
+    `. ${d.decisions.entries} decisions recorded, ${d.decisions.owner} chosen by the owner, ${d.decisions.claude} by Claude pending review.`;
+}
+
+function stack(bar, key, parts) {
+  const total = parts.reduce((a, p) => a + p.v, 0);
+  for (const p of parts) {
+    bar.append(el("i", { style: `flex:${p.v} 0 0;background:${p.c}`, title: `${p.label}: ${size(p.v)}` }));
+    key.append(el("span", {}, [el("i", { style: `background:${p.c}` }), document.createTextNode(p.label), el("b", { text: `${size(p.v)} · ${(100 * p.v / total).toFixed(1)}%` })]));
+  }
+}
+
+function install(i) {
+  $("#installNote").textContent = `Measured by nfsh inventory on ${i.measured}, with the patch applied. ` +
+    `${fmt(i.refs.ebx)} ebx, ${fmt(i.refs.res)} res and ${fmt(i.refs.chunks)} chunk references name ` +
+    `${fmt(i.distinct.ebx)}, ${fmt(i.distinct.res)} and ${fmt(i.distinct.chunks)} distinct entries.`;
+  const hues = ["var(--accent)", "var(--second)", "var(--good)", "var(--dead)", "var(--muted)", "var(--rule)"];
+  stack($("#kinds"), $("#kindsKey"), i.kinds.map((k, j) => ({ label: `${k.what} (${fmt(k.files)})`, v: k.gib, c: hues[j % hues.length] })));
+  stack($("#live"), $("#liveKey"), [
+    { label: "still read", v: i.live_gib, c: "var(--accent)" },
+    { label: "replaced by the patch, dead", v: i.dead_gib, c: "var(--dead)" },
+  ]);
+  const top = Math.max(...i.superbundle_sizes.map((s) => s.gib));
+  for (const s of i.superbundle_sizes.filter((s) => s.gib >= 0.01))
+    $("#sbs").append(el("div", { class: "row" }, [el("code", { text: s.name.replace("Win32/", ""), title: s.name }),
+      el("div", { class: "track" }, [el("i", { style: `width:${100 * s.gib / top}%` })]), el("span", { class: "v", text: size(s.gib) })]));
+}
+
+function road() {
+  ROAD.forEach(([what, cls, state], j) => $("#road").append(el("tr", {}, [el("td", { class: "n", text: j + 1 }), el("td", { text: what }),
+    el("td", {}, [el("span", { class: `state ${cls}`, text: state })])])));
+}
+
+function perDay(pd) {
+  const days = Object.entries(pd), W = 520, H = 220, L = 30, B = 40, T = 14;
+  const top = Math.max(...days.map(([, n]) => n), 1), bw = Math.min(60, (W - L - 6) / days.length);
+  const y = (v) => T + (H - T - B) * (1 - v / top);
+  const step = top > 10 ? 5 : 1;
+  const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "PRs merged per working day" });
+  for (let v = 0; v <= top; v += step) { s.append(svg("line", { x1: L, x2: W, y1: y(v), y2: y(v), class: "grid" })); const t = svg("text", { x: L - 6, y: y(v) + 4, "text-anchor": "end" }); t.textContent = v; s.append(t); }
+  days.forEach(([d, n], j) => {
+    const cx = L + 3 + j * bw + (bw - 4) / 2;
+    const r = svg("rect", { x: L + 3 + j * bw, y: y(n), width: bw - 4, height: y(0) - y(n), rx: 1 }); r.style.fill = "var(--accent)"; s.append(r);
+    const t = svg("text", { x: cx, y: H - B + 14, "text-anchor": "middle" }); t.textContent = day(d); s.append(t);
+    const c = svg("text", { x: cx, y: y(n) - 4, "text-anchor": "middle" }); c.textContent = n; s.append(c);
+  });
+  $("#perday").append(s);
+}
+
+function growth(g) {
+  if (!g.length) return;
+  const W = 520, H = 220, L = 50, R = 40, T = 10, B = 40;
+  const nice = (v, unit) => Math.max(unit, Math.ceil(v / unit) * unit);
+  const topL = nice(Math.max(...g.map((p) => p.rust_lines)), 1000), topT = nice(Math.max(...g.map((p) => p.tests)), 10);
+  const x = (j) => L + (W - L - R) * (g.length === 1 ? 0.5 : j / (g.length - 1));
+  const y = (v, top) => T + (H - T - B) * (1 - v / top);
+  const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Lines of Rust and tests after each PR" });
+  for (let k = 0; k <= 4; k++) {
+    const v = topL * k / 4, t = svg("text", { x: L - 6, y: y(v, topL) + 4, "text-anchor": "end" });
+    s.append(svg("line", { x1: L, x2: W - R, y1: y(v, topL), y2: y(v, topL), class: "grid" }));
+    t.textContent = v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v; s.append(t);
+    const u = svg("text", { x: W - R + 6, y: y(topT * k / 4, topT) + 4 }); u.textContent = Math.round(topT * k / 4); u.style.fill = "var(--good)"; s.append(u);
+  }
+  const line = (key, top, color) => {
+    const p = svg("path", { d: g.map((pt, j) => `${j ? "L" : "M"}${x(j).toFixed(1)},${y(pt[key], top).toFixed(1)}`).join(""), fill: "none", "stroke-width": 2 });
+    p.style.stroke = color; s.append(p);
+    g.forEach((pt, j) => { const c = svg("circle", { cx: x(j), cy: y(pt[key], top), r: 3 }); c.style.fill = color; s.append(c); });
+  };
+  line("rust_lines", topL, "var(--accent)"); line("tests", topT, "var(--good)");
+  g.forEach((p, j) => { const t = svg("text", { x: x(j), y: H - B + 16, "text-anchor": "middle" }); t.textContent = `#${p.pr}`; s.append(t); });
+  const k1 = svg("text", { x: L, y: H - 6 }); k1.textContent = "Rust lines (left)"; k1.style.fill = "var(--accent)"; s.append(k1);
+  const k2 = svg("text", { x: L + 150, y: H - 6 }); k2.textContent = "tests (right)"; k2.style.fill = "var(--good)"; s.append(k2);
+  $("#growth").append(s);
+}
+
+function crates(cs) {
+  const rows = Object.entries(cs).sort((a, b) => b[1].lines - a[1].lines);
+  $("#crates").append(el("thead", {}, [el("tr", {}, [el("th", { text: "Crate" }), el("th", { class: "n", text: "Rust lines" }), el("th", { class: "n", text: "Tests" })])]),
+    el("tbody", {}, rows.map(([n, c]) => el("tr", {}, [el("td", {}, [el("code", { text: n })]), el("td", { class: "n", text: fmt(c.lines) }), el("td", { class: "n", text: c.tests })]))));
+}
+
+function prs(h) {
+  const repo = "https://github.com/cmprssd/nfsh/pull/";
+  $("#prs").append(el("thead", {}, [el("tr", {}, [el("th", { text: "PR" }), el("th", { text: "What" }), el("th", { class: "n", text: "Lines" })])]),
+    el("tbody", {}, h.filter((c) => c.pr !== "this").reverse().map((c) => el("tr", {}, [
+      el("td", {}, [el("a", { href: repo + c.pr, text: `#${c.pr}` })]),
+      el("td", { text: c.subject.replace(/ \(#\d+\)$/, "") }),
+      el("td", { class: "n", text: `+${fmt(c.added)} −${fmt(c.removed)}` })]))));
+}
+</script>
