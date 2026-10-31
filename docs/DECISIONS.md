@@ -83,3 +83,20 @@ Settled while writing the brief (`docs/BRIEF.md`), over six rounds of questions.
   Why: guessed names would mislead the import step.
 - **Two PRs: the format readers (`crates/frostbite`), then the command.** Why: each
   stays reviewable, and the readers are the base for the import step and the viewer.
+
+## 2026-10-31: The overview and the progress page (decided by Claude, pending review)
+
+- **docs/OVERVIEW.md and its counted numbers follow swjkja's** (`scripts/progress.py`,
+  checked by `.local-ci`). The install's numbers are read from `docs/INVENTORY.md`, the
+  recorded `nfsh inventory` run, rather than by scanning the install. Why: the check
+  stays fast and runs without the game, and OVERVIEW.md can never disagree with
+  INVENTORY.md.
+- **The page is numbers only for now** (the install, milestones, PRs per day, lines and
+  tests, crates, merged PRs), a static `index.html` plus `data.json`, without swjkja's
+  `progress_page.py` image step. Why: nothing renders yet, so there is no imagery to
+  convert; standard-library Python is enough. The screenshot comparisons arrive with the
+  viewer, still only on `gh-pages`.
+- **Served from the `gh-pages` branch, one commit force-pushed per publish**, run by
+  hand after each merge (`scripts/publish-progress.sh`, which refuses unless HEAD is
+  `origin/main`). Why: as swjkja; the page always matches main as merged, and the repo
+  doesn't grow with each refresh.
