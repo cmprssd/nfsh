@@ -4,6 +4,22 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-10-31
+
+### Added
+
+- `nfsh mesh STORE NAME` prints a mesh (a `RigidMeshAsset` or `CompositeMeshAsset`,
+  as `nfsh level` lists them): its LODs, each LOD's sections with their materials,
+  triangle and vertex counts, vertex layout and bounds, and decodes the first LOD.
+  `nfsh mesh STORE NAME OBJ` also writes that LOD to the file OBJ as a Wavefront
+  .obj, which opens in any 3D viewer.
+- The mesh reader behind it (`frostbite::mesh`) reads a mesh's geometry from the
+  store: positions, the first texture coordinates and triangles, for every LOD. It
+  checks every pointer, stream and index and never panics on damaged data. A test
+  reads every mesh Palm City places: 5,475 meshes, 14,112 LODs, 48.8 million
+  triangles. Breakable props (composite meshes) are read whole, as they stand before
+  anything breaks them.
+
 ## [0.6.0] - 2026-10-31
 
 ### Added

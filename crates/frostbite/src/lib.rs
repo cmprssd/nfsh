@@ -8,6 +8,7 @@ pub mod ebx;
 pub mod frames;
 pub mod install;
 pub mod level;
+pub mod mesh;
 pub mod oodle;
 pub mod reader;
 pub mod sb;

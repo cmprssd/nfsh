@@ -303,6 +303,102 @@ probe and emitter volumes, effects locators, sound locators, `ClothObjectBluepri
   textures it uses; the rest are in shared bundles (the regions).
 - The terrain is `mainlevel_terrain_2048`, in the root bundle.
 
+## Meshes
+
+A `RigidMeshAsset` or `CompositeMeshAsset` ebx names its geometry by res id in
+`MeshSetResource`. The res, type `MeshSet` (`0x49B156D4`), describes the mesh: its
+LODs, each LOD's sections (one material each) and their vertex layout. A LOD's
+vertices and indices are in one chunk. `frostbite::mesh` reads both, and
+`nfsh mesh STORE NAME [OBJ]` prints a mesh and writes its first LOD as an .obj.
+Worked out on zone 495 (the speedway), then checked on every mesh set in the store
+(see the end of this section). **Little-endian.**
+
+The res is a block of records with pointers between them, then a relocation table.
+Its 16 bytes of res metadata (in the bundle) give the layout: the block's size (u32),
+4 zero bytes, the table's size (u32), then the header size and the section size (u16
+each: 0xA0 or 0xB0, and 0xE0). The table lists, as u32 each, the offset of every
+pointer in the block. A pointer is a u64 offset from the start of the res.
+
+Header (0xA0 bytes; 0xB0 when the mesh has parts):
+
+| offset | field |
+|-------:|-------|
+| 0x00, 0x10 | bounds: min and max, each 3 floats and 4 bytes of padding |
+| 0x20 | LOD pointers, 7 slots (at most 6 used) |
+| 0x58, 0x60 | name, name without its folders |
+| 0x68 | the name's hash |
+| 0x6C | kind: 0 rigid, 1 skinned (characters), 2 composite |
+| 0x88, 0x8C | flags (not worked out) |
+| 0x90, 0x92 | LOD count, section count over all LODs (u16) |
+
+A LOD (0xA0 bytes):
+
+| offset | field |
+|-------:|-------|
+| 0x00 | the LOD's kind (as the header's) |
+| 0x08, 0x0C | section count (u32), pointer to its first section (sections are back to back) |
+| 0x14 | five lists of section numbers (u32 count, u64 pointer to one byte each), apparently by how the sections are drawn; not needed to read the geometry |
+| 0x50 | flags (not worked out) |
+| 0x54 | index format: 0x21 for 16-bit indices, 0x2E for 32-bit (13 LODs, all large) |
+| 0x58 | index buffer size in bytes: the indices, rounded up to 4 |
+| 0x5C | vertex buffer size: where the last section's vertices end, rounded up to 16 |
+| 0x60 | the chunk id, as a GUID in memory |
+| 0x70 | 0xFFFFFFFF when the geometry is in the chunk; otherwise the chunk id is zero and this is an offset into geometry stored inline (only character meshes, not read yet) |
+| 0x74 | name (`Mesh:<name>_lod0`), then two more pointers to parts of it |
+
+A section (0xE0 bytes):
+
+| offset | field |
+|-------:|-------|
+| 0x08 | name (the material's, often empty) |
+| 0x10 | material: an index into the asset's `Materials` |
+| 0x18, 0x1C | triangle count, first index (in indices, from the start of the index buffer) |
+| 0x20, 0x24 | vertex offset (bytes from the start of the chunk), vertex count |
+| 0x28 | vertex stride (u8, the streams' strides added up), primitive type (u8, always 3: triangle lists), then two bytes not worked out |
+| 0x2C, 0x30 | a part count and a pointer, used by composite meshes |
+| 0x40 | vertex elements: 16 slots of 4 bytes (usage, format, offset in its stream, stream); an empty slot is `00 00 FF 00` |
+| 0x80 | each stream's bytes per vertex, 16 × u16 |
+| 0xC0, 0xD0 | the section's bounds, as the header's |
+
+**The chunk** holds the LOD's vertex buffer, then its index buffer at the vertex
+buffer size; the chunk is their sizes added up, rounded up to 16. A section's
+vertices are **one stream after another, not interleaved**: stream *k* starts at the
+vertex offset plus the vertex count times the strides of the streams before it.
+Indices count from the section's first vertex. The chunk id appears in three byte
+orders: as a GUID in memory in the res, with its first three fields byte-swapped
+(big-endian) in a bundle's chunk list, and with all 16 bytes reversed in a `.toc`'s.
+A LOD's chunk is either in the bundle (most small LODs) or in a superbundle's own
+chunks (`Win32/chunks0` and others).
+
+Vertex elements seen (usage/format, bytes):
+
+| usage | formats | what it is |
+|------:|---------|------------|
+| 0x01 | 0x03 (3 floats, 12), 0x08 (4 halves, 8; the fourth not used) | position, in the mesh's space |
+| 0x21 | 0x06 (2 halves, 4), 0x02 (2 floats, 8) | texture coordinates, the first set (to be confirmed when textures are drawn) |
+| 0x22-0x26 | the same | probably further texture coordinate sets, by the same pattern |
+| 0x02-0x08, 0x1E, 0x1F, 0x2A, 0x33, 0x34, 0xBC, 0xD0 | 0x0C, 0x0D (4 bytes), 0x13 (4), 0x17, 0x19 (8), 0x03, 0x08 | not worked out: the tangent frame is among them (0x34 is a likely candidate), as are a second set of lightmap coordinates and vertex colours |
+
+Sections with positions only and no name (usually the last one or two of a LOD) look
+like shadow geometry: the same one often repeats in every LOD.
+
+**Composite meshes** (`CompositeMeshAsset`, the breakable `brk` props such as trees and
+poles) have the same geometry, with their parts already in place; the part data
+(header 0xB0, the section's part count and list, a LOD pointer at 0x98) is not read
+yet. Drawn whole, a composite looks as it does before anything breaks it.
+
+Checked on the whole city, 2026-10-31: the store test reads every mesh the 232 zones
+place (5,475 meshes; 14,112 LODs; 53,194 sections; 48,797,619 triangles), every
+LOD's chunk and every section. Each chunk is exactly its two buffers rounded up to
+16; each section's strides add up to its stride byte; every index is inside its
+section; and every position is inside its section's bounds: exactly for floats,
+within the rounding of a half (at most |x| / 2048; the bounds are those of the
+positions before they were stored as halves, 103 sections touch them), except one
+section of `prop_brk_abandoned_15_front_01_mesh`, in all three of its LODs, whose 15
+vertices lie up to 2 cm outside (the stored bounds look slightly off). A survey of
+all 31,034 mesh sets in the store (not only the placed ones) found the index format,
+inline geometry and chunk byte orders described above, and no other index format.
+
 ## nfsh's store (our own format)
 
 What `nfsh import` writes: a folder with an index and a few packs.
