@@ -8,6 +8,8 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
+Numbers in the generated parts below are as of 2026-10-31 (4 merged PRs), counted by
+`scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
 
@@ -52,6 +54,7 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
+2 crates in one Cargo workspace, 1,765 lines of Rust (sources and tests), 19 tests.
 <!-- /progress -->
 
 ```mermaid
@@ -64,8 +67,8 @@ flowchart BT
 <!-- progress:crates -->
 | Crate | Rust lines | Tests | What it does |
 |------|------:|------:|------|
-| `frostbite` | | | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/` |
-| `nfsh` | | | the `nfsh` command; for now `inventory`, which lists what the install holds |
+| `frostbite` | 1,183 | 15 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/` |
+| `nfsh` | 582 | 4 | the `nfsh` command; for now `inventory`, which lists what the install holds |
 <!-- /progress -->
 
 Every reader checks bounds and returns an error on malformed input, so a damaged or
@@ -99,6 +102,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
+  So far: 6 decision entries, 3 chosen by the owner, 2 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -116,11 +120,32 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
+5 commits, 4 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 2 feat, 1 ci,
+1 docs. About 3,864 lines added and 10 removed; 28 tracked files.
+
+```mermaid
+xychart-beta
+    title "PRs merged per working day"
+    x-axis ["Oct 30", "Oct 31"]
+    y-axis "PRs" 0 --> 5
+    bar [1, 3]
+```
 <!-- /progress -->
 
 ### The install, read
 
 <!-- progress:install -->
+Measured by `nfsh inventory` on 2026-10-30 ([INVENTORY.md](INVENTORY.md)):
+
+| What | Count | Size |
+|------|------:|------:|
+| Files in the install | 392 | 34.45 GiB |
+| cas archives (stored asset bytes) | | 33.15 GiB |
+| ... still read after the patch | | 29.28 GiB (88.3%) |
+| ... replaced by the patch, dead | | 3.87 GiB |
+| Superbundles, bundles | 22, 20,739 | |
+| Ebx, res, chunk references | 725,215, 260,398, 411,889 | |
+| ... distinct | 221,745, 108,281, 242,640 | |
 <!-- /progress -->
 
 What it means: almost all of the 34 GiB is cas archives, so "smaller" is decided by how

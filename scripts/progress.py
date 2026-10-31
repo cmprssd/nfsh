@@ -183,7 +183,9 @@ def growth(changes):
 
     out = []
     for c in changes:
-        if c["hash"] == "this":
+        # Only merged PRs: this change has no tree on main yet, and the first commit
+        # (the brief) is not a PR.
+        if c["hash"] == "this" or not c["pr"]:
             continue
         lines = tests = 0
         for row in git("ls-tree", "-r", c["hash"], "--", "crates").splitlines():
