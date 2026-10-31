@@ -13,3 +13,6 @@
 !*.rs
 !*.md
 !*.sh
+!*.py
+# The progress page's template (scripts/publish-progress.sh fills it).
+!scripts/progress_page.html

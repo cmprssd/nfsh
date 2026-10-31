@@ -8,8 +8,9 @@ and adapted here. It ships no game data: it reads the owner's install at
 `D:\SteamLibrary\steamapps\common\Need for Speed Heat`
 (`/mnt/d/SteamLibrary/steamapps/common/Need for Speed Heat` from WSL).
 
-The spec is `docs/BRIEF.md`; decisions are in `docs/DECISIONS.md` (dated `##` entries,
-newest last; mid-build ones marked "decided by Claude, pending review").
+How it all works is `docs/OVERVIEW.md`. The spec is `docs/BRIEF.md`; decisions are in
+`docs/DECISIONS.md` (dated `##` entries, newest last; mid-build ones marked "decided by
+Claude, pending review").
 
 ## Not doing
 
@@ -29,3 +30,9 @@ newest last; mid-build ones marked "decided by Claude, pending review").
   anything that bypasses the executable's protection. Only our own descriptions of
   formats and behaviour go in.
 - Self-merge once `local-ci` passes (workspace default).
+- **The numbers are counted, not typed.** `docs/OVERVIEW.md`'s `<!-- progress:… -->`
+  blocks come from `python3 scripts/progress.py` (git, the tree, `docs/INVENTORY.md`);
+  `.local-ci` fails when they are stale, so run it before pushing.
+- **Refresh the progress page after each merge** (https://cmprssd.github.io/nfsh/, the
+  `gh-pages` branch): `scripts/publish-progress.sh` from the updated main builds it and
+  force-pushes it to `gh-pages` as one commit.
