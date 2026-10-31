@@ -335,3 +335,33 @@ The plan, one PR each (decided by Claude, pending review):
 - **`nfsh texture STORE NAME [DDS]`** prints the header and writes a .dds (DX10
   header, layers regrouped as .dds wants them). Why: a .dds opens in common tools for
   a visual check before nfsh has a window, and keeps the exact compressed bytes.
+
+## 2026-10-31: The viewer's window (decided by Claude, pending review)
+
+- **The renderer is its own crate, `crates/render` (`nfsh-render`)**, with the device,
+  swapchain and frame loop adapted from swjkja's, and the window (winit) in `nfsh view`.
+  Why: the readers in `frostbite` stay free of Vulkan, and the renderer can be tested
+  headless without the command.
+- **A zone is packed into one vertex, one index and one instance buffer, with one
+  instanced indexed draw per mesh** (199 draws for zone 495's 2,171 placements). Why:
+  it is the fewest draws and buffers that keep each mesh once; culling and LODs can
+  come when zones outward need them.
+- **Normals come from the triangles in the fragment shader** (the screen-space
+  derivatives of the world position, turned to face the eye), not from the vertices.
+  Why: the tangent frame's packing is not worked out (FORMATS.md, "Meshes"), and a
+  face normal needs no memory and no guess; transforms may mirror, so nothing is
+  culled and both sides are lit.
+- **Frame time is shown in the window's title**, with the frame rate and the GPU's
+  timestamps, every half second. Why: it needs no text rendering, and swjkja showed
+  it is enough to read performance while flying.
+- **`--shot PNG` draws a frame without a window**, from above one corner of the zone
+  looking at its middle. Why: a screenshot can be checked on Linux (lavapipe) and on
+  the owner's PC without opening anything on the desktop.
+- **The overview frames where meshes are placed, not their vertices.** Why: some
+  meshes are authored with their vertices already in world space (the speedway
+  stand's steps, `bldn_cmp_speedway_stand_01_steps_02_mesh`, bounds near (3917, 96,
+  3254)), and their placements then move them about 4 km away; framing the vertices
+  showed the zone as a few dots. They are drawn where the data puts them.
+- **The frame is sRGB** (window and screenshot alike), so the shader works in linear
+  colour; a UNORM window is accepted if it has no sRGB format.
+

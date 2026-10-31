@@ -9,6 +9,9 @@ rust-version.workspace = true
 
 [dependencies]
 frostbite = { path = "../frostbite" }
+nfsh-render = { path = "../render" }
+png = "0.18.1"
+winit = "0.30.13"
 
 [lints]
 workspace = true

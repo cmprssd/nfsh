@@ -14,5 +14,7 @@
 !*.md
 !*.sh
 !*.py
+# Shaders, compiled to SPIR-V by crates/render/build.rs.
+!*.wgsl
 # The progress page's template (scripts/publish-progress.sh fills it).
 !scripts/progress_page.html
