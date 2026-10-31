@@ -2,8 +2,10 @@
 //! our own reading of the files (see `docs/FORMATS.md`). Every reader checks bounds and
 //! returns an [`Error`] on malformed input; none of them panic.
 
+pub mod cas;
 pub mod dbobject;
 pub mod install;
+pub mod oodle;
 pub mod reader;
 pub mod sb;
 pub mod toc;
@@ -58,7 +60,7 @@ impl CasRef {
 }
 
 /// A run of stored (usually compressed) bytes in one archive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Location {
     pub cas: CasRef,
     pub offset: u32,

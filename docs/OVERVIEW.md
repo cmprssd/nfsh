@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-10-31 (4 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-10-31 (5 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -54,21 +54,23 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
-2 crates in one Cargo workspace, 1,765 lines of Rust (sources and tests), 19 tests.
+2 crates in one Cargo workspace, 2,407 lines of Rust (sources and tests), 28 tests.
 <!-- /progress -->
 
 ```mermaid
 flowchart BT
-    fb["<b>frostbite</b><br/>layout.toc, .toc, .sb,<br/>DbObject, Patch over Data"]
-    app["<b>nfsh</b><br/>the command:<br/>nfsh inventory"]
+    fb["<b>frostbite</b><br/>layout.toc, .toc, .sb,<br/>DbObject, Patch over Data,<br/>cas blocks"]
+    oo["oo2core_6_win64.dll<br/>(the install's own,<br/>loaded at run time)"]
+    app["<b>nfsh</b><br/>the commands:<br/>nfsh inventory, nfsh verify"]
+    oo --> fb
     fb --> app
 ```
 
 <!-- progress:crates -->
 | Crate | Rust lines | Tests | What it does |
 |------|------:|------:|------|
-| `frostbite` | 1,183 | 15 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/` |
-| `nfsh` | 582 | 4 | the `nfsh` command; for now `inventory`, which lists what the install holds |
+| `frostbite` | 1,564 | 20 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library) |
+| `nfsh` | 843 | 8 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size |
 <!-- /progress -->
 
 Every reader checks bounds and returns an error on malformed input, so a damaged or
@@ -102,7 +104,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 6 decision entries, 3 chosen by the owner, 2 made by Claude for review.
+  So far: 9 decision entries, 5 chosen by the owner, 3 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -120,15 +122,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-5 commits, 4 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 2 feat, 1 ci,
-1 docs. About 3,864 lines added and 10 removed; 28 tracked files.
+6 commits, 5 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 3 feat, 1 ci,
+1 docs. About 4,593 lines added and 31 removed; 31 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
     x-axis ["Oct 30", "Oct 31"]
-    y-axis "PRs" 0 --> 5
-    bar [1, 3]
+    y-axis "PRs" 0 --> 6
+    bar [1, 4]
 ```
 <!-- /progress -->
 
@@ -161,8 +163,8 @@ From [BRIEF.md](BRIEF.md) and [DECISIONS.md](DECISIONS.md) (2026-10-31):
 | # | Milestone | State |
 |---|------|------|
 | 1 | Data inventory: read the install's tables | done (0.1.0) |
-| 2 | Read entry contents: decompress the cas blocks | next |
-| 3 | Import step: nfsh's own compact copy of the data | not started |
+| 2 | Read entry contents: decompress the cas blocks | done (0.2.0) |
+| 3 | Import step: nfsh's own compact copy of the data | next |
 | 4 | Palm City viewer: fly-through, frame time, day/night | not started |
 | 5 | Baseline against the original: same camera path, same PC, screenshots | not started |
 | 6 | One drivable car, then races, police, campaign | later |
