@@ -1,6 +1,6 @@
 //! nfsh: a new engine for Need for Speed: Heat. For now it has three commands: an
-//! inventory of the owner's install, a check that every entry in it decompresses, and
-//! the import into nfsh's own store.
+//! inventory of the owner's install, a check that every entry of the install or of a
+//! store decompresses, and the import into nfsh's own store.
 
 mod import;
 mod inventory;
@@ -12,13 +12,13 @@ use std::time::Instant;
 
 const USAGE: &str = "usage: nfsh inventory [INSTALL]
   Lists what a Need for Speed: Heat install holds, as Markdown on stdout.
-usage: nfsh verify [INSTALL]
-  Decompresses every entry the install's tables point at and checks its size
-  (Windows only: it uses the install's own Oodle library).
+usage: nfsh verify [INSTALL | STORE]
+  Decompresses every entry of an install or an nfsh store and checks its size
+  (an install only on Windows: it uses the install's own Oodle library).
 usage: nfsh import [INSTALL] STORE
-  Copies the data the install still uses into nfsh's own store in the folder STORE
-  (created if missing; an earlier store there is replaced), checks the copy, and
-  prints its size.
+  Recompresses the data the install still uses into nfsh's own store in the folder
+  STORE (created if missing; an earlier store there is replaced), checks the copy,
+  and prints its size. Windows only, like verifying an install.
 INSTALL is the game folder (with Data/ and Patch/); default: $NFSH_INSTALL.";
 
 fn main() -> ExitCode {

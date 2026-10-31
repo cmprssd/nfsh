@@ -1,5 +1,6 @@
 //! `nfsh verify`: decompresses every entry the install's current bundles and chunk
-//! tables point at, and checks each against the sizes the tables give.
+//! tables point at, or every entry of an nfsh store, and checks each against the
+//! sizes the tables give.
 //!
 //! An ebx or res entry must decompress to exactly its listed size. A chunk listed in a
 //! bundle stores the chunk's blocks that cover its logical range (see
@@ -11,9 +12,10 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use frostbite::cas::{Archives, Decoder, MAX_BLOCK};
-use frostbite::install::Install;
+use frostbite::cas::{Archives, MAX_BLOCK};
+use frostbite::install::{Install, Superbundle};
 use frostbite::oodle::Oodle;
+use frostbite::store::{self, Store};
 use frostbite::{Location, Result};
 
 /// At most this many failures are listed; all are counted.
@@ -118,13 +120,10 @@ fn add(entries: &mut BTreeMap<Location, Entry>, l: Location, kind: Kind, name: &
     entry.expect = entry.expect.and_then(|x| x.merge(e));
 }
 
-/// Every distinct stored entry of the patched install, with what it must decompress to.
-fn entries(install: &Install) -> Result<BTreeMap<Location, Entry>> {
+/// Every distinct stored entry the superbundles list, with what it must decompress to.
+fn entries(superbundles: &[Superbundle]) -> BTreeMap<Location, Entry> {
     let mut out = BTreeMap::new();
-    for name in &install.superbundles {
-        let Some(sb) = install.superbundle(name)? else {
-            continue;
-        };
+    for sb in superbundles {
         for b in sb.bundles.iter().map(|b| &b.bundle) {
             for a in &b.ebx {
                 let e = Expect::Exactly(a.original_size.into());
@@ -151,7 +150,7 @@ fn entries(install: &Install) -> Result<BTreeMap<Location, Entry>> {
             );
         }
     }
-    Ok(out)
+    out
 }
 
 /// A bundle's copy of a chunk holds the chunk's whole blocks from the one containing
@@ -167,11 +166,13 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Checks the entries against `decoder`, in archive order.
-fn check(install: &Install, decoder: &dyn Decoder) -> Result<Report> {
+/// Checks the superbundles' entries, decompressed by `read`, in archive order.
+fn check(
+    superbundles: &[Superbundle],
+    mut read: impl FnMut(Location) -> Result<Vec<u8>>,
+) -> Report {
     let mut report = Report::default();
-    let mut archives = Archives::new(install);
-    for (location, entry) in entries(install)? {
+    for (location, entry) in entries(superbundles) {
         let c = report.kinds.entry(entry.kind).or_default();
         c.entries += 1;
         c.stored += u64::from(location.size);
@@ -180,7 +181,7 @@ fn check(install: &Install, decoder: &dyn Decoder) -> Result<Report> {
             report.fail(entry.kind, message);
             continue;
         };
-        let result = archives.read(location, decoder).map_err(|e| e.0);
+        let result = read(location).map_err(|e| e.0);
         let result = result.and_then(|data| {
             report.kinds.entry(entry.kind).or_default().decompressed += data.len() as u64;
             expect.check(data.len() as u64)
@@ -189,13 +190,24 @@ fn check(install: &Install, decoder: &dyn Decoder) -> Result<Report> {
             report.fail(entry.kind, format!("{:?} {}: {e}", entry.kind, entry.name));
         }
     }
-    Ok(report)
+    report
 }
 
-pub fn run(root: &Path) -> Result<Report> {
-    let install = Install::open(root)?;
-    let oodle = Oodle::load(root)?;
-    check(&install, &oodle)
+/// Verifies the store in `path` if it holds one, otherwise the install there.
+pub fn run(path: &Path) -> Result<Report> {
+    if path.join(store::INDEX).is_file() {
+        let store = Store::open(path)?;
+        let mut entries = store.entries()?;
+        return Ok(check(&store.superbundles, |l| entries.read(l)));
+    }
+    let install = Install::open(path)?;
+    let oodle = Oodle::load(path)?;
+    let mut superbundles = Vec::new();
+    for name in &install.superbundles {
+        superbundles.extend(install.superbundle(name)?);
+    }
+    let mut archives = Archives::new(&install);
+    Ok(check(&superbundles, |l| archives.read(l, &oodle)))
 }
 
 #[cfg(test)]

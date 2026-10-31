@@ -155,3 +155,55 @@ Settled while writing the brief (`docs/BRIEF.md`), over six rounds of questions.
   check reads only, which costs a second pass but no hashing code.
 - **The import refuses a folder holding anything but an earlier store**, which it
   replaces, index first. Why: it deletes files, so it must never touch the owner's.
+
+## 2026-10-31: Recompressing the store with zstd (chosen by the owner)
+
+Measured first, on a sample of every 4th bundle of `Win32/levels/mainlevel/mainlevel`
+(its ebx, res and chunks) and every 50th chunk of `Win32/chunks0`: 696 MiB stored as
+Oodle, 1,493 MiB decompressed. One zstd frame per
+entry, against the Oodle blocks it replaces; decode speeds single-threaded on the
+owner's PC:
+
+| zstd | size vs Oodle | encode MB/s | C zstd decode MB/s | ruzstd decode MB/s |
+|------|--------------:|------------:|-------------------:|-------------------:|
+| level 3 | +12.3% | 61 | 550 | 164 |
+| level 9 | +8.9% | 21 | 570 | 167 |
+| level 15 | +5.3% | 7.3 | 485 | 152 |
+| level 19 | +1.5% | 3.1 | 407 | 131 |
+| level 19, ebx dictionary | +0.9% | 4.4 | 420 | 131 |
+| one frame per bundle, level 19 | -10.6% | 3.1 | 459 | 157 |
+
+Oodle decoded the same entries at 482 MB/s. Level 22 came out the same size as 19. By
+part, level 19 with the dictionary: ebx -16.1%, res +6.5%, a bundle's chunks +4.8%,
+`chunks0`'s chunks -2.2%. A frame per bundle wins on ebx (-74%) but needs the whole
+bundle decoded to read one entry, and entries shared by several bundles can be in
+only one frame.
+
+- **Level 19, one frame per entry, ebx with a dictionary.** The owner chose it knowing
+  the store comes out about the same size as the Oodle one: what it buys is a store
+  that reads anywhere, without the install's Oodle library, at an import of about 80
+  minutes instead of 27. On the whole install it did better than the sample: 28.07 GiB
+  against 29.49 GiB with the Oodle blocks (-4.8%), in 117 minutes.
+- **Decoded with the C zstd library (the `zstd` crate), not a pure-Rust decoder.**
+  Why: it decodes about as fast as Oodle, where ruzstd is 3-4 times slower, and the
+  import needs the C encoder anyway. The cost: building needs a C compiler on Linux too.
+  This replaces "a pure-Rust decoder" in the entry above.
+
+## 2026-10-31: The zstd store in detail (decided by Claude, pending review)
+
+- **Each frame carries its decompressed size and zstd's content checksum**, and a
+  reader refuses a location that isn't exactly one frame. Why: a damaged pack is
+  reported, never decoded into wrong data or a huge allocation (frames over 1 GiB are
+  refused); the checksum costs 4 bytes an entry.
+- **The dictionary is 256 KiB, trained at import on up to 8,000 ebx spread evenly over
+  the install's**, and kept in the index; a frame names its dictionary by id. Why: the
+  size measured best on the sample; storing it in the index keeps the store one index
+  plus packs, and the frame header already says which frames need it.
+- **The import uses every core**, decompressing and compressing in batches of 256 MiB
+  stored, which are then written in archive order. Why: level 19 runs at about 3 MB/s
+  a core, so on one core the import would take hours.
+- **The self-check decompresses both sides**: every entry from the install (Oodle)
+  and from the store (zstd) must be identical. Why: the install may be deleted
+  afterwards, and this proves the copy end to end, the codec included.
+- **`nfsh verify` accepts a store as well as an install**, checking the same sizes.
+  Why: it is the way to check a store on a machine without the game, Linux included.

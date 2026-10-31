@@ -141,9 +141,12 @@ pack_NN.nfsh      stored entries, back to back, NN from 00
 ```
 
 A pack holds each distinct entry the patched tables point at once, in archive order,
-byte for byte as in the cas archive (Heat's block chains, see "Stored blocks"). A pack
-is closed when the next entry would take it past 1 GiB. The `Data/` bytes the patch
-replaced are not copied.
+as one [zstd](https://www.rfc-editor.org/rfc/rfc8878) frame of the entry's decompressed
+bytes (what Heat's block chain decompresses to, see "Stored blocks"): level 19, with
+the decompressed size and the content checksum in the frame. ebx frames are compressed
+with the index's dictionary and name its id in their header; the others use none. A
+location covers exactly one frame. A pack is closed when the next frame would take it
+past 1 GiB. The `Data/` bytes the patch replaced are not copied.
 
 The index is big-endian like Heat's tables. A string or byte run is a u32 length and
 the bytes; a list is a u32 count and the items; a location is the pack (u8), the
@@ -151,8 +154,9 @@ offset in it and the size (u32 each), and must lie inside the pack.
 
 | field | |
 |-------|--|
-| magic, version | `NFSHSTOR`, u32 1 |
+| magic, version | `NFSHSTOR`, u32 2 (version 1 kept Heat's Oodle blocks) |
 | packs | list of u64 sizes (checked against the files on open) |
+| dictionary | byte run: the ebx frames' zstd dictionary, empty for none |
 | superbundles | list: name, bundles, chunks |
 | bundle | name, layer (u8: 0 `Data/`, 1 `Patch/`), metadata DbObject as stored, ebx list, res list, chunk list |
 | ebx | name, SHA-1, decompressed size (u32), location |

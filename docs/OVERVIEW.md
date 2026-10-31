@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-10-31 (6 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-10-31 (7 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -54,7 +54,7 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
-2 crates in one Cargo workspace, 3,105 lines of Rust (sources and tests), 35 tests.
+2 crates in one Cargo workspace, 3,602 lines of Rust (sources and tests), 41 tests.
 <!-- /progress -->
 
 ```mermaid
@@ -69,8 +69,8 @@ flowchart BT
 <!-- progress:crates -->
 | Crate | Rust lines | Tests | What it does |
 |------|------:|------:|------|
-| `frostbite` | 2,184 | 26 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store |
-| `nfsh` | 921 | 9 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store |
+| `frostbite` | 2,660 | 32 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store |
+| `nfsh` | 942 | 9 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store |
 <!-- /progress -->
 
 Every reader checks bounds and returns an error on malformed input, so a damaged or
@@ -104,7 +104,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 11 decision entries, 6 chosen by the owner, 4 made by Claude for review.
+  So far: 13 decision entries, 7 chosen by the owner, 5 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -122,15 +122,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-7 commits, 6 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 4 feat, 1 ci,
-1 docs. About 5,402 lines added and 69 removed; 33 tracked files.
+8 commits, 7 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 5 feat, 1 ci,
+1 docs. About 6,224 lines added and 209 removed; 34 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
     x-axis ["Oct 30", "Oct 31"]
-    y-axis "PRs" 0 --> 7
-    bar [1, 5]
+    y-axis "PRs" 0 --> 8
+    bar [1, 6]
 ```
 <!-- /progress -->
 
@@ -158,13 +158,23 @@ in [INVENTORY.md](INVENTORY.md).
 
 ### The store
 
-`nfsh import` (0.3.0, 2026-10-31) copied the 1,317,687 distinct entries the patched
-tables use into nfsh's store: 30 packs of 29.35 GiB plus a 148 MiB index, **29.49 GiB
-in place of the 33.15 GiB of cas archives** (3.66 GiB less), checked byte for byte
-against the install, in 27 minutes. The packs are about 70 MiB above the 29.28 GiB of
-live bytes because some distinct entries overlap in the archives and each is copied
-whole. The blocks are still Heat's Oodle; recompressing them with zstd is the next
-step.
+`nfsh import` writes the 1,317,687 distinct entries the patched tables use into nfsh's
+store, each recompressed from Heat's Oodle blocks into one zstd frame (level 19, the
+ebx with a dictionary), and checks every entry against the install. Measured on the
+owner's install, 2026-10-31:
+
+| Store | Packs | Index | Total | Import |
+|-------|------:|------:|------:|-------:|
+| cas archives (the install) | | | 33.15 GiB | |
+| 0.3.0: live entries copied, Oodle blocks kept | 30, 29.35 GiB | 148 MiB | 29.49 GiB | 27 min |
+| **0.4.0: recompressed with zstd** | 29, 27.92 GiB | 148 MiB | **28.07 GiB** | 117 min |
+
+zstd ends up 4.8% smaller than Oodle (the sample predicted about the same size) and
+makes the store readable anywhere: `nfsh verify` decodes all 65.4 GiB from it in 5
+minutes with no game files. How the level was chosen, with the sample measured, is in
+[DECISIONS.md](DECISIONS.md). The 0.3.0 packs were about 70 MiB above the 29.28 GiB of
+live bytes because some distinct entries overlap in the archives; each is still stored
+whole.
 
 ## Where it is going
 
@@ -174,7 +184,7 @@ From [BRIEF.md](BRIEF.md) and [DECISIONS.md](DECISIONS.md) (2026-10-31):
 |---|------|------|
 | 1 | Data inventory: read the install's tables | done (0.1.0) |
 | 2 | Read entry contents: decompress the cas blocks | done (0.2.0) |
-| 3 | Import step: nfsh's own compact copy of the data | in progress (0.3.0: dead data dropped) |
+| 3 | Import step: nfsh's own compact copy of the data | done (0.3.0: dead data dropped; 0.4.0: zstd) |
 | 4 | Palm City viewer: fly-through, frame time, day/night | not started |
 | 5 | Baseline against the original: same camera path, same PC, screenshots | not started |
 | 6 | One drivable car, then races, police, campaign | later |

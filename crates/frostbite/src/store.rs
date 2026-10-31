@@ -1,19 +1,21 @@
-//! nfsh's own copy of an install's data, a *store*: the stored entries the patched
-//! tables still point at, copied into a few packs (`pack_NN.nfsh`), and one index
+//! nfsh's own copy of an install's data, a *store*: the entries the patched tables
+//! still point at, recompressed into a few packs (`pack_NN.nfsh`), and one index
 //! (`index.nfsh`) holding the superbundles with their bundles and chunks. The dead
-//! `Data/` bytes the patch replaced are left behind. Entries keep Heat's stored blocks
-//! as they are, so [`crate::cas::decompress`] reads them unchanged.
+//! `Data/` bytes the patch replaced are left behind. Each entry is one zstd frame (see
+//! [`crate::frames`]), so a store reads anywhere, without the install's Oodle library.
 //!
 //! In a store, the archive a [`Location`] names is a pack: [`CasRef::cas`] is the pack
 //! number, with `patch` false and `package` 0. The index is our own format (see
 //! `docs/FORMATS.md`), big-endian like Heat's tables.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::cas::Archives;
+use crate::cas::{Archives, Decoder};
+use crate::frames::{self, FrameDecoder, FrameEncoder};
 use crate::install::{BundleEntry, ChunkEntry, Install, Layer, Superbundle};
 use crate::reader::Reader;
 use crate::sb::{Asset, Bundle, Chunk, Res};
@@ -22,11 +24,18 @@ use crate::{CasRef, Location, Result, bail};
 
 pub const INDEX: &str = "index.nfsh";
 const MAGIC: &[u8; 8] = b"NFSHSTOR";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// A pack is closed once the next entry would take it past this size, so packs stay
 /// easy to copy and their offsets fit the 32-bit [`Location::offset`].
 pub const PACK_LIMIT: u64 = 1 << 30;
+
+/// The import works through the entries in batches of about this many stored bytes,
+/// holding one batch's frames in memory at a time.
+const BATCH: u64 = 256 << 20;
+
+/// The most ebx the dictionary is trained on, spread evenly over the install's.
+const DICTIONARY_SAMPLES: usize = 8000;
 
 pub fn pack_name(n: u8) -> String {
     format!("pack_{n:02}.nfsh")
@@ -50,6 +59,8 @@ pub struct Store {
     pub superbundles: Vec<Superbundle>,
     /// Each pack's size in bytes.
     pub packs: Vec<u64>,
+    /// The ebx frames' dictionary; empty for none.
+    pub dictionary: Vec<u8>,
 }
 
 impl Store {
@@ -58,9 +69,8 @@ impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
         let path = dir.join(INDEX);
         let bytes = std::fs::read(&path).map_err(|e| io_error(&path, e))?;
-        let (superbundles, packs) =
-            decode(&bytes).map_err(|e| crate::Error(format!("{}: {e}", path.display())))?;
-        for (n, &size) in packs.iter().enumerate() {
+        let index = decode(&bytes).map_err(|e| crate::Error(format!("{}: {e}", path.display())))?;
+        for (n, &size) in index.packs.iter().enumerate() {
             let path = dir.join(pack_name(n as u8));
             let len = std::fs::metadata(&path)
                 .map_err(|e| io_error(&path, e))?
@@ -71,8 +81,9 @@ impl Store {
         }
         Ok(Self {
             dir: dir.to_owned(),
-            superbundles,
-            packs,
+            superbundles: index.superbundles,
+            packs: index.packs,
+            dictionary: index.dictionary,
         })
     }
 
@@ -81,8 +92,33 @@ impl Store {
         known.then(|| self.dir.join(pack_name(cas.cas)))
     }
 
+    /// Reads the frames as stored.
     pub fn archives(&self) -> Archives<'_> {
         Archives::with_paths(|cas| self.pack_path(cas))
+    }
+
+    /// Reads the entries, decompressed.
+    pub fn entries(&self) -> Result<Entries<'_>> {
+        Ok(Entries {
+            archives: self.archives(),
+            frames: FrameDecoder::new(&self.dictionary)?,
+        })
+    }
+}
+
+/// A store's entries, read and decompressed; one per thread.
+pub struct Entries<'a> {
+    archives: Archives<'a>,
+    frames: FrameDecoder,
+}
+
+impl Entries<'_> {
+    /// The decompressed entry at `location`.
+    pub fn read(&mut self, location: Location) -> Result<Vec<u8>> {
+        let frame = self.archives.stored(location)?;
+        self.frames
+            .decode(&frame)
+            .map_err(|e| crate::Error(format!("{location:?}: {e}")))
     }
 }
 
@@ -99,29 +135,123 @@ pub fn each_location(sb: &mut Superbundle, f: &mut impl FnMut(&mut Location)) {
     sb.chunks.iter_mut().for_each(|c| f(&mut c.chunk.location));
 }
 
-/// Places each distinct stored entry in the packs, in the order given (archive order,
-/// so the copy reads each archive front to back). A pack is closed when the next entry
-/// would take a non-empty pack past `limit`.
-pub fn plan(entries: &BTreeSet<Location>, limit: u64) -> Result<BTreeMap<Location, Location>> {
-    let mut out = BTreeMap::new();
-    let (mut pack, mut pos) = (0u8, 0u64);
-    for &source in entries {
-        let size = u64::from(source.size);
-        if pos > 0 && pos + size > limit {
-            let Some(next) = pack.checked_add(1) else {
+/// Places entries in the packs one after another, in the order given (archive order,
+/// so the import reads each archive front to back). A pack is closed when the next
+/// entry would take a non-empty pack past the limit.
+pub struct Packer {
+    limit: u64,
+    pack: u8,
+    pos: u64,
+}
+
+impl Packer {
+    pub fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            pack: 0,
+            pos: 0,
+        }
+    }
+
+    /// Where the next entry, `size` bytes, goes.
+    pub fn place(&mut self, size: u32) -> Result<Location> {
+        let len = u64::from(size);
+        if self.pos > 0 && self.pos + len > self.limit {
+            let Some(next) = self.pack.checked_add(1) else {
                 bail!("the entries need more than 256 packs");
             };
-            (pack, pos) = (next, 0);
+            (self.pack, self.pos) = (next, 0);
         }
-        let target = Location {
-            cas: pack_ref(pack),
-            offset: pos as u32,
-            size: source.size,
+        let Ok(offset) = u32::try_from(self.pos) else {
+            bail!("pack {} is past 4 GiB", self.pack);
         };
-        out.insert(source, target);
-        pos += size;
+        self.pos += len;
+        Ok(Location {
+            cas: pack_ref(self.pack),
+            offset,
+            size,
+        })
     }
-    Ok(out)
+}
+
+/// Maps `f` over `items` on every core, each thread with its own state from `init`
+/// and taking the next item when it is free; the results keep the items' order. Any
+/// error fails the whole map.
+pub fn in_parallel<I: Sync, S, T: Send>(
+    items: &[I],
+    init: impl Fn() -> Result<S> + Sync,
+    f: impl Fn(&mut S, &I) -> Result<T> + Sync,
+) -> Result<Vec<T>> {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let next = AtomicUsize::new(0);
+    let worker = || -> Result<Vec<(usize, T)>> {
+        let mut state = init()?;
+        let mut out = Vec::new();
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            let Some(item) = items.get(i) else {
+                return Ok(out);
+            };
+            out.push((i, f(&mut state, item)?));
+        }
+    };
+    let mut done = std::thread::scope(|s| {
+        let workers: Vec<_> = (0..threads.min(items.len()))
+            .map(|_| s.spawn(worker))
+            .collect();
+        let mut done = Vec::with_capacity(items.len());
+        for w in workers {
+            match w.join() {
+                Ok(results) => done.extend(results?),
+                Err(_) => bail!("a worker thread panicked"),
+            }
+        }
+        Ok(done)
+    })?;
+    done.sort_unstable_by_key(|&(i, _)| i);
+    Ok(done.into_iter().map(|(_, t)| t).collect())
+}
+
+/// Splits `items` into runs of about `limit` bytes as `size` counts them.
+fn batches<T>(items: &[T], size: impl Fn(&T) -> u64, limit: u64) -> Vec<&[T]> {
+    let mut out = Vec::new();
+    let (mut start, mut bytes) = (0, 0);
+    for (i, item) in items.iter().enumerate() {
+        if bytes >= limit {
+            out.push(&items[start..i]);
+            (start, bytes) = (i, 0);
+        }
+        bytes += size(item);
+    }
+    if start < items.len() {
+        out.push(&items[start..]);
+    }
+    out
+}
+
+/// A dictionary for the ebx frames, trained on up to [`DICTIONARY_SAMPLES`] of the
+/// ebx `entries` (flagged `true`), spread evenly over them.
+fn train_dictionary(
+    install: &Install,
+    decoder: &(dyn Decoder + Sync),
+    entries: &[(Location, bool)],
+) -> Result<Vec<u8>> {
+    let ebx: Vec<Location> = entries.iter().filter(|e| e.1).map(|e| e.0).collect();
+    let step = ebx.len().div_ceil(DICTIONARY_SAMPLES).max(1);
+    let picked: Vec<Location> = ebx.into_iter().step_by(step).collect();
+    let samples = in_parallel(
+        &picked,
+        || Ok(Archives::new(install)),
+        |a, &l| read(a, l, decoder),
+    )?;
+    Ok(frames::train(&samples))
+}
+
+/// An install entry, decompressed, with its location in any error.
+fn read(archives: &mut Archives, l: Location, decoder: &dyn Decoder) -> Result<Vec<u8>> {
+    archives
+        .read(l, decoder)
+        .map_err(|e| crate::Error(format!("{l:?}: {e}")))
 }
 
 /// What an import wrote.
@@ -131,77 +261,132 @@ pub struct Imported {
     pub bundles: usize,
     pub entries: usize,
     pub packs: Vec<u64>,
+    /// The index's size, the dictionary included.
     pub index: u64,
+    pub dictionary: u64,
 }
 
-/// Copies the superbundles `names` of `install` into a store in `dir`, then reopens
-/// the store and checks that it lists the same superbundles and holds the same stored
-/// bytes, entry for entry. `dir` may be missing, empty, or an earlier store, which is
-/// replaced; anything else in it is refused. The index is written last, so an import
-/// that stops early leaves no index behind.
-pub fn import(install: &Install, names: &[String], dir: &Path) -> Result<Imported> {
+/// Copies the superbundles `names` of `install` into a store in `dir`: every distinct
+/// entry they point at is decompressed with `decoder` (the install's Oodle) and written
+/// as one frame, on every core. Then it reopens the store and checks that it lists the
+/// same superbundles and that every entry reads back as the install's, byte for byte.
+/// `dir` may be missing, empty, or an earlier store, which is replaced; anything else
+/// in it is refused. The index is written last, so an import that stops early leaves
+/// no index behind. `progress` hears of each pack written and of the check.
+pub fn import(
+    install: &Install,
+    decoder: &(dyn Decoder + Sync),
+    names: &[String],
+    dir: &Path,
+    progress: &mut dyn FnMut(&str),
+) -> Result<Imported> {
     clear(dir)?;
     let mut superbundles = Vec::new();
     for name in names {
         superbundles.extend(install.superbundle(name)?);
     }
-    let mut entries = BTreeSet::new();
+    // Every distinct entry, in archive order, and whether it is an ebx.
+    let mut entries = BTreeMap::new();
     for sb in &mut superbundles {
         each_location(sb, &mut |l| {
-            entries.insert(*l);
+            entries.entry(*l).or_insert(false);
         });
+        for a in sb.bundles.iter().flat_map(|b| &b.bundle.ebx) {
+            entries.insert(a.location, true);
+        }
     }
-    let plan = plan(&entries, PACK_LIMIT)?;
+    let entries: Vec<(Location, bool)> = entries.into_iter().collect();
+    let dictionary = train_dictionary(install, decoder, &entries)?;
+    let prepared = frames::prepare(&dictionary);
 
+    let total: u64 = entries.iter().map(|e| u64::from(e.0.size)).sum();
+    let (mut done, mut packer) = (0, Packer::new(PACK_LIMIT));
+    let mut placed = BTreeMap::new();
     let mut packs: Vec<u64> = Vec::new();
     let mut out: Option<(PathBuf, BufWriter<File>)> = None;
-    let mut source = Archives::new(install);
-    for (&from, to) in &plan {
-        if usize::from(to.cas.cas) == packs.len() {
-            if let Some((path, file)) = out.take() {
-                finish(&path, file)?;
+    for batch in batches(&entries, |e| e.0.size.into(), BATCH) {
+        let frames = in_parallel(
+            batch,
+            || {
+                Ok((
+                    Archives::new(install),
+                    FrameEncoder::new(prepared.as_ref())?,
+                ))
+            },
+            |(archives, encoder), &(l, ebx)| encoder.encode(&read(archives, l, decoder)?, ebx),
+        )?;
+        for (&(from, _), frame) in batch.iter().zip(frames) {
+            let Ok(size) = u32::try_from(frame.len()) else {
+                bail!("{from:?}: a frame of {} bytes", frame.len());
+            };
+            let to = packer.place(size)?;
+            if usize::from(to.cas.cas) == packs.len() {
+                if let Some((path, file)) = out.take() {
+                    finish(&path, file)?;
+                    progress(&format!(
+                        "{} written ({}%)",
+                        path.display(),
+                        done * 100 / total
+                    ));
+                }
+                let path = dir.join(pack_name(to.cas.cas));
+                let file = File::create(&path).map_err(|e| io_error(&path, e))?;
+                out = Some((path, BufWriter::with_capacity(1 << 20, file)));
+                packs.push(0);
             }
-            let path = dir.join(pack_name(to.cas.cas));
-            let file = File::create(&path).map_err(|e| io_error(&path, e))?;
-            out = Some((path, BufWriter::with_capacity(1 << 20, file)));
-            packs.push(0);
+            let (Some((path, file)), Some(len)) = (&mut out, packs.last_mut()) else {
+                bail!("{from:?} is placed before the first pack");
+            };
+            file.write_all(&frame).map_err(|e| io_error(path, e))?;
+            *len += frame.len() as u64;
+            done += u64::from(from.size);
+            placed.insert(from, to);
         }
-        let (Some((path, file)), Some(len)) = (&mut out, packs.last_mut()) else {
-            bail!("{from:?} is placed before the first pack");
-        };
-        let bytes = source.stored(from)?;
-        file.write_all(&bytes).map_err(|e| io_error(path, e))?;
-        *len += bytes.len() as u64;
     }
     if let Some((path, file)) = out {
         finish(&path, file)?;
+        progress(&format!("{} written (100%)", path.display()));
     }
 
     for sb in &mut superbundles {
-        each_location(sb, &mut |l| *l = plan[l]);
+        each_location(sb, &mut |l| *l = placed[l]);
     }
-    let index = encode(&superbundles, &packs);
+    let index = Index {
+        packs,
+        dictionary,
+        superbundles,
+    };
+    let bytes = encode(&index);
     let tmp = dir.join(format!("{INDEX}.tmp"));
-    std::fs::write(&tmp, &index).map_err(|e| io_error(&tmp, e))?;
+    std::fs::write(&tmp, &bytes).map_err(|e| io_error(&tmp, e))?;
     let path = dir.join(INDEX);
     std::fs::rename(&tmp, &path).map_err(|e| io_error(&path, e))?;
 
+    progress("checking the copy");
     let store = Store::open(dir)?;
-    if store.superbundles != superbundles {
+    if store.superbundles != index.superbundles || store.dictionary != index.dictionary {
         bail!("{}: the index reads back differently", path.display());
     }
-    let mut copy = store.archives();
-    for (&from, &to) in &plan {
-        if source.stored(from)? != copy.stored(to)? {
-            bail!("{from:?}: the copy at {to:?} differs");
-        }
+    let pairs: Vec<(Location, Location)> = placed.into_iter().collect();
+    for batch in batches(&pairs, |p| p.0.size.into(), BATCH) {
+        in_parallel(
+            batch,
+            || Ok((Archives::new(install), store.entries()?)),
+            |(source, copy), &(from, to)| {
+                if read(source, from, decoder)? != copy.read(to)? {
+                    bail!("{from:?}: the copy at {to:?} differs");
+                }
+                Ok(())
+            },
+        )?;
     }
     Ok(Imported {
-        superbundles: superbundles.len(),
-        bundles: superbundles.iter().map(|s| s.bundles.len()).sum(),
-        entries: plan.len(),
-        packs,
-        index: index.len() as u64,
+        superbundles: store.superbundles.len(),
+        bundles: store.superbundles.iter().map(|s| s.bundles.len()).sum(),
+        entries: pairs.len(),
+        packs: store.packs,
+        index: bytes.len() as u64,
+        dictionary: store.dictionary.len() as u64,
     })
 }
 
@@ -275,14 +460,25 @@ impl Writer {
     }
 }
 
-/// The index for `superbundles` (locations already in the packs) and the pack sizes.
-pub fn encode(superbundles: &[Superbundle], packs: &[u64]) -> Vec<u8> {
+/// What `index.nfsh` holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Index {
+    /// Each pack's size in bytes.
+    pub packs: Vec<u64>,
+    /// The ebx frames' dictionary; empty for none.
+    pub dictionary: Vec<u8>,
+    /// With their locations in the packs.
+    pub superbundles: Vec<Superbundle>,
+}
+
+pub fn encode(index: &Index) -> Vec<u8> {
     let mut w = Writer(MAGIC.to_vec());
     w.u32(VERSION);
-    w.count(packs);
-    packs.iter().for_each(|&p| w.u64(p));
-    w.count(superbundles);
-    for sb in superbundles {
+    w.count(&index.packs);
+    index.packs.iter().for_each(|&p| w.u64(p));
+    w.bytes(&index.dictionary);
+    w.count(&index.superbundles);
+    for sb in &index.superbundles {
         w.bytes(sb.name.as_bytes());
         w.count(&sb.bundles);
         for b in &sb.bundles {
@@ -419,8 +615,8 @@ impl IndexReader<'_> {
     }
 }
 
-/// Reads an index back: the superbundles and the pack sizes.
-pub fn decode(bytes: &[u8]) -> Result<(Vec<Superbundle>, Vec<u64>)> {
+/// Reads an index back.
+pub fn decode(bytes: &[u8]) -> Result<Index> {
     let mut r = Reader::new(bytes);
     if r.bytes(MAGIC.len()).ok() != Some(MAGIC.as_slice()) {
         bail!("not an nfsh store index");
@@ -437,11 +633,17 @@ pub fn decode(bytes: &[u8]) -> Result<(Vec<Superbundle>, Vec<u64>)> {
     if i.packs.len() > 256 {
         bail!("{} packs; at most 256", i.packs.len());
     }
+    let len = i.r.u32_be()? as usize;
+    let dictionary = i.r.bytes(len)?.to_vec();
     let superbundles = i.list(IndexReader::superbundle)?;
     if i.r.pos() != bytes.len() {
         bail!("{} bytes after the index", bytes.len() - i.r.pos());
     }
-    Ok((superbundles, i.packs))
+    Ok(Index {
+        packs: i.packs,
+        dictionary,
+        superbundles,
+    })
 }
 
 #[cfg(test)]
@@ -497,16 +699,23 @@ mod tests {
         }]
     }
 
+    fn index(packs: Vec<u64>) -> Index {
+        Index {
+            packs,
+            dictionary: b"dict".to_vec(),
+            superbundles: sample(),
+        }
+    }
+
     #[test]
     fn the_index_reads_back_as_written() {
-        let packs = vec![30, 35];
-        let bytes = encode(&sample(), &packs);
-        assert_eq!(decode(&bytes), Ok((sample(), packs)));
+        let bytes = encode(&index(vec![30, 35]));
+        assert_eq!(decode(&bytes), Ok(index(vec![30, 35])));
     }
 
     #[test]
     fn damaged_indexes_are_refused() {
-        let bytes = encode(&sample(), &[30, 35]);
+        let bytes = encode(&index(vec![30, 35]));
         for len in [0, 8, 20, bytes.len() - 1] {
             assert!(decode(&bytes[..len]).is_err(), "truncated to {len}");
         }
@@ -514,32 +723,99 @@ mod tests {
         longer.push(0);
         assert!(decode(&longer).is_err());
         // The second pack is too short for the toc chunk at 30..35.
-        assert!(decode(&encode(&sample(), &[30, 34])).is_err());
+        assert!(decode(&encode(&index(vec![30, 34]))).is_err());
+        // A version 1 store kept Heat's Oodle blocks; this nfsh can't read it.
         let mut version = bytes.clone();
-        version[11] = 2;
-        assert!(decode(&version).unwrap_err().0.contains("version 2"));
+        version[11] = 1;
+        assert!(decode(&version).unwrap_err().0.contains("version 1"));
     }
 
     #[test]
     fn packs_close_before_the_limit_and_keep_entry_order() {
-        let src = |offset, size| Location {
-            cas: CasRef {
-                patch: true,
-                package: 1,
-                cas: 3,
-            },
-            offset,
-            size,
-        };
-        let entries = BTreeSet::from([src(0, 60), src(100, 40), src(200, 10), src(300, 150)]);
-        let placed = plan(&entries, 100).unwrap();
+        let mut packer = Packer::new(100);
+        let placed: Vec<_> = [60, 40, 10, 150]
+            .map(|size| packer.place(size).unwrap())
+            .into();
         assert_eq!(
-            placed.values().copied().collect::<Vec<_>>(),
+            placed,
             // 60 + 40 fills the first pack exactly; an entry larger than the limit
             // gets a pack of its own size.
             [at(0, 0, 60), at(0, 60, 40), at(1, 0, 10), at(2, 0, 150)]
         );
-        assert!(plan(&BTreeSet::new(), 100).unwrap().is_empty());
+        let mut full = Packer::new(1);
+        for _ in 0..256 {
+            full.place(1).unwrap();
+        }
+        assert!(full.place(1).is_err());
+    }
+
+    #[test]
+    fn parallel_maps_keep_order_and_fail_on_any_error() {
+        let items: Vec<u32> = (0..1000).collect();
+        let doubled = in_parallel(&items, || Ok(()), |_, &i| Ok(i * 2)).unwrap();
+        assert_eq!(doubled, items.iter().map(|i| i * 2).collect::<Vec<_>>());
+        let failed = in_parallel(
+            &items,
+            || Ok(()),
+            |_, &i| if i == 700 { bail!("item {i}") } else { Ok(i) },
+        );
+        assert_eq!(failed, Err(crate::Error("item 700".into())));
+        let none: Vec<u32> = in_parallel(&[], || Ok(()), |_, &i: &u32| Ok(i)).unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn batches_split_by_size() {
+        let sizes = [5u64, 5, 1, 20, 3];
+        let runs = batches(&sizes, |&s| s, 10);
+        assert_eq!(runs, [&[5, 5][..], &[1, 20], &[3]]);
+        assert!(batches(&[] as &[u64], |&s| s, 10).is_empty());
+    }
+
+    /// Writes a store by hand: two frames in one pack, one of them with the dictionary.
+    #[test]
+    fn a_store_reads_its_entries_back() {
+        let dir = std::env::temp_dir().join(format!("nfsh-entries-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let samples: Vec<Vec<u8>> = (0..300u32)
+            .map(|i| format!("ebx partition {i}; RaceVehicleBlueprint; car_{}", i % 37).into())
+            .collect();
+        let dictionary = frames::train(&samples);
+        let prepared = frames::prepare(&dictionary);
+        let mut encoder = FrameEncoder::new(prepared.as_ref()).unwrap();
+        let ebx = encoder.encode(&samples[3], true).unwrap();
+        let chunk = encoder.encode(&[7; 5000], false).unwrap();
+        std::fs::write(
+            dir.join(pack_name(0)),
+            [ebx.clone(), chunk.clone()].concat(),
+        )
+        .unwrap();
+        let mut sb = sample();
+        let (e, c) = (ebx.len() as u32, chunk.len() as u32);
+        sb[0].bundles[0].bundle.ebx[0].location = at(0, 0, e);
+        sb[0].bundles[0].bundle.res.clear();
+        sb[0].bundles[0].bundle.chunks.clear();
+        sb[0].chunks[0].chunk.location = at(0, e, c);
+        let packs = vec![u64::from(e + c)];
+        std::fs::write(
+            dir.join(INDEX),
+            encode(&Index {
+                packs,
+                dictionary,
+                superbundles: sb,
+            }),
+        )
+        .unwrap();
+        let store = Store::open(&dir).unwrap();
+        let mut entries = store.entries().unwrap();
+        assert_eq!(entries.read(at(0, 0, e)).unwrap(), samples[3]);
+        assert_eq!(entries.read(at(0, e, c)).unwrap(), [7; 5000]);
+        // A location that isn't one whole frame is an error, as is one past the pack.
+        assert!(entries.read(at(0, 0, e + c)).is_err());
+        assert!(entries.read(at(0, e, c + 1)).is_err());
+        assert!(entries.read(at(1, 0, 4)).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -573,14 +849,22 @@ mod tests {
             eprintln!("NFSH_INSTALL not set; skipped");
             return;
         };
-        let install = Install::open(Path::new(&root)).unwrap();
+        let root = Path::new(&root);
+        let install = Install::open(root).unwrap();
+        let oodle = crate::oodle::Oodle::load(root).unwrap();
         let dir = std::env::temp_dir().join(format!("nfsh-import-test-{}", std::process::id()));
         let names = ["Win32/globals".to_owned()];
-        let imported = import(&install, &names, &dir).unwrap();
+        let mut said = Vec::new();
+        let imported = import(&install, &oodle, &names, &dir, &mut |s| {
+            said.push(s.to_owned())
+        });
+        let imported = imported.unwrap();
         let store = Store::open(&dir).unwrap();
         assert_eq!(store.superbundles.len(), 1);
         assert_eq!(store.packs, imported.packs);
         assert!(imported.entries > 100, "only {} entries", imported.entries);
+        assert!(imported.dictionary > 0, "no dictionary");
+        assert_eq!(said.last().map(String::as_str), Some("checking the copy"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

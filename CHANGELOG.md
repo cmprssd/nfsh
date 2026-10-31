@@ -4,6 +4,23 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-10-31
+
+### Changed
+
+- `nfsh import` now recompresses: every entry is decompressed with the install's
+  Oodle library and stored as one zstd frame (level 19; ebx with a dictionary trained
+  during the import), on every core. The owner's install comes out at 28.07 GiB, down
+  from 29.49 GiB with the Oodle blocks kept, in about two hours. The self-check now
+  decompresses both sides and compares every entry. The import runs on Windows only,
+  since it needs Oodle, and prints its progress pack by pack. Stores written by 0.3.0
+  (version 1) are refused; import again.
+
+### Added
+
+- `nfsh verify STORE` checks an nfsh store the way it checks an install, on any system
+  and without the game's files.
+
 ## [0.3.0] - 2026-10-31
 
 ### Added
