@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use crate::ebx::Partition;
 use crate::reader::{Reader, cstr_at};
 use crate::store::{Entries, Store, guid_order};
+use crate::texture::{TextureParameter, material_textures};
 use crate::{Location, Result, bail};
 
 /// The res type of a mesh set: the hash of `MeshSet` (see [`crate::sb::res_type_hash`]).
@@ -459,6 +460,19 @@ impl<'s> Meshes<'s> {
             bail!("no partition {guid:02x?} in the store");
         };
         self.by_location(asset.location, &asset.name)
+    }
+
+    /// The textures each material of the mesh asset in the partition `guid` names
+    /// (see [`crate::texture::material_textures`]).
+    pub fn materials(&mut self, guid: &[u8; 16]) -> Result<Vec<Vec<TextureParameter>>> {
+        let copy = self.store.partitions(guid)?.next();
+        let Some((_, asset)) = copy.and_then(|at| self.store.ebx_at(at)) else {
+            bail!("no partition {guid:02x?} in the store");
+        };
+        let data = self.entries.read(asset.location)?;
+        let p =
+            Partition::parse(&data).map_err(|e| crate::Error(format!("{}: {e}", asset.name)))?;
+        material_textures(&p)
     }
 
     /// The mesh set of the mesh asset in the ebx `name`.

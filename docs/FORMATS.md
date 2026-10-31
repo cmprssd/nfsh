@@ -474,6 +474,42 @@ format above. Every one of the 32,394 texture res in the store parses by these r
 (32,333 flat, 37 cubes, 8 arrays, 16 volumes), every mip of a format above having
 the size its blocks give.
 
+## Lighting
+
+A time of day's look is a **visual environment**: a partition with a
+`VisualEnvironmentBlueprint` and one instance per component (`OutdoorLightComponentData`,
+`SkyComponentData`, `TonemapComponentData`, `FogComponentData`, `ColorCorrectionComponentData`,
+`EnlightenComponentData`, …). Each component lists the fields it sets in
+`PropertyOverrides`; the rest keep their defaults. `frostbite::lighting` reads the sun,
+the sky's colours and the exposure.
+
+Palm City's are in `levels/mainlevel/lighting/visualenvironments/`, in bundles named
+by time of day:
+
+| bundle | visual environments |
+|--------|--------|
+| `tod_day3` | `lighting_mainlevel_day_02v03_neutral_ve` (midday), the midday tunnels |
+| `tod_day6` | `…_day_05_morning_neutral_ve`, the sunset tunnels |
+| `tod_day9` | `…_day_04_overcast_neutral_ve`, the overcast tunnels |
+| `tod_night3` | `lighting_mainlevel_twilight_02_neutral_ve`, the tealnight tunnels and radiosity |
+
+The fields read, at midday and at night (`twilight_02`):
+
+| component, field | midday | night | meaning |
+|------------------|-------:|------:|---------|
+| OutdoorLight `SunIntensity` | 170,000 | 6 | the sun's (moon's) illuminance, lux |
+| OutdoorLight `SunColor` | (0.99, 0.78, 0.60) | (1, 1, 1) | linear RGB |
+| OutdoorLight `SunRotationX`, `SunRotationY` | 153.1, 34.7 | 229.6, 90 | degrees: bearing and elevation, by the values (the bearing's axis is not checked) |
+| OutdoorLight `SkyColor`, `GroundColor` | (0.318, 0.341, 0.4), 0.05 grey | the same | not overridden: the defaults |
+| Sky `LuminanceScale` | 983 | 30 | the sky's brightness, in units not worked out |
+| Tonemap `MinEV`, `MaxEV` | 14.25, 15 | 0.75, 2.25 | the automatic exposure's range, EV at ISO 100 |
+| Tonemap `ExposureCompensation` | 1.1 | -1.1 | stops |
+| Tonemap `TonemapMethod` | `FilmicNeutral` | `FilmicNeutral` | |
+
+Each zone's `worldart_zs_<n>_midday` (and `_tealnight`, …) bundle holds the zone's
+precomputed indirect light for that time (a `LayerReferenceObjectData`, a
+`GiGridAssetSelectorData`, Enlighten data); not read yet.
+
 ## nfsh's store (our own format)
 
 What `nfsh import` writes: a folder with an index and a few packs.

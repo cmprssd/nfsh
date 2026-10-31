@@ -1,9 +1,12 @@
 //! A zone made ready to draw, on the CPU: every placed mesh's first LOD packed into
 //! one vertex and one index buffer, its placements into one instance buffer, and one
-//! instanced draw per mesh.
+//! instanced draw per section, with the section's diffuse texture.
+
+use std::collections::HashMap;
 
 use frostbite::level::{Mesh, Transform, Zone};
 use frostbite::mesh::{Geometry, Meshes};
+use frostbite::texture::TextureParameter;
 
 /// A placement's transform as the vertex shader reads it: right, up and forward,
 /// each followed by one coordinate of the translation.
@@ -17,15 +20,51 @@ pub struct Draw {
     pub vertex_offset: i32,
     pub first_instance: u32,
     pub instance_count: u32,
+    /// Index into [`Scene::textures`]; `None` draws plain grey.
+    pub texture: Option<u32>,
+    /// Pixels whose texture alpha is under a half are not drawn (leaves).
+    pub cutout: bool,
+}
+
+/// A mesh section and what it is drawn with.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Section {
+    pub geometry: Geometry,
+    /// The `TextureAsset` partition of its diffuse colour; `None` for none, or when
+    /// the section has no texture coordinates.
+    pub texture: Option<[u8; 16]>,
+    pub cutout: bool,
+}
+
+/// The texture parameters that hold a material's colour, in the order they are
+/// looked for, and whether the colour's alpha cuts the surface out.
+const COLOUR: [(&str, bool); 4] = [
+    ("Diffuse", false),
+    ("ColorAlpha", true),
+    ("Diffuse_Tiling", false),
+    ("foregroundBasecolor", false),
+];
+
+/// The colour texture of a material with the texture parameters `parameters`, and
+/// whether it cuts out.
+pub fn colour_texture(parameters: &[TextureParameter]) -> Option<([u8; 16], bool)> {
+    COLOUR.iter().find_map(|&(name, cutout)| {
+        let p = parameters.iter().find(|p| p.name == name)?;
+        Some((p.texture?, cutout))
+    })
 }
 
 /// What a zone draws, and what it could not.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Scene {
     pub positions: Vec<[f32; 3]>,
+    /// One per position; zero where a section has none.
+    pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
     pub instances: Vec<Instance>,
     pub draws: Vec<Draw>,
+    /// The `TextureAsset` partitions the draws use, each once.
+    pub textures: Vec<[u8; 16]>,
     /// Of where the drawn meshes are placed (their origins, not their vertices: some
     /// meshes' vertices are authored far from their origin, e.g. a speedway stand's
     /// steps already in world space, which their placements then move kilometres
@@ -53,13 +92,11 @@ fn instance(t: &Transform) -> Instance {
     ]
 }
 
-/// The draws for `zone`, its meshes' geometry from `load` (each mesh's sections). A
-/// mesh that fails to load, or has no triangles, is left out and listed.
-pub fn build(
-    zone: &Zone,
-    mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<Geometry>>,
-) -> Scene {
+/// The draws for `zone`, its meshes' sections from `load`. A mesh that fails to load,
+/// or has no triangles, is left out and listed.
+pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<Section>>) -> Scene {
     let mut scene = Scene::default();
+    let mut texture_index = HashMap::new();
     let mut by_mesh: Vec<Vec<&Transform>> = vec![Vec::new(); zone.meshes.len()];
     for p in &zone.placements {
         // Level::zone only makes valid indices; a bad one is left out, not a panic.
@@ -81,14 +118,42 @@ pub fn build(
             }
         };
         let (first_vertex, first_index) = (scene.positions.len(), scene.indices.len());
-        for g in &sections {
-            let base = (scene.positions.len() - first_vertex) as u32;
+        let first_draw = scene.draws.len();
+        let first_instance = scene.instances.len() as u32;
+        for s in &sections {
+            let g = &s.geometry;
+            let vertex_offset = scene.positions.len() as i32;
+            let index_start = scene.indices.len() as u32;
             scene.positions.extend_from_slice(&g.positions);
-            scene.indices.extend(g.indices.iter().map(|i| i + base));
+            match &g.uvs {
+                Some(uvs) if uvs.len() == g.positions.len() => scene.uvs.extend_from_slice(uvs),
+                _ => scene.uvs.resize(scene.positions.len(), [0.0; 2]),
+            }
+            scene.indices.extend_from_slice(&g.indices);
+            if g.indices.is_empty() {
+                continue;
+            }
+            // Without its own texture coordinates a section samples one texel.
+            let texture = s.texture.filter(|_| g.uvs.is_some()).map(|t| {
+                *texture_index.entry(t).or_insert_with(|| {
+                    scene.textures.push(t);
+                    scene.textures.len() as u32 - 1
+                })
+            });
+            scene.draws.push(Draw {
+                first_index: index_start,
+                index_count: g.indices.len() as u32,
+                vertex_offset,
+                first_instance,
+                instance_count: transforms.len() as u32,
+                texture,
+                cutout: s.cutout && texture.is_some(),
+            });
         }
-        let index_count = scene.indices.len() - first_index;
-        if index_count == 0 {
+        if scene.draws.len() == first_draw {
             scene.positions.truncate(first_vertex);
+            scene.uvs.truncate(first_vertex);
+            scene.indices.truncate(first_index);
             scene
                 .failed
                 .push((mesh.name.clone(), "no triangles".into()));
@@ -101,13 +166,6 @@ pub fn build(
                 max[k] = max[k].max(t.trans[k]);
             }
         }
-        scene.draws.push(Draw {
-            first_index: first_index as u32,
-            index_count: index_count as u32,
-            vertex_offset: first_vertex as i32,
-            first_instance: scene.instances.len() as u32,
-            instance_count: transforms.len() as u32,
-        });
         scene
             .instances
             .extend(transforms.iter().map(|t| instance(t)));
@@ -118,14 +176,29 @@ pub fn build(
     scene
 }
 
-/// Every section of the first LOD of the mesh asset `mesh`, from the store.
-pub fn first_lod(meshes: &mut Meshes, mesh: &Mesh) -> frostbite::Result<Vec<Geometry>> {
+/// Every section of the first LOD of the mesh asset `mesh`, with its material's
+/// colour texture, from the store. A section whose material is out of range is drawn
+/// grey.
+pub fn first_lod(meshes: &mut Meshes, mesh: &Mesh) -> frostbite::Result<Vec<Section>> {
     let set = meshes.by_partition(&mesh.partition)?;
     let Some(lod) = set.lods.first() else {
         return Err(frostbite::Error(format!("{}: no LODs", mesh.name)));
     };
+    let materials = meshes.materials(&mesh.partition)?;
     let data = meshes.chunk(lod)?;
-    lod.sections.iter().map(|s| lod.section(s, &data)).collect()
+    lod.sections
+        .iter()
+        .map(|s| {
+            let colour = materials
+                .get(s.material as usize)
+                .and_then(|m| colour_texture(m));
+            Ok(Section {
+                geometry: lod.section(s, &data)?,
+                texture: colour.map(|c| c.0),
+                cutout: colour.is_some_and(|c| c.1),
+            })
+        })
+        .collect()
 }
 
 /// A view of the whole scene from above one corner of its bounds, looking at the
@@ -163,11 +236,35 @@ mod tests {
         Placement { mesh, transform }
     }
 
-    fn triangle() -> Geometry {
-        Geometry {
-            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            uvs: None,
-            indices: vec![0, 1, 2],
+    fn triangle() -> Section {
+        Section {
+            geometry: Geometry {
+                positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                uvs: None,
+                indices: vec![0, 1, 2],
+            },
+            ..Section::default()
+        }
+    }
+
+    /// A triangle with texture coordinates, coloured by `texture`.
+    fn textured(texture: u8, cutout: bool) -> Section {
+        let mut s = triangle();
+        s.geometry.uvs = Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+        s.texture = Some([texture; 16]);
+        s.cutout = cutout;
+        s
+    }
+
+    fn draw(first_index: u32, vertex_offset: i32, first_instance: u32, instances: u32) -> Draw {
+        Draw {
+            first_index,
+            index_count: 3,
+            vertex_offset,
+            first_instance,
+            instance_count: instances,
+            texture: None,
+            cutout: false,
         }
     }
 
@@ -181,7 +278,7 @@ mod tests {
         let mut loaded = Vec::new();
         let scene = build(&zone, |m| {
             loaded.push(m.name.clone());
-            // b has two sections: its second's indices count from its own vertices.
+            // b has two sections, each drawn on its own, from its own first vertex.
             Ok(match m.name.as_str() {
                 "b" => vec![triangle(), triangle()],
                 _ => vec![triangle()],
@@ -189,31 +286,18 @@ mod tests {
         });
         assert_eq!(loaded, ["a", "b"]);
         assert_eq!(scene.positions.len(), 9);
-        assert_eq!(scene.indices, [0, 1, 2, 0, 1, 2, 3, 4, 5]);
+        assert_eq!(scene.uvs, [[0.0; 2]; 9]);
+        assert_eq!(scene.indices, [0, 1, 2, 0, 1, 2, 0, 1, 2]);
         assert_eq!(
             scene.draws,
-            [
-                Draw {
-                    first_index: 0,
-                    index_count: 3,
-                    vertex_offset: 0,
-                    first_instance: 0,
-                    instance_count: 1
-                },
-                Draw {
-                    first_index: 3,
-                    index_count: 6,
-                    vertex_offset: 3,
-                    first_instance: 1,
-                    instance_count: 2
-                },
-            ]
+            [draw(0, 0, 0, 1), draw(3, 3, 1, 2), draw(6, 6, 1, 2)]
         );
         // b's instances in placement order, the translation in each row's last value.
         assert_eq!(scene.instances[1][3], 10.0);
         assert_eq!(scene.instances[2][3], 20.0);
         assert_eq!(scene.instances[2][..3], [1.0, 0.0, 0.0]);
         assert_eq!(scene.triangles(), 1 + 2 * 2);
+        assert!(scene.textures.is_empty());
         assert_eq!(scene.bounds, Some(([0.0; 3], [20.0, 0.0, 0.0])));
         assert!(scene.failed.is_empty());
     }
@@ -227,9 +311,12 @@ mod tests {
         };
         let scene = build(&zone, |m| match m.name.as_str() {
             "broken" => Err(frostbite::Error("no chunk".into())),
-            "empty" => Ok(vec![Geometry {
-                positions: vec![[0.0; 3]],
-                ..Geometry::default()
+            "empty" => Ok(vec![Section {
+                geometry: Geometry {
+                    positions: vec![[0.0; 3]],
+                    ..Geometry::default()
+                },
+                ..Section::default()
             }]),
             _ => Ok(vec![triangle()]),
         });
@@ -242,8 +329,67 @@ mod tests {
         );
         assert_eq!(scene.placements_left_out, 3);
         assert_eq!(scene.positions.len(), 3);
+        assert_eq!(scene.uvs.len(), 3);
         assert_eq!(scene.draws.len(), 1);
         assert_eq!(scene.draws[0].vertex_offset, 0);
+    }
+
+    #[test]
+    fn sections_name_their_textures_once() {
+        let zone = Zone {
+            meshes: vec![mesh("a"), mesh("b")],
+            placements: vec![at(0, 0.0), at(1, 0.0)],
+            ..Zone::default()
+        };
+        let scene = build(&zone, |m| {
+            Ok(match m.name.as_str() {
+                // A section without texture coordinates is drawn grey, its texture
+                // not loaded.
+                "a" => vec![textured(7, false), {
+                    let mut s = textured(9, false);
+                    s.geometry.uvs = None;
+                    s
+                }],
+                _ => vec![textured(8, true), textured(7, false)],
+            })
+        });
+        assert_eq!(scene.textures, [[7; 16], [8; 16]]);
+        let used: Vec<_> = scene.draws.iter().map(|d| (d.texture, d.cutout)).collect();
+        assert_eq!(
+            used,
+            [
+                (Some(0), false),
+                (None, false),
+                (Some(1), true),
+                (Some(0), false)
+            ]
+        );
+        assert_eq!(scene.uvs[1], [1.0, 0.0]);
+        assert_eq!(scene.uvs[4], [0.0; 2]);
+    }
+
+    #[test]
+    fn the_colour_is_the_first_named_texture_set() {
+        let p = |name: &str, t: Option<u8>| TextureParameter {
+            name: name.into(),
+            texture: t.map(|t| [t; 16]),
+        };
+        assert_eq!(
+            colour_texture(&[p("Normal", Some(1)), p("Diffuse", Some(2))]),
+            Some(([2; 16], false))
+        );
+        assert_eq!(
+            colour_texture(&[p("Diffuse", None), p("ColorAlpha", Some(3))]),
+            Some(([3; 16], true))
+        );
+        assert_eq!(
+            colour_texture(&[p("Diffuse_Tiling", Some(4)), p("Diffuse", Some(5))]),
+            Some(([5; 16], false))
+        );
+        assert_eq!(
+            colour_texture(&[p("Normal", Some(1)), p("SMD", Some(2))]),
+            None
+        );
     }
 
     #[test]
@@ -272,7 +418,8 @@ mod tests {
         assert_eq!(scene.failed, []);
         // Counted on the owner's store, 2026-10-31.
         assert_eq!(zone.placements.len(), 2171);
-        assert_eq!(scene.draws.len(), 199);
+        assert_eq!(scene.draws.len(), 780);
+        assert_eq!(scene.textures.len(), 129);
         assert_eq!(scene.instances.len(), 2171);
         assert_eq!(scene.positions.len(), 1_356_354);
         assert_eq!(scene.triangles(), 3_988_832);

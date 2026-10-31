@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-10-31
+
+### Added
+
+- `nfsh view` draws the zone textured: each mesh section with its material's colour
+  texture, uploaded block-compressed as stored. Trees and bushes are cut out where
+  their texture is clear. A texture that can't be read or sampled is drawn grey and
+  listed when the viewer starts, never a crash.
+- Lit by Palm City's own time of day: the sun's direction, colour and strength, the
+  sky's colours and the camera's exposure come from the game's midday and night
+  lighting. N switches between midday and tealnight; `--night` starts at tealnight.
+- `--camera X,Y,Z,YAW,PITCH` starts the window, or takes the screenshot, from a given
+  point rather than above the zone.
+
 ## [0.9.0] - 2026-10-31
 
 ### Added

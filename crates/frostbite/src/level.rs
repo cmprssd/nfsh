@@ -204,14 +204,14 @@ pub(crate) fn elements<'a>(p: &Partition<'a>, o: Object, name: &str) -> Result<V
     (0..array.count).map(|e| p.element(&array, e)).collect()
 }
 
-fn float(p: &Partition, o: Object, name: &str) -> Result<f32> {
+pub(crate) fn float(p: &Partition, o: Object, name: &str) -> Result<f32> {
     match field(p, o, name)? {
         Some(Value::Float32(x)) => Ok(x),
         other => bail!("{}: {name} is {other:?}, not a float", p.name),
     }
 }
 
-fn vec3(p: &Partition, v: Option<Value>) -> Result<[f32; 3]> {
+pub(crate) fn vec3(p: &Partition, v: Option<Value>) -> Result<[f32; 3]> {
     let Some(Value::Struct(o)) = v else {
         bail!("{}: {v:?} is not a Vec3", p.name);
     };

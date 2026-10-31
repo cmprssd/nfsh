@@ -365,3 +365,43 @@ The plan, one PR each (decided by Claude, pending review):
 - **The frame is sRGB** (window and screenshot alike), so the shader works in linear
   colour; a UNORM window is accepted if it has no sRGB format.
 
+## 2026-10-31: Textured and lit (decided by Claude, pending review)
+
+- **One draw per mesh section, each with its material's colour texture**, the mesh's
+  placements shared as instances (780 draws for zone 495, from 199). Why: a section is
+  what names a material; merging sections that share a texture can come with culling.
+- **A material's colour is the first of `Diffuse`, `ColorAlpha`, `Diffuse_Tiling`,
+  `foregroundBasecolor` it names; `ColorAlpha` (the trees and bushes) is cut out where
+  its alpha is under a half.** Why: these are the colour parameters zone 495's
+  materials use (722 sections name `Diffuse`, 20 `ColorAlpha`); other textures (normal,
+  `SMD`, masks) wait for their shaders. Whether a `Diffuse` alpha means anything is not
+  known, so it is drawn opaque. A section without texture coordinates (207 of 780, the
+  position-only sections) is drawn grey.
+- **A texture that can't be read, isn't flat, has an unknown format or can't be sampled
+  is drawn grey and listed**, never an error. Why: the viewer must not crash, and the
+  list says what is missing. Block-compressed formats are used where the device
+  supports them (lavapipe and the HD 630 both do).
+- **One descriptor set per texture, bound per draw**, not a bindless array. Why: it needs
+  no Vulkan feature beyond 1.0 and no limit on the texture count; the draws are sorted
+  by texture, so a zone binds each texture once.
+- **Midday and tealnight are the visual environments `lighting_mainlevel_day_02v03_neutral_ve`
+  (bundle `tod_day3`) and `lighting_mainlevel_twilight_02_neutral_ve` (`tod_night3`)**,
+  and the zones' `_midday`/`_tealnight` bundles (Enlighten's precomputed light) are not
+  read yet. Why: the visual environments hold the sun, sky and exposure in plain
+  fields; `tod_day3` also holds the midday tunnel lighting and `tod_night3` the
+  tealnight radiosity, which ties each to its time of day. Enlighten's data is a format
+  of its own.
+- **Light is physical where the data says so**: the sun's illuminance (lux) and colour,
+  a light meter's exposure (a grey card in the sun, the compensation, then clamped to
+  `MinEV`/`MaxEV`), and a filmic tonemap for `FilmicNeutral`. The sky's brightness is
+  not in known units (`LuminanceScale` is 983 at midday, 30 at night), so `SkyColor`
+  and `GroundColor` are used as they are, after exposure. Why: guessing a unit would
+  hide that it is a guess; the image this gives looks right at both times (checked by
+  screenshot), and the comparison with the original will tell.
+- **The sun's `SunRotationX` is taken as the bearing from +z towards +x, and
+  `SunRotationY` as its elevation.** Not checked against the game: without shadows the
+  bearing barely shows. The baseline comparison will check it.
+- **N switches between midday and tealnight; `--night` starts at tealnight; `--camera
+  X,Y,Z,YAW,PITCH` starts somewhere other than the overview.** Why: the toggle is one
+  key, and a fixed camera lets a screenshot look closely (it showed the textures'
+  orientation) and will be the baseline's camera positions.
