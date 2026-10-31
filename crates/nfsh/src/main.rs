@@ -1,16 +1,18 @@
-//! nfsh: a new engine for Need for Speed: Heat. For now it has eight commands: an
+//! nfsh: a new engine for Need for Speed: Heat. For now it has nine commands: an
 //! inventory of the owner's install, a check that every entry of the install or of a
 //! store decompresses, the import into nfsh's own store, the store's partition GUIDs
 //! listed again, an ebx partition printed as text, Palm City's level graph, one
-//! mesh's geometry, and one texture.
+//! mesh's geometry, one texture, and a window to fly through one zone.
 
 mod ebx;
+mod fly;
 mod import;
 mod inventory;
 mod level;
 mod mesh;
 mod texture;
 mod verify;
+mod view;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -42,10 +44,34 @@ usage: nfsh mesh STORE NAME [OBJ]
 usage: nfsh texture STORE NAME [DDS]
   The texture asset NAME (a TextureAsset ebx) from the store in the folder STORE:
   its kind, size, format and mips; written to the file DDS as a .dds when given.
+usage: nfsh view STORE ZONE [--shot PNG] [--vsync]
+  Palm City's zone ZONE (as nfsh level takes it) from the store in the folder STORE,
+  untextured, in a window: mouse to look, W A S D to move, Space and C up and down,
+  Shift to go faster, Esc to quit; the title shows the frame rate and frame time.
+  With --shot, one frame of the whole zone is drawn without a window and written to
+  the file PNG. --vsync waits for the display.
 INSTALL is the game folder (with Data/ and Patch/); default: $NFSH_INSTALL.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(("view", rest)) = args.split_first().map(|(c, r)| (c.as_str(), r)) {
+        let Some(options) = view::options(rest) else {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        };
+        let start = Instant::now();
+        return match view::run(&options) {
+            Ok(text) => {
+                print!("{text}");
+                eprintln!("view took {:.1} s", start.elapsed().as_secs_f64());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("nfsh: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let env_install = || std::env::var_os("NFSH_INSTALL").map(PathBuf::from);
     // The import's last argument is the store; the install may come before it.
     let (cmd, install, store) = match args.as_slice() {

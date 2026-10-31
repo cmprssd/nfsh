@@ -4,6 +4,21 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-10-31
+
+### Added
+
+- `nfsh view STORE ZONE` opens a window on one streaming zone of Palm City (a number
+  such as 495, as `nfsh level` takes it) and flies through it: mouse to look, W A S D
+  to move, Space and C up and down, Shift to go faster, Esc to quit. The title shows
+  the frame rate, the frame time and the GPU's time per frame. `--vsync` waits for the
+  display; without it frames come as fast as the GPU draws them.
+- `nfsh view STORE ZONE --shot PNG` draws one frame of the whole zone without a window
+  and writes it as a PNG.
+- The renderer behind it (`nfsh-render`, Vulkan 1.3): every mesh the zone places is
+  drawn from its first LOD, untextured and lit by a fixed sun, with one instanced draw
+  per mesh. A mesh that cannot be read is listed and left out, never a crash.
+
 ## [0.8.0] - 2026-10-31
 
 ### Added

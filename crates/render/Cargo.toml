@@ -1,0 +1,22 @@
+[package]
+name = "nfsh-render"
+description = "nfsh's Vulkan renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ash = { version = "0.38.0", default-features = false, features = ["loaded", "std", "debug"] }
+ash-window = "0.13.0"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+frostbite = { path = "../frostbite" }
+gpu-allocator = { version = "0.28.0", default-features = false, features = ["std", "vulkan"] }
+raw-window-handle = "0.6.2"
+
+[build-dependencies]
+naga = { version = "30.0.1", features = ["wgsl-in", "spv-out"] }
