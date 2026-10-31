@@ -131,6 +131,109 @@ Resource type hashes are `h = h * 33 ^ byte`, from 5381, over the lowercased typ
 `Texture` is `0x6BDE20BA`. Names are confirmed only when the hash matches and the
 assets carrying it fit the name.
 
+## Ebx partitions
+
+An ebx entry, decompressed, is one *partition*: typed objects (*instances*) with the
+type descriptions they need, so it reads without any outside type database.
+**Little-endian**, unlike the tables. Worked out on 2,382 partitions of
+`levels/mainlevel`; the section layout below is checked on every distinct ebx in the
+install (see the end of this section).
+
+Header (0x40 bytes):
+
+| offset | field |
+|-------:|-------|
+| 0x00 | magic `0x0FB4D1CE` |
+| 0x04 | meta size: every section before the strings; also where the strings start |
+| 0x08 | the rest: meta size + this = the entry's size |
+| 0x0C | import count |
+| 0x10 | instance repeater count (u16) |
+| 0x12 | exported instance count (u16): the first this many instances have a GUID |
+| 0x14 | not worked out (u16; 1 in small partitions, 18 in the level root) |
+| 0x16, 0x18 | type count, field count (u16) |
+| 0x1A | names size (u16) |
+| 0x1C | strings size |
+| 0x20 | array repeater count |
+| 0x24 | instance data size |
+| 0x28 | the partition's GUID (16 bytes) |
+| 0x38 | boxed value count, then an offset (meaning not confirmed) |
+
+Then, back to back from 0x40:
+
+| section | each |
+|---------|------|
+| imports | 32 bytes: partition GUID, instance GUID (what this partition points at elsewhere) |
+| names | NUL-terminated type and field names, the header's size in bytes |
+| fields | 16 bytes: name hash, flags (u16), type index (u16), offset, second offset |
+| types | 16 bytes: name hash, first field index, field count (u8), alignment (u8), flags (u16), size (u16), second size (u16) |
+| instance repeaters | 4 bytes: type index (u16), how many instances in a row (u16) |
+| *pad to 16* | |
+| array repeaters | 12 bytes: offset, count, type index; the first is an empty array |
+| *pad to 16* | |
+| boxed value refs | 8 bytes each |
+| *pad to 16* | ends exactly at the meta size |
+| strings | NUL-terminated; the first is the partition's own name (`levels/MainLevel/MainLevel`) |
+| *pad to 16* | |
+| instance data | the header's size; then the arrays and boxed values to the end |
+
+Names are referenced by hash: `h = h * 33 ^ byte` from 5381 over the name as written
+(the res type hash without lowercasing): `$`, a type's link to its base type, is
+`0x0002B581`. A type's fields are a run of the field table, its base type first.
+
+A field's kind is bits 5-9 of its flags:
+
+| kind | | kind | |
+|-----:|---|-----:|---|
+| 0x00 | base type (`$`) | 0x0A | bool |
+| 0x02 | struct (value type) | 0x0C-0x12 | integers (widths not confirmed) |
+| 0x03 | class reference | 0x13 | float32 |
+| 0x04 | array | 0x15 | GUID |
+| 0x07 | string | 0x17 | resource reference (8 bytes: names a res by id) |
+| 0x08 | enum | 0x19 | type reference |
+| 0x09 | rare (1,718 fields), not worked out | 0x1A | boxed value |
+| | | 0x14, 0x16 | rare (about 1,600 fields each), not worked out |
+
+Types use the same flags: 0x0063 for a class, 0x0045 for a struct, 0x0089 for an
+array, 0xC10B for an enum, whose fields (flags 0x01E0) are its members.
+
+Instance data holds the instances in repeater order; an exported instance is its GUID
+followed by the instance. With each repeater's start aligned to 16, each instance to
+its type's alignment and the end to 16, the walk lands exactly on the header's size in
+2,374 of the 2,382 sampled partitions. The other 8, the level root among them, need a
+rule not found yet; the ebx reader will settle it.
+
+Checked on the whole install, 2026-10-31: every ebx in nfsh's store (725,119
+locations, 2.57 GiB decompressed) has the magic, sizes that add up to the entry, field
+ranges inside the field table, and sections that end exactly at the meta size; 14,338
+have boxed values. Counted over every type in them, the kinds above are all that
+occur.
+
+## Palm City
+
+Palm City is `Win32/levels/mainlevel/mainlevel`. Its root partition,
+`levels/mainlevel/mainlevel` (21.4 MB, in the bundle of the same name), holds one
+`LevelData` and the road network (11,907 `RoadEdgeSegment`, 6,418 `RoadEdge`, 4,233
+`RoadNode2`, 1,007 `RoadIntersection`), and references its sub-levels by name:
+StaticWorld, GameSpatialData, GameLogic, RobotoGameLogic, Prototypes, GameCollectibles
+and CinematicsProduction.
+
+How the drawable world hangs together, as far as read:
+
+- `levels/mainlevel/staticworld` is a `SubWorldData` with 8 sub-world and 3 layer
+  references.
+- The world is 232 streaming zones, `worldart_zs_<n>`, each its own bundle. A zone's
+  root partition is a `SubWorldData` with its `StaticModelGroupEntityData` (the placed
+  static meshes), physics and `ZoneStreamerSubWorldRod`s; its `_layer` partition holds
+  the placed objects (`ObjectReferenceObjectData`), lights, reflection volumes and
+  effects.
+- Every zone has four lighting variants, `worldart_zs_<n>_midday`, `_overcast`,
+  `_sunset` and `_tealnight`: each a small bundle with the zone's precomputed global
+  illumination (`StaticEnlightenEntityData`, a GI grid, and `worldart_radiosity/`
+  textures).
+- Meshes are `RigidMeshAsset` ebx whose geometry is a res and chunks; textures are
+  `TextureAsset` ebx with a `Texture` res (the header) and a chunk (the pixels).
+- The terrain is `mainlevel_terrain_2048`, in the root bundle.
+
 ## nfsh's store (our own format)
 
 What `nfsh import` writes: a folder with an index and a few packs.

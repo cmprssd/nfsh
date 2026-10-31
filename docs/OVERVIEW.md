@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-10-31 (7 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-10-31 (8 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -104,7 +104,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 13 decision entries, 7 chosen by the owner, 5 made by Claude for review.
+  So far: 14 decision entries, 8 chosen by the owner, 5 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -122,15 +122,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-8 commits, 7 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 5 feat, 1 ci,
-1 docs. About 6,224 lines added and 209 removed; 34 tracked files.
+9 commits, 8 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 5 feat, 2
+docs, 1 ci. About 6,358 lines added and 211 removed; 34 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
     x-axis ["Oct 30", "Oct 31"]
-    y-axis "PRs" 0 --> 8
-    bar [1, 6]
+    y-axis "PRs" 0 --> 9
+    bar [1, 7]
 ```
 <!-- /progress -->
 
@@ -152,9 +152,10 @@ Measured by `nfsh inventory` on 2026-10-30 ([INVENTORY.md](INVENTORY.md)):
 
 What it means: almost all of the 34 GiB is cas archives, so "smaller" is decided by how
 the archived data is stored, and dropping the dead data alone is a free first saving
-that nfsh's own format has to beat. Palm City is almost certainly
-`Win32/levels/mainlevel/mainlevel` (not yet confirmed by reading its contents). Details
-in [INVENTORY.md](INVENTORY.md).
+that nfsh's own format has to beat. Palm City is
+`Win32/levels/mainlevel/mainlevel`, confirmed by reading its root partition: 232
+streaming zones, each with four lighting variants (midday, overcast, sunset,
+tealnight). Details in [INVENTORY.md](INVENTORY.md) and [FORMATS.md](FORMATS.md).
 
 ### The store
 
@@ -185,7 +186,7 @@ From [BRIEF.md](BRIEF.md) and [DECISIONS.md](DECISIONS.md) (2026-10-31):
 | 1 | Data inventory: read the install's tables | done (0.1.0) |
 | 2 | Read entry contents: decompress the cas blocks | done (0.2.0) |
 | 3 | Import step: nfsh's own compact copy of the data | done (0.3.0: dead data dropped; 0.4.0: zstd) |
-| 4 | Palm City viewer: fly-through, frame time, day/night | not started |
+| 4 | Palm City viewer: fly-through, frame time, day/night | started: level and ebx format read |
 | 5 | Baseline against the original: same camera path, same PC, screenshots | not started |
 | 6 | One drivable car, then races, police, campaign | later |
 

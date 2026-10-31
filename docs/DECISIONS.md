@@ -207,3 +207,32 @@ only one frame.
   afterwards, and this proves the copy end to end, the codec included.
 - **`nfsh verify` accepts a store as well as an install**, checking the same sizes.
   Why: it is the way to check a store on a machine without the game, Linux included.
+
+## 2026-10-31: The Palm City viewer's first steps (chosen by the owner)
+
+Reading the level first showed its shape (FORMATS.md, "Palm City"): a root partition
+with the roads and sub-level references, and 232 streaming zones, each with four
+lighting variants.
+
+- **One zone first, complete (meshes and textures), then zones outward**, rather than
+  the whole city untextured. Why: it looks like Heat early, so the screenshot
+  comparison with the original can start before the whole map loads.
+- **The day/night toggle switches midday and tealnight**, the zones' day and night
+  lighting; overcast and sunset can come later as extras. Why: the brief asks for a
+  toggle, and two lighting setups are half the matching work of four.
+- **The viewer reads nfsh's store only**, not the install. Why: it works on Linux
+  without Oodle, there is one read path to test, and load time is measured on our
+  own format.
+
+The plan, one PR each (decided by Claude, pending review):
+
+1. An ebx reader in `crates/frostbite`: a partition's types, instances, fields,
+   arrays and references, bounds-checked; a test reads every ebx in the store, and
+   `nfsh ebx` prints a partition as text.
+2. The level graph: from `levels/mainlevel/mainlevel` to the zones and what each
+   places (meshes, transforms), reported by a command.
+3. Meshes: a `RigidMeshAsset`'s geometry from its res and chunks.
+4. Textures: the `Texture` res header and its chunk's pixels (block-compressed
+   formats).
+5. The viewer: a Vulkan window, fly camera, frame time shown, one zone drawn untextured.
+6. Textured and lit, with the midday/tealnight toggle; then zones outward.
