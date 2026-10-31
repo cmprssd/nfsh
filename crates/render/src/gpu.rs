@@ -61,6 +61,8 @@ pub struct Gpu {
     pub kind: DeviceKind,
     /// Nanoseconds per timestamp tick.
     pub timestamp_period: f32,
+    /// The most anisotropic filtering samplers may ask for; `None` without it.
+    pub max_anisotropy: Option<f32>,
     /// `None` only while the device is dropped.
     pub(crate) allocator: Mutex<Option<Allocator>>,
     /// For [`Gpu::submit_and_wait`], which holds it while recording.
@@ -173,10 +175,11 @@ impl Gpu {
                 _ => DeviceKind::Other,
             };
             let period = props.limits.timestamp_period;
-            candidates.push((kind, physical, family as u32, name, period));
+            let anisotropy = props.limits.max_sampler_anisotropy;
+            candidates.push((kind, physical, family as u32, name, period, anisotropy));
         }
         candidates.sort_by_key(|c| c.0);
-        let Some((kind, physical, queue_family, name, timestamp_period)) =
+        let Some((kind, physical, queue_family, name, timestamp_period, anisotropy)) =
             candidates.into_iter().next()
         else {
             return Err(give_up(format!(
@@ -196,6 +199,13 @@ impl Gpu {
         let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
             .dynamic_rendering(true)
             .synchronization2(true);
+        // Block-compressed textures and anisotropic filtering where the device has
+        // them: a texture whose format can't be sampled is drawn grey instead.
+        let supported = unsafe { instance.get_physical_device_features(physical) };
+        let features = vk::PhysicalDeviceFeatures::default()
+            .texture_compression_bc(supported.texture_compression_bc == vk::TRUE)
+            .sampler_anisotropy(supported.sampler_anisotropy == vk::TRUE);
+        let max_anisotropy = (supported.sampler_anisotropy == vk::TRUE).then_some(anisotropy);
         let device_extensions = match surface {
             Some(_) => &[ash::khr::swapchain::NAME.as_ptr()][..],
             None => &[],
@@ -206,6 +216,7 @@ impl Gpu {
                 &vk::DeviceCreateInfo::default()
                     .queue_create_infos(&queue_info)
                     .enabled_extension_names(device_extensions)
+                    .enabled_features(&features)
                     .push_next(&mut features13),
                 None,
             )
@@ -251,6 +262,7 @@ impl Gpu {
             name,
             kind,
             timestamp_period,
+            max_anisotropy,
             allocator: Mutex::new(Some(allocator)),
             command_pool: Mutex::new(command_pool),
         });

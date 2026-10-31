@@ -146,6 +146,14 @@ pub struct Image {
     allocation: Option<Allocation>,
 }
 
+/// One mip of a texture's pixels: where it starts in the bytes uploaded, and its size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mip {
+    pub offset: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
 impl Image {
     pub fn new(
         gpu: &Arc<Gpu>,
@@ -153,6 +161,17 @@ impl Image {
         format: vk::Format,
         usage: vk::ImageUsageFlags,
         aspect: vk::ImageAspectFlags,
+    ) -> Result<Self> {
+        Self::with_mips(gpu, extent, format, usage, aspect, 1)
+    }
+
+    fn with_mips(
+        gpu: &Arc<Gpu>,
+        extent: vk::Extent2D,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+        aspect: vk::ImageAspectFlags,
+        mips: u32,
     ) -> Result<Self> {
         let d = &gpu.device;
         let image = unsafe {
@@ -165,7 +184,7 @@ impl Image {
                         height: extent.height.max(1),
                         depth: 1,
                     })
-                    .mip_levels(1)
+                    .mip_levels(mips)
                     .array_layers(1)
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .tiling(vk::ImageTiling::OPTIMAL)
@@ -189,7 +208,10 @@ impl Image {
                             .image(image)
                             .view_type(vk::ImageViewType::TYPE_2D)
                             .format(format)
-                            .subresource_range(subresource(aspect)),
+                            .subresource_range(vk::ImageSubresourceRange {
+                                level_count: mips,
+                                ..subresource(aspect)
+                            }),
                         None,
                     )
                 })
@@ -209,6 +231,91 @@ impl Image {
                 Err(e.into())
             }
         }
+    }
+
+    /// A texture to sample, its `mips` (largest first) copied from `data` as they
+    /// are, so a block-compressed format's blocks go up unchanged; left ready for
+    /// fragment shaders to read.
+    pub fn sampled(gpu: &Arc<Gpu>, format: vk::Format, mips: &[Mip], data: &[u8]) -> Result<Self> {
+        let Some(first) = mips.first() else {
+            return Err(Error("a texture with no mips".into()));
+        };
+        let extent = vk::Extent2D {
+            width: first.width,
+            height: first.height,
+        };
+        let usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST;
+        let color = vk::ImageAspectFlags::COLOR;
+        let image = Self::with_mips(gpu, extent, format, usage, color, mips.len() as u32)?;
+        let mut staging = Buffer::new(
+            gpu,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            data.len() as u64,
+            MemoryLocation::CpuToGpu,
+        )?;
+        staging.mapped_mut()?.copy_from_slice(data);
+        let regions: Vec<_> = (0u32..)
+            .zip(mips)
+            .map(|(level, m)| {
+                vk::BufferImageCopy::default()
+                    .buffer_offset(m.offset)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: color,
+                        mip_level: level,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image_extent(vk::Extent3D {
+                        width: m.width,
+                        height: m.height,
+                        depth: 1,
+                    })
+            })
+            .collect();
+        let all = vk::ImageSubresourceRange {
+            level_count: mips.len() as u32,
+            ..subresource(color)
+        };
+        gpu.submit_and_wait(|cmd| unsafe {
+            use vk::AccessFlags2 as A;
+            use vk::ImageLayout as L;
+            use vk::PipelineStageFlags2 as S;
+            let d = &gpu.device;
+            let to_copy = [barrier(
+                image.image,
+                color,
+                (L::UNDEFINED, S::NONE, A::NONE),
+                (L::TRANSFER_DST_OPTIMAL, S::COPY, A::TRANSFER_WRITE),
+            )
+            .subresource_range(all)];
+            d.cmd_pipeline_barrier2(
+                cmd,
+                &vk::DependencyInfo::default().image_memory_barriers(&to_copy),
+            );
+            d.cmd_copy_buffer_to_image(
+                cmd,
+                staging.buffer,
+                image.image,
+                L::TRANSFER_DST_OPTIMAL,
+                &regions,
+            );
+            let to_read = [barrier(
+                image.image,
+                color,
+                (L::TRANSFER_DST_OPTIMAL, S::COPY, A::TRANSFER_WRITE),
+                (
+                    L::SHADER_READ_ONLY_OPTIMAL,
+                    S::FRAGMENT_SHADER,
+                    A::SHADER_SAMPLED_READ,
+                ),
+            )
+            .subresource_range(all)];
+            d.cmd_pipeline_barrier2(
+                cmd,
+                &vk::DependencyInfo::default().image_memory_barriers(&to_read),
+            );
+        })?;
+        Ok(image)
     }
 
     /// A depth buffer for drawing at `extent`.

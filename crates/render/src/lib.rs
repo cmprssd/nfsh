@@ -1,5 +1,5 @@
 //! nfsh's Vulkan renderer: device bring-up, a window's swapchain and frame loop, an
-//! offscreen target for screenshots, and a zone drawn untextured.
+//! offscreen target for screenshots, and a zone drawn textured and lit.
 
 pub mod camera;
 pub mod frame;
@@ -13,7 +13,7 @@ pub use ash::vk;
 pub use camera::Camera;
 pub use frame::{FRAMES_IN_FLIGHT, FrameLoop, Presented};
 pub use gpu::{DeviceKind, Error, Gpu, Result};
-pub use resource::{Buffer, Image, Target};
+pub use resource::{Buffer, Image, Mip, Target};
 pub use scene::Scene;
 pub use swapchain::Swapchain;
-pub use zone::ZoneRenderer;
+pub use zone::{Light, ZoneRenderer};

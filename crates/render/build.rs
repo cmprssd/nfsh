@@ -1,7 +1,6 @@
 //! Compiles every WGSL shader in shaders/ to SPIR-V with naga, so the build needs no
-//! external shader compiler. Each `<name>.wgsl` has a `vs_main` and an `fs_main`
-//! entry point and becomes `<name>.vert.spv` and `<name>.frag.spv` in OUT_DIR, each
-//! keeping its entry point name.
+//! external shader compiler. Each entry point `<entry>` of `<name>.wgsl` becomes
+//! `<name>.<entry>.spv` in OUT_DIR, keeping its entry point name.
 
 use std::path::Path;
 
@@ -29,22 +28,20 @@ fn main() {
         spv_options
             .flags
             .remove(naga::back::spv::WriterFlags::ADJUST_COORDINATE_SPACE);
-        for (stage, entry, suffix) in [
-            (naga::ShaderStage::Vertex, "vs_main", "vert"),
-            (naga::ShaderStage::Fragment, "fs_main", "frag"),
-        ] {
+        for ep in &module.entry_points {
+            let (stage, entry) = (ep.stage, &ep.name);
             let words = naga::back::spv::write_vec(
                 &module,
                 &info,
                 &spv_options,
                 Some(&naga::back::spv::PipelineOptions {
                     shader_stage: stage,
-                    entry_point: entry.into(),
+                    entry_point: entry.clone(),
                 }),
             )
             .unwrap_or_else(|e| panic!("{}: {entry}: {e}", path.display()));
             let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-            std::fs::write(Path::new(&out).join(format!("{stem}.{suffix}.spv")), bytes).unwrap();
+            std::fs::write(Path::new(&out).join(format!("{stem}.{entry}.spv")), bytes).unwrap();
         }
     }
 }

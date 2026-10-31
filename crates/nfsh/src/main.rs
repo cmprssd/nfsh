@@ -44,12 +44,15 @@ usage: nfsh mesh STORE NAME [OBJ]
 usage: nfsh texture STORE NAME [DDS]
   The texture asset NAME (a TextureAsset ebx) from the store in the folder STORE:
   its kind, size, format and mips; written to the file DDS as a .dds when given.
-usage: nfsh view STORE ZONE [--shot PNG] [--vsync]
+usage: nfsh view STORE ZONE [--shot PNG] [--vsync] [--night] [--camera X,Y,Z,YAW,PITCH]
   Palm City's zone ZONE (as nfsh level takes it) from the store in the folder STORE,
-  untextured, in a window: mouse to look, W A S D to move, Space and C up and down,
-  Shift to go faster, Esc to quit; the title shows the frame rate and frame time.
-  With --shot, one frame of the whole zone is drawn without a window and written to
-  the file PNG. --vsync waits for the display.
+  textured and lit, in a window: mouse to look, W A S D to move, Space and C up and
+  down, Shift to go faster, N to switch between midday and tealnight, Esc to quit;
+  the title shows the time of day, the frame rate and frame time. With --shot, one
+  frame of the whole zone is drawn without a window and written to the file PNG.
+  --vsync waits for the display; --night starts at tealnight; --camera starts at the
+  point X,Y,Z turned YAW degrees from +z towards +x and PITCH up, rather than above
+  the zone.
 INSTALL is the game folder (with Data/ and Patch/); default: $NFSH_INSTALL.";
 
 fn main() -> ExitCode {
