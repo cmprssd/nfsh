@@ -4,6 +4,17 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-31
+
+### Added
+
+- `nfsh import [INSTALL] STORE`: copies every entry the patched install still uses into
+  nfsh's own store in the folder STORE (an index and packs of about 1 GiB, format in
+  `docs/FORMATS.md`), leaving behind the data the patch replaced. Entries keep their
+  blocks as is. The import then reopens the store and checks it against the install,
+  entry by entry, and prints its size. It runs on Linux and Windows (no decompression
+  needed), and refuses a folder that holds anything but an earlier store.
+
 ## [0.2.0] - 2026-10-31
 
 ### Added

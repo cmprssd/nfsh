@@ -117,7 +117,7 @@ The binary bundle is a size word, then (offsets from after the size word):
 | ebx × ebx count | name offset, decompressed size |
 | res × res count | name offset, decompressed size |
 | res type × res count | hash of the type name (below) |
-| res metadata × res count | 16 bytes each |
+| res metadata × res count | 16 bytes each (meaning not worked out yet) |
 | res id × res count | u64 each |
 | chunk × chunk count | id (16 bytes), logical offset, logical size |
 | metadata | a DbObject (`chunkMeta`) |
@@ -130,3 +130,35 @@ and a size in the same archive as the entry before.
 Resource type hashes are `h = h * 33 ^ byte`, from 5381, over the lowercased type name:
 `Texture` is `0x6BDE20BA`. Names are confirmed only when the hash matches and the
 assets carrying it fit the name.
+
+## nfsh's store (our own format)
+
+What `nfsh import` writes: a folder with an index and a few packs.
+
+```
+index.nfsh        the superbundles, their bundles and chunks (below)
+pack_NN.nfsh      stored entries, back to back, NN from 00
+```
+
+A pack holds each distinct entry the patched tables point at once, in archive order,
+byte for byte as in the cas archive (Heat's block chains, see "Stored blocks"). A pack
+is closed when the next entry would take it past 1 GiB. The `Data/` bytes the patch
+replaced are not copied.
+
+The index is big-endian like Heat's tables. A string or byte run is a u32 length and
+the bytes; a list is a u32 count and the items; a location is the pack (u8), the
+offset in it and the size (u32 each), and must lie inside the pack.
+
+| field | |
+|-------|--|
+| magic, version | `NFSHSTOR`, u32 1 |
+| packs | list of u64 sizes (checked against the files on open) |
+| superbundles | list: name, bundles, chunks |
+| bundle | name, layer (u8: 0 `Data/`, 1 `Patch/`), metadata DbObject as stored, ebx list, res list, chunk list |
+| ebx | name, SHA-1, decompressed size (u32), location |
+| res | as ebx, then type hash (u32), metadata (16 bytes), id (u64) |
+| bundle chunk | id (16 bytes), SHA-1, logical offset, logical size (u32), location |
+| superbundle chunk | id, layer, location |
+
+Nothing may follow the last superbundle. The index is written after the packs, under
+a temporary name renamed at the end, so a store without `index.nfsh` is incomplete.

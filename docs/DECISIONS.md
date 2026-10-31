@@ -125,3 +125,33 @@ Settled while writing the brief (`docs/BRIEF.md`), over six rounds of questions.
   and the import step will read everything the same way.
 - **SHA-1s are not checked yet.** Why: no hashing code exists, and the size checks
   already catch a wrong decoder; worth adding with the import step.
+
+## 2026-10-31: The import step's format (chosen by the owner)
+
+- **The first import PR only drops the dead data**: live entries are copied into nfsh's
+  store with their blocks unchanged (still Oodle). Why: quick and certain; recompressing
+  follows in its own PR, where its size is measured against this one.
+- **The recompression codec will be zstd.** Why: it reads on Linux and Windows without
+  the install's Oodle library (a pure-Rust decoder exists), decodes fast, and at high
+  levels with a long window is close to Oodle in size; importing is slow, but runs once.
+- **A few large packs plus one index.** Why: easy to copy, few open files, and packs can
+  be memory-mapped by the readers.
+
+## 2026-10-31: The store in detail (decided by Claude, pending review)
+
+- **Packs close at 1 GiB.** Why: about 30 packs for the install, each easy to copy, and
+  every offset fits the 32-bit location the readers already use.
+- **The index is our own big-endian binary format, read with the same bounds-checked
+  reader as Heat's tables**, and keeps everything the bundles held: names, SHA-1s,
+  sizes, res type, metadata and id, chunk ranges and the bundle's metadata DbObject
+  (the readers now keep the last three, which they used to skip). Why: the install can
+  go once the store replaces it, so nothing in the tables may be lost; no dependency
+  is needed.
+- **A store location reuses `Location`, with the pack number as the archive.** Why:
+  verify, the viewer and everything else that reads entries works on a store unchanged.
+- **Every import checks itself**: it reopens the store, compares the index with the
+  tables it came from, and compares each copied entry byte for byte with the archive.
+  Why: the install may be deleted afterwards, so the copy must be proven, and the
+  check reads only, which costs a second pass but no hashing code.
+- **The import refuses a folder holding anything but an earlier store**, which it
+  replaces, index first. Why: it deletes files, so it must never touch the owner's.

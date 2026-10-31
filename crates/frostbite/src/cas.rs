@@ -91,16 +91,22 @@ pub fn decompress(stored: &[u8], decoder: &dyn Decoder) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Reads stored bytes from an install's archives, keeping each archive open once read.
+/// Reads stored bytes from archives (an install's, or a store's packs), keeping each
+/// archive open once read.
 pub struct Archives<'a> {
-    install: &'a Install,
+    path: Box<dyn Fn(CasRef) -> Option<PathBuf> + 'a>,
     open: HashMap<CasRef, (PathBuf, File)>,
 }
 
 impl<'a> Archives<'a> {
     pub fn new(install: &'a Install) -> Self {
+        Self::with_paths(|cas| install.cas_path(cas))
+    }
+
+    /// Archives found by `path`, which gives `None` for a reference it doesn't know.
+    pub fn with_paths(path: impl Fn(CasRef) -> Option<PathBuf> + 'a) -> Self {
         Self {
-            install,
+            path: Box::new(path),
             open: HashMap::new(),
         }
     }
@@ -108,8 +114,8 @@ impl<'a> Archives<'a> {
     /// The stored (still compressed) bytes at `location`.
     pub fn stored(&mut self, location: Location) -> Result<Vec<u8>> {
         if !self.open.contains_key(&location.cas) {
-            let Some(path) = self.install.cas_path(location.cas) else {
-                bail!("{:?} names an unknown install package", location.cas);
+            let Some(path) = (self.path)(location.cas) else {
+                bail!("{:?} names an unknown archive", location.cas);
             };
             let file =
                 File::open(&path).map_err(|e| crate::Error(format!("{}: {e}", path.display())))?;
