@@ -76,8 +76,8 @@ finds none in any current entry. An ebx or res entry decompresses to exactly its
 size. A chunk entry in a bundle stores only the chunk's blocks that cover its logical
 range: from the 0x10000 boundary at or before the logical offset to the offset plus
 the logical size, so it decompresses to `offset % 0x10000 + size` bytes. For a texture,
-that is the last small mips of the chain; where the rest is stored is not confirmed
-yet. All 1,317,687 distinct entries of the owner's install (31.5 GiB stored, 65.4 GiB
+that is the last small mips of the chain; the whole chain is a superbundle's chunk
+(see "Textures"). All 1,317,687 distinct entries of the owner's install (31.5 GiB stored, 65.4 GiB
 decompressed) pass these checks.
 
 ## Table of contents (`.toc` body)
@@ -398,6 +398,81 @@ section of `prop_brk_abandoned_15_front_01_mesh`, in all three of its LODs, whos
 vertices lie up to 2 cm outside (the stored bounds look slightly off). A survey of
 all 31,034 mesh sets in the store (not only the placed ones) found the index format,
 inline geometry and chunk byte orders described above, and no other index format.
+
+## Textures
+
+A `TextureAsset` ebx names its texture by res id in `Resource`. The res, type
+`Texture` (`0x6BDE20BA`), is a fixed header naming the chunk that holds the pixels.
+`frostbite::texture` reads both, and `nfsh texture STORE NAME [DDS]` prints a texture
+and writes it as a .dds. Worked out on zone 495's textures, then checked on every
+texture in the store and on every texture the placed meshes use (see the end of this
+section). **Little-endian.**
+
+A mesh asset's materials name their textures: each of its `Materials` (a
+`MeshMaterial` instance in the same partition; a section's material indexes the list)
+has a `Shader` struct whose `TextureParameters` array holds `Value` (a reference to
+the texture asset's partition, or null) and `ParameterName` (`Diffuse`, `Normal`,
+`SMD`, …).
+
+The header (0x84 bytes; every texture res is exactly that, and its 16 bytes of res
+metadata are 0x0C, then the flags below in byte 4, then zeros):
+
+| offset | field |
+|-------:|-------|
+| 0x00, 0x04 | not worked out (zero for small textures) |
+| 0x08 | kind: 0 flat, 1 cube, 2 volume, 3 array |
+| 0x0C | format (table below) |
+| 0x10 | usually 0; a hash on a few character textures (not worked out) |
+| 0x14 | flags (u16: 0x1, 0x9 for UI textures, 0x20, 0x21; not worked out) |
+| 0x16, 0x18 | width, height (u16) |
+| 0x1A, 0x1C | depth and layer count (u16, equal in every texture): 1, 6 for a cube, the slices of an array or volume |
+| 0x1E | mip count (u8, 1 to 15) |
+| 0x1F | the first mips that only the whole chunk holds (u8; see below) |
+| 0x20 | the chunk id, as a GUID in memory (byte orders as for meshes) |
+| 0x30 | each mip's size in bytes for one layer, largest first: 15 × u32, zero past the mip count |
+| 0x6C | their sum: one layer's chain |
+| 0x70 | not worked out (close values for close group names, so not their hash) |
+| 0x74 | the texture group, 16 bytes, zero-padded (`Props`, `Props_NSMD`, `Architecture`, …) |
+
+Each mip is half the size of the one before (at least 1×1); a block-compressed mip
+is its 4×4 blocks, at least one. **The chunk** holds every mip, largest first, and
+each mip holds all its layers back to back (layer 1 of an array follows layer 0 of
+the same mip; read layer-first, an array's layers come out scrambled). So an array's
+or a cube's chunk is the layer count times the chain. A volume's mip sizes already
+count its depth slices, which halve with each mip as the width and height do, so its
+chunk is the chain itself (a 32×32×32 BC3 volume is one mip of 32,768 bytes). The whole chunk is in a superbundle's chunks or,
+for a texture loaded all at once, a bundle's chunk entry from offset 0. A bundle
+whose texture streams lists the chunk from the first mip after the streamed ones
+(byte 0x1F), to the end: concrete 1024×1024 BC1 with four streamed mips is listed
+from 0xAA000 (the first four mips' sizes) for 0xAB8 bytes.
+
+Formats, from each mip's size (bytes per block), from decoding a texture of each (an
+image that makes sense one way and noise the other), and from the names of the
+textures that use them (`_d` diffuse in the sRGB ones):
+
+| code | format | block |
+|-----:|--------|------:|
+| 0x36, 0x37 | BC1, unorm and sRGB | 8 |
+| 0x38, 0x39 | BC1 with 1-bit alpha, unorm and sRGB | 8 |
+| 0x3C, 0x3D | BC3, unorm and sRGB | 16 |
+| 0x3E | BC4 unorm | 8 |
+| 0x3F | BC5 unorm | 16 |
+| 0x40 | BC6H unsigned float | 16 |
+| 0x42, 0x43 | BC7, unorm and sRGB | 16 |
+
+Seen but not worked out: 0x3A (one test texture, 16-byte blocks: BC2 by the
+pattern), and the uncompressed 0x06, 0x12, 0x14, 0x1B, 0x29, 0x33 (look-up tables,
+gradients, noise: about 70 textures, none on a placed mesh).
+
+Checked on the whole city, 2026-10-31: the store test reads every texture the
+materials of the 232 zones' meshes name (14,806 materials, 37,345 texture
+parameters, 8,015 textures, 4.7 GiB of pixels), every header and every whole chunk,
+which is always exactly its mips; and for the 7,010 whose chunk a bundle also lists
+from a later offset, that the offset is where the streamed mips end, the entry runs
+to the chunk's end, and its bytes are the whole chunk's. All 8,015 are flat and in a
+format above. Every one of the 32,394 texture res in the store parses by these rules
+(32,333 flat, 37 cubes, 8 arrays, 16 volumes), every mip of a format above having
+the size its blocks give.
 
 ## nfsh's store (our own format)
 

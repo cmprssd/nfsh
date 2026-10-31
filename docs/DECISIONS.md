@@ -311,3 +311,27 @@ The plan, one PR each (decided by Claude, pending review):
 - **`nfsh mesh STORE NAME [OBJ]`** prints a mesh's LODs and sections and decodes its
   first LOD; with OBJ it writes that LOD as a Wavefront .obj. Why: text can be diffed,
   and an .obj opens in any viewer for a look before nfsh has a window of its own.
+
+## 2026-10-31: Textures (decided by Claude, pending review)
+
+- **Pixels are kept block-compressed, as stored**, not decoded to RGBA. Why: Vulkan
+  samples BC1-BC7 directly on every desktop GPU, so the viewer uploads the chunk's
+  mips as they are; decoding would take memory and time for nothing. The reader's job
+  is to say where each mip of each layer is.
+- **The whole mip chain is read from the whole chunk** (a superbundle's chunk, or a
+  bundle's chunk entry from offset 0), and a bundle's tail-only entry is not used.
+  Why: every texture a placed mesh uses has its whole chunk in the store; the tail
+  (the small mips) is what the game loads first while streaming, which the viewer can
+  add later if load times call for it. The store test checks that the tail is the
+  whole chunk's end, so either source gives the same bytes.
+- **Only formats worked out are named; the rest are read but reported.** Why: the
+  eleven block-compressed formats cover every texture a placed mesh uses and are
+  confirmed by mip sizes and by decoding; the ~70 uncompressed look-up tables and
+  noise textures are not needed yet, and a wrong guess would show wrong colours
+  without an error.
+- **The store's chunk and res lookups are shared** (`Store::whole_chunks`,
+  `Store::res_of_type`), used by both the mesh and texture readers. Why: both need
+  the same id → location maps, and the viewer will hold one of each.
+- **`nfsh texture STORE NAME [DDS]`** prints the header and writes a .dds (DX10
+  header, layers regrouped as .dds wants them). Why: a .dds opens in common tools for
+  a visual check before nfsh has a window, and keeps the exact compressed bytes.

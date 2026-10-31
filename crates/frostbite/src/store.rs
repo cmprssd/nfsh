@@ -10,7 +10,7 @@
 //! partition GUID, so a reference into another partition is found without reading
 //! every ebx.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -79,6 +79,22 @@ pub struct EbxRef {
     pub superbundle: u32,
     pub bundle: u32,
     pub ebx: u32,
+}
+
+/// A GUID as stored in memory (a res, an ebx) in the order a bundle's chunk list
+/// stores it: its first three fields byte-swapped.
+pub fn guid_order(mut id: [u8; 16]) -> [u8; 16] {
+    id[0..4].reverse();
+    id[4..6].reverse();
+    id[6..8].reverse();
+    id
+}
+
+/// The chunk id a `.toc` lists in the order a bundle's chunk list stores it: a toc
+/// stores the in-memory GUID with all 16 bytes reversed.
+pub fn toc_chunk_id(mut id: [u8; 16]) -> [u8; 16] {
+    id.reverse();
+    guid_order(id)
 }
 
 /// Every ebx of `superbundles` with where it is listed, in index order.
@@ -170,6 +186,38 @@ impl Store {
             .flat_map(|sb| &sb.bundles)
             .flat_map(|b| &b.bundle.ebx)
             .find(|e| e.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Every res of type `res_type` by id; the first copy of each.
+    pub fn res_of_type(&self, res_type: u32) -> HashMap<u64, Location> {
+        let mut res = HashMap::new();
+        for b in self.superbundles.iter().flat_map(|sb| &sb.bundles) {
+            for r in b.bundle.res.iter().filter(|r| r.res_type == res_type) {
+                res.entry(r.id).or_insert(r.asset.location);
+            }
+        }
+        res
+    }
+
+    /// Every chunk stored whole, by id as bundles list it: a superbundle's chunks, and
+    /// a bundle's chunk entries from logical offset 0. A bundle stores only a chunk's
+    /// blocks that cover its logical range, so one from a later offset holds only the
+    /// chunk's end (a texture's last mips) and is left out.
+    pub fn whole_chunks(&self) -> HashMap<[u8; 16], Location> {
+        let mut chunks = HashMap::new();
+        for sb in &self.superbundles {
+            for b in &sb.bundles {
+                for c in b.bundle.chunks.iter().filter(|c| c.logical_offset == 0) {
+                    chunks.entry(c.id).or_insert(c.location);
+                }
+            }
+            for c in &sb.chunks {
+                chunks
+                    .entry(toc_chunk_id(c.chunk.id))
+                    .or_insert(c.chunk.location);
+            }
+        }
+        chunks
     }
 
     /// Reads the frames as stored.
@@ -800,6 +848,16 @@ pub fn decode(bytes: &[u8]) -> Result<Index> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunk_ids_in_toc_and_bundle_order() {
+        let memory: [u8; 16] = std::array::from_fn(|i| i as u8);
+        let bundle = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
+        assert_eq!(guid_order(memory), bundle);
+        let mut toc = memory;
+        toc.reverse();
+        assert_eq!(toc_chunk_id(toc), bundle);
+    }
 
     fn at(cas: u8, offset: u32, size: u32) -> Location {
         Location {

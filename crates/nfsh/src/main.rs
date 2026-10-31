@@ -1,14 +1,15 @@
-//! nfsh: a new engine for Need for Speed: Heat. For now it has seven commands: an
+//! nfsh: a new engine for Need for Speed: Heat. For now it has eight commands: an
 //! inventory of the owner's install, a check that every entry of the install or of a
 //! store decompresses, the import into nfsh's own store, the store's partition GUIDs
-//! listed again, an ebx partition printed as text, Palm City's level graph, and one
-//! mesh's geometry.
+//! listed again, an ebx partition printed as text, Palm City's level graph, one
+//! mesh's geometry, and one texture.
 
 mod ebx;
 mod import;
 mod inventory;
 mod level;
 mod mesh;
+mod texture;
 mod verify;
 
 use std::path::PathBuf;
@@ -38,6 +39,9 @@ usage: nfsh mesh STORE NAME [OBJ]
   The mesh asset NAME (a RigidMeshAsset or CompositeMeshAsset ebx, as nfsh level
   lists them) from the store in the folder STORE: its LODs and their sections, with
   the first LOD decoded; written to the file OBJ as a Wavefront .obj when given.
+usage: nfsh texture STORE NAME [DDS]
+  The texture asset NAME (a TextureAsset ebx) from the store in the folder STORE:
+  its kind, size, format and mips; written to the file DDS as a .dds when given.
 INSTALL is the game folder (with Data/ and Patch/); default: $NFSH_INSTALL.";
 
 fn main() -> ExitCode {
@@ -46,14 +50,19 @@ fn main() -> ExitCode {
     // The import's last argument is the store; the install may come before it.
     let (cmd, install, store) = match args.as_slice() {
         [cmd, store] if cmd == "import" => (cmd.as_str(), env_install(), Some(store)),
-        [cmd, path, store] if ["import", "ebx", "level", "mesh"].contains(&cmd.as_str()) => {
+        [cmd, path, store]
+            if ["import", "ebx", "level", "mesh", "texture"].contains(&cmd.as_str()) =>
+        {
             (cmd.as_str(), Some(path.into()), Some(store))
         }
         [cmd] => (cmd.as_str(), env_install(), None),
         [cmd, path] => (cmd.as_str(), Some(PathBuf::from(path)), None),
-        [cmd, path, name, obj] if cmd == "mesh" => {
+        [cmd, path, name, file] if cmd == "mesh" || cmd == "texture" => {
             let start = Instant::now();
-            let result = mesh::run(path.as_ref(), name, Some(obj.as_ref()));
+            let result = match cmd.as_str() {
+                "mesh" => mesh::run(path.as_ref(), name, Some(file.as_ref())),
+                _ => texture::run(path.as_ref(), name, Some(file.as_ref())),
+            };
             return finish(cmd, start, result.map(|text| (text, 0)));
         }
         _ => ("", None, None),
@@ -80,6 +89,9 @@ fn main() -> ExitCode {
             level::run(&store, zone.map(String::as_str)).map(|text| (text, 0))
         }
         ("mesh", Some(store), Some(name)) => mesh::run(&store, name, None).map(|text| (text, 0)),
+        ("texture", Some(store), Some(name)) => {
+            texture::run(&store, name, None).map(|text| (text, 0))
+        }
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);

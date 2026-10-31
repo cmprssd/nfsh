@@ -13,6 +13,7 @@ pub mod oodle;
 pub mod reader;
 pub mod sb;
 pub mod store;
+pub mod texture;
 pub mod toc;
 
 use std::fmt;
