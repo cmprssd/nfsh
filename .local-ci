@@ -30,18 +30,27 @@ linux() {
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 	cargo test --workspace --locked
 }
-# The retail-data tests read the owner's game install (Windows side). If it is not
-# reachable (drive unplugged), the run still checks everything else and says so.
+# The retail-data tests read the owner's game install and nfsh's store made from it
+# (Windows side). Whichever is not reachable (drive unplugged, no import yet), the run
+# still checks everything else and says so.
 install='D:\SteamLibrary\steamapps\common\Need for Speed Heat'
+store='D:\nfsh-store'
+reachable() { (cd /mnt/c && powershell.exe -NoProfile -Command "exit !(Test-Path -LiteralPath '$1')"); }
 windows() {
 	scripts/cargo-msvc.sh clippy --workspace --all-targets --locked -- -D warnings
-	if (cd /mnt/c && powershell.exe -NoProfile -Command "exit !(Test-Path -LiteralPath '$install\Data\layout.toc')"); then
-		NFSH_INSTALL=$install WSLENV="${WSLENV:-}:NFSH_INSTALL" \
-			scripts/cargo-msvc.sh test --workspace --locked
+	local env=()
+	if reachable "$install\Data\layout.toc"; then
+		env+=(NFSH_INSTALL="$install")
 	else
-		echo "WARNING: $install not reachable; retail-data tests skipped"
-		scripts/cargo-msvc.sh test --workspace --locked
+		echo "WARNING: $install not reachable; install tests skipped"
 	fi
+	if reachable "$store\index.nfsh"; then
+		env+=(NFSH_STORE="$store")
+	else
+		echo "WARNING: $store not reachable; store tests skipped"
+	fi
+	env "${env[@]}" WSLENV="${WSLENV:-}:NFSH_INSTALL:NFSH_STORE" \
+		scripts/cargo-msvc.sh test --workspace --locked
 }
 
 linux >"$logs/linux" 2>&1 & lpid=$!

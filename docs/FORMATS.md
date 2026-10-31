@@ -135,9 +135,9 @@ assets carrying it fit the name.
 
 An ebx entry, decompressed, is one *partition*: typed objects (*instances*) with the
 type descriptions they need, so it reads without any outside type database.
-**Little-endian**, unlike the tables. Worked out on 2,382 partitions of
-`levels/mainlevel`; the section layout below is checked on every distinct ebx in the
-install (see the end of this section).
+**Little-endian**, unlike the tables. Worked out on a few thousand partitions of
+`levels/mainlevel`; everything below is checked on every ebx in the install (see the
+end of this section). `frostbite::ebx` reads it, and `nfsh ebx STORE NAME` prints one.
 
 Header (0x40 bytes):
 
@@ -148,15 +148,16 @@ Header (0x40 bytes):
 | 0x08 | the rest: meta size + this = the entry's size |
 | 0x0C | import count |
 | 0x10 | instance repeater count (u16) |
-| 0x12 | exported instance count (u16): the first this many instances have a GUID |
-| 0x14 | not worked out (u16; 1 in small partitions, 18 in the level root) |
+| 0x12 | exported repeater count (u16): every instance of the first this many repeaters has a GUID |
+| 0x14 | how many distinct types the instances have (u16) |
 | 0x16, 0x18 | type count, field count (u16) |
 | 0x1A | names size (u16) |
 | 0x1C | strings size |
 | 0x20 | array repeater count |
 | 0x24 | instance data size |
 | 0x28 | the partition's GUID (16 bytes) |
-| 0x38 | boxed value count, then an offset (meaning not confirmed) |
+| 0x38 | boxed value count |
+| 0x3C | where the boxed values start, from the start of the instance data (the end, if there are none) |
 
 Then, back to back from 0x40:
 
@@ -184,29 +185,51 @@ A field's kind is bits 5-9 of its flags:
 
 | kind | | kind | |
 |-----:|---|-----:|---|
-| 0x00 | base type (`$`) | 0x0A | bool |
-| 0x02 | struct (value type) | 0x0C-0x12 | integers (widths not confirmed) |
-| 0x03 | class reference | 0x13 | float32 |
-| 0x04 | array | 0x15 | GUID |
-| 0x07 | string | 0x17 | resource reference (8 bytes: names a res by id) |
-| 0x08 | enum | 0x19 | type reference |
-| 0x09 | rare (1,718 fields), not worked out | 0x1A | boxed value |
-| | | 0x14, 0x16 | rare (about 1,600 fields each), not worked out |
+| 0x00 | base type (`$`) | 0x0F, 0x10 | int32, uint32 |
+| 0x02 | struct (value type), stored in place | 0x11, 0x12 | int64, uint64 |
+| 0x03 | class reference (4 bytes) | 0x13 | float32 |
+| 0x04 | array (4 bytes: an array record index) | 0x14 | float64 |
+| 0x07 | string (4 bytes: an offset into the strings; 0xFFFFFFFF for none) | 0x15 | GUID (16 bytes) |
+| 0x08 | enum (4 bytes) | 0x16 | 20 bytes, not worked out (1,570 fields, all `ExpressionFunctionTypeInfoAsset.DebugData`) |
+| 0x09 | 8 bytes, not worked out (1,718 fields, all `VertexShaderFragmentAsset.SourceFile`) | 0x17 | resource reference (8 bytes: names a res by id) |
+| 0x0A | bool (1 byte) | 0x19 | type reference (8 bytes) |
+| 0x0B, 0x0C | int8, uint8 (0x0B not seen) | 0x1A | boxed value (16 bytes) |
+| 0x0D, 0x0E | int16, uint16 (0x0D not seen) | | |
+
+The integers come in signed/unsigned pairs: the widths are measured (the smallest gap
+to the next field and the alignment of every offset, over every type in the install),
+and the 64-bit pair names its sign (`Int64Value` is 0x11, `UInt64Value` 0x12).
 
 Types use the same flags: 0x0063 for a class, 0x0045 for a struct, 0x0089 for an
 array, 0xC10B for an enum, whose fields (flags 0x01E0) are its members.
 
-Instance data holds the instances in repeater order; an exported instance is its GUID
-followed by the instance. With each repeater's start aligned to 16, each instance to
-its type's alignment and the end to 16, the walk lands exactly on the header's size in
-2,374 of the 2,382 sampled partitions. The other 8, the level root among them, need a
-rule not found yet; the ebx reader will settle it.
+**Instance data** holds the instances in repeater order, back to back with no
+alignment between repeaters. Every instance of an exported repeater is preceded by
+its 16-byte GUID. Each instance's stored bytes start at the next multiple of its
+type's alignment (after the GUID, if any; the GUID moves with them). A type aligned
+to fewer than 8 bytes does not store its first 8 bytes: its field offsets count from
+8 bytes before its stored bytes, and it takes size − 8 bytes in the file. A type
+aligned to 8 or 16 stores them all.
+
+**Arrays** follow the instances at the next multiple of 16 that leaves 4 bytes after
+the last instance (end + 4, aligned to 16): the header's instance data size ends
+there. An array record's offset counts from there to its first element; the element
+count is stored in the 4 bytes before. Record 0, the empty array, is shared by every
+empty array field whatever its type, so a field's array type comes from the field,
+not the record. Elements are the member field's kind, or the struct's size each.
+
+A **class reference** is 0 for none, an import index with the top bit set
+(0x80000000 | index), or an instance index plus one.
 
 Checked on the whole install, 2026-10-31: every ebx in nfsh's store (725,119
 locations, 2.57 GiB decompressed) has the magic, sizes that add up to the entry, field
 ranges inside the field table, and sections that end exactly at the meta size; 14,338
-have boxed values. Counted over every type in them, the kinds above are all that
-occur.
+have boxed values. The reader's store test then reads every value of every instance
+(2,659,748 instances, 175,929,646 values, following structs and arrays) and finds the
+rules above hold everywhere: each instance fits, each array count matches, each
+internal reference lands on an instance of the field's class, each non-empty array
+has the field's type, fields of known width fit their type without overlapping, and
+0x14 and 0x3C mean what the header table says.
 
 ## Palm City
 

@@ -92,6 +92,15 @@ impl Store {
         known.then(|| self.dir.join(pack_name(cas.cas)))
     }
 
+    /// The first ebx entry named `name` (ignoring case), in any bundle.
+    pub fn ebx(&self, name: &str) -> Option<&Asset> {
+        self.superbundles
+            .iter()
+            .flat_map(|sb| &sb.bundles)
+            .flat_map(|b| &b.bundle.ebx)
+            .find(|e| e.name.eq_ignore_ascii_case(name))
+    }
+
     /// Reads the frames as stored.
     pub fn archives(&self) -> Archives<'_> {
         Archives::with_paths(|cas| self.pack_path(cas))

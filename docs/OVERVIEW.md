@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-10-31 (8 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-10-31 (9 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -54,14 +54,14 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
-2 crates in one Cargo workspace, 3,602 lines of Rust (sources and tests), 41 tests.
+2 crates in one Cargo workspace, 4,838 lines of Rust (sources and tests), 47 tests.
 <!-- /progress -->
 
 ```mermaid
 flowchart BT
-    fb["<b>frostbite</b><br/>layout.toc, .toc, .sb,<br/>DbObject, Patch over Data,<br/>cas blocks, nfsh's store"]
+    fb["<b>frostbite</b><br/>layout.toc, .toc, .sb,<br/>DbObject, Patch over Data,<br/>cas blocks, nfsh's store,<br/>ebx partitions"]
     oo["oo2core_6_win64.dll<br/>(the install's own,<br/>loaded at run time)"]
-    app["<b>nfsh</b><br/>the commands:<br/>nfsh inventory, nfsh verify,<br/>nfsh import"]
+    app["<b>nfsh</b><br/>the commands:<br/>nfsh inventory, nfsh verify,<br/>nfsh import, nfsh ebx"]
     oo --> fb
     fb --> app
 ```
@@ -69,13 +69,14 @@ flowchart BT
 <!-- progress:crates -->
 | Crate | Rust lines | Tests | What it does |
 |------|------:|------:|------|
-| `frostbite` | 2,660 | 32 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store |
-| `nfsh` | 942 | 9 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store |
+| `frostbite` | 3,770 | 38 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store; reads ebx partitions (types, instances, fields, arrays, references) |
+| `nfsh` | 1,068 | 9 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store, `ebx` prints a partition as text |
 <!-- /progress -->
 
 Every reader checks bounds and returns an error on malformed input, so a damaged or
-unexpected file is reported, never a crash. The test that reads the real install runs
-on the Windows side, where local-ci passes `NFSH_INSTALL`.
+unexpected file is reported, never a crash. The tests that read the real install and
+the store run on the Windows side, where local-ci passes `NFSH_INSTALL` and `NFSH_STORE`;
+the store test reads every value of all 725,119 ebx partitions.
 
 ## The process
 
@@ -104,7 +105,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 14 decision entries, 8 chosen by the owner, 5 made by Claude for review.
+  So far: 15 decision entries, 8 chosen by the owner, 6 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -122,15 +123,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-9 commits, 8 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 5 feat, 2
-docs, 1 ci. About 6,358 lines added and 211 removed; 34 tracked files.
+10 commits, 9 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 6 feat, 2
+docs, 1 ci. About 7,700 lines added and 245 removed; 36 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
     x-axis ["Oct 30", "Oct 31"]
-    y-axis "PRs" 0 --> 9
-    bar [1, 7]
+    y-axis "PRs" 0 --> 10
+    bar [1, 8]
 ```
 <!-- /progress -->
 
@@ -186,7 +187,7 @@ From [BRIEF.md](BRIEF.md) and [DECISIONS.md](DECISIONS.md) (2026-10-31):
 | 1 | Data inventory: read the install's tables | done (0.1.0) |
 | 2 | Read entry contents: decompress the cas blocks | done (0.2.0) |
 | 3 | Import step: nfsh's own compact copy of the data | done (0.3.0: dead data dropped; 0.4.0: zstd) |
-| 4 | Palm City viewer: fly-through, frame time, day/night | started: level and ebx format read |
+| 4 | Palm City viewer: fly-through, frame time, day/night | started: level layout read; ebx reader (0.5.0) |
 | 5 | Baseline against the original: same camera path, same PC, screenshots | not started |
 | 6 | One drivable car, then races, police, campaign | later |
 
@@ -203,7 +204,8 @@ before-and-after comparisons arrive as in swjkja, still only on `gh-pages`.
 ## Reproducing the numbers
 
     cargo test --workspace                                        # Linux
-    NFSH_INSTALL='D:\…\Need for Speed Heat' WSLENV=NFSH_INSTALL \
-        scripts/cargo-msvc.sh test --workspace                    # Windows, the real install
+    NFSH_INSTALL='D:\…\Need for Speed Heat' NFSH_STORE='D:\nfsh-store' \
+        WSLENV=NFSH_INSTALL:NFSH_STORE \
+        scripts/cargo-msvc.sh test --workspace                    # Windows, install and store
     cargo run --release -- inventory "<install>" > out.md         # INVENTORY.md
     python3 scripts/progress.py                                   # this page's numbers

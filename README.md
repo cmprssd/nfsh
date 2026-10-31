@@ -37,6 +37,13 @@ recompresses the data the install still uses into nfsh's own store (zstd; Window
 since it decompresses the game's blocks first), checks it entry by entry, and prints its
 size. Verifying a store works anywhere: it needs no game files.
 
+```
+cargo run --release -- ebx <store folder> levels/mainlevel/staticworld
+```
+
+prints one ebx partition (an asset description) from the store as text: its imports,
+then each object with its fields, structs and arrays spelled out. It also works anywhere.
+
 ## License
 
 GPLv3 (see [LICENSE](LICENSE)). Need for Speed is a trademark of Electronic Arts; this

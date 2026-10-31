@@ -1,7 +1,9 @@
-//! nfsh: a new engine for Need for Speed: Heat. For now it has three commands: an
+//! nfsh: a new engine for Need for Speed: Heat. For now it has four commands: an
 //! inventory of the owner's install, a check that every entry of the install or of a
-//! store decompresses, and the import into nfsh's own store.
+//! store decompresses, the import into nfsh's own store, and an ebx partition printed
+//! as text.
 
+mod ebx;
 mod import;
 mod inventory;
 mod verify;
@@ -19,6 +21,9 @@ usage: nfsh import [INSTALL] STORE
   Recompresses the data the install still uses into nfsh's own store in the folder
   STORE (created if missing; an earlier store there is replaced), checks the copy,
   and prints its size. Windows only, like verifying an install.
+usage: nfsh ebx STORE NAME
+  Prints the ebx partition NAME (e.g. levels/mainlevel/staticworld) from the store
+  in the folder STORE as text: its imports, then each instance with its fields.
 INSTALL is the game folder (with Data/ and Patch/); default: $NFSH_INSTALL.";
 
 fn main() -> ExitCode {
@@ -27,7 +32,9 @@ fn main() -> ExitCode {
     // The import's last argument is the store; the install may come before it.
     let (cmd, install, store) = match args.as_slice() {
         [cmd, store] if cmd == "import" => (cmd.as_str(), env_install(), Some(store)),
-        [cmd, path, store] if cmd == "import" => (cmd.as_str(), Some(path.into()), Some(store)),
+        [cmd, path, store] if cmd == "import" || cmd == "ebx" => {
+            (cmd.as_str(), Some(path.into()), Some(store))
+        }
         [cmd] => (cmd.as_str(), env_install(), None),
         [cmd, path] => (cmd.as_str(), Some(PathBuf::from(path)), None),
         _ => ("", None, None),
@@ -43,6 +50,7 @@ fn main() -> ExitCode {
         ("import", Some(install), Some(store)) => {
             import::run(&install, store.as_ref()).map(|imported| (import::markdown(&imported), 0))
         }
+        ("ebx", Some(store), Some(name)) => ebx::run(&store, name).map(|text| (text, 0)),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
