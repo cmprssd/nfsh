@@ -646,7 +646,7 @@ impl<'a> Partition<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -675,8 +675,8 @@ mod tests {
     /// A small partition laid out by the rules in FORMATS.md: two `Thing` instances
     /// (align 4, so 8 hidden bytes each), the first exported; a `Thing` has a name, a
     /// float, an array of floats and a reference. The first points at the second, the
-    /// second at the one import.
-    fn sample() -> Vec<u8> {
+    /// second at the one import. The partition's GUID is 0x44 repeated.
+    pub(crate) fn sample() -> Vec<u8> {
         let mut d = vec![0; 0x40];
         d.extend_from_slice(&[0x11; 16]); // import: partition GUID
         d.extend_from_slice(&[0x22; 16]); // import: instance GUID
@@ -772,6 +772,355 @@ mod tests {
         put32(&mut header, boxed as u32);
         d[..0x40].copy_from_slice(&header);
         d
+    }
+
+    /// A value for [`Builder`]; a field's kind comes from its type's declaration.
+    #[derive(Debug, Clone)]
+    pub(crate) enum V {
+        F32(f32),
+        U32(u32),
+        Str(&'static str),
+        /// A class reference as stored: 0, instance + 1, or 0x80000000 | import.
+        Ref(u32),
+        /// A struct's field values, in its type's order.
+        Struct(Vec<V>),
+        Array(Vec<V>),
+    }
+
+    /// The kind of a field [`Builder::ty`] declares, with the type it names.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) enum F {
+        F32,
+        U32,
+        Str,
+        Ref,
+        Struct(&'static str),
+        Array(&'static str),
+    }
+
+    /// Lays out partitions by the rules in FORMATS.md, for tests that need more than
+    /// [`sample`]: types aligned to 4 (class instances hide their first 8 bytes),
+    /// every instance exported, one per repeater.
+    /// A declared type: name, type flags, fields (name and kind; an array type has
+    /// one).
+    type Declared = (&'static str, u16, Vec<(&'static str, F)>);
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct Builder {
+        types: Vec<Declared>,
+        imports: Vec<([u8; 16], [u8; 16])>,
+        instances: Vec<(&'static str, [u8; 16], Vec<V>)>,
+    }
+
+    impl Builder {
+        /// A class type when `class`, else a struct.
+        pub(crate) fn ty(
+            mut self,
+            name: &'static str,
+            class: bool,
+            fields: &[(&'static str, F)],
+        ) -> Self {
+            let flags = if class { CLASS } else { 0x0045 };
+            self.types.push((name, flags, fields.to_vec()));
+            self
+        }
+
+        pub(crate) fn array(mut self, name: &'static str, member: F) -> Self {
+            self.types
+                .push((name, ARRAY_TYPE, vec![("member", member)]));
+            self
+        }
+
+        pub(crate) fn import(mut self, partition: [u8; 16], instance: [u8; 16]) -> Self {
+            self.imports.push((partition, instance));
+            self
+        }
+
+        pub(crate) fn instance(mut self, ty: &'static str, guid: [u8; 16], values: Vec<V>) -> Self {
+            self.instances.push((ty, guid, values));
+            self
+        }
+
+        fn type_index(&self, name: &str) -> u16 {
+            match self.types.iter().position(|t| t.0 == name) {
+                Some(i) => i as u16,
+                None => panic!("type {name} not declared"),
+            }
+        }
+
+        fn width(&self, f: F) -> usize {
+            match f {
+                F::Struct(name) => self.size(name),
+                _ => 4,
+            }
+        }
+
+        /// A type's size: its fields back to back, after 8 hidden bytes for a class.
+        fn size(&self, name: &str) -> usize {
+            let (_, flags, fields) = &self.types[usize::from(self.type_index(name))];
+            let start = if *flags == CLASS { 8 } else { 0 };
+            start + fields.iter().map(|&(_, f)| self.width(f)).sum::<usize>()
+        }
+
+        /// Writes `v` as a value of kind `f`. Strings go to `strings`; an array's
+        /// elements are written to `arrays` (nested arrays first) and `v` stores its
+        /// record index (0, the shared empty one, for none).
+        fn value(
+            &self,
+            f: F,
+            v: &V,
+            out: &mut Vec<u8>,
+            strings: &mut Vec<u8>,
+            arrays: &mut Vec<(u16, u32, Vec<u8>)>,
+        ) {
+            match (f, v) {
+                (F::F32, V::F32(x)) => put32(out, x.to_bits()),
+                (F::U32, V::U32(n)) | (F::Ref, V::Ref(n)) => put32(out, *n),
+                (F::Str, V::Str(s)) => {
+                    put32(out, strings.len() as u32);
+                    strings.extend_from_slice(s.as_bytes());
+                    strings.push(0);
+                }
+                (F::Struct(name), V::Struct(values)) => {
+                    self.fields(name, values, out, strings, arrays)
+                }
+                (F::Array(name), V::Array(elements)) if elements.is_empty() => {
+                    let _ = self.type_index(name);
+                    put32(out, 0);
+                }
+                (F::Array(name), V::Array(elements)) => {
+                    let ty = self.type_index(name);
+                    let member = self.types[usize::from(ty)].2[0].1;
+                    let mut bytes = Vec::new();
+                    for e in elements {
+                        self.value(member, e, &mut bytes, strings, arrays);
+                    }
+                    arrays.push((ty, elements.len() as u32, bytes));
+                    put32(out, arrays.len() as u32); // record 0 is the empty array
+                }
+                _ => panic!("{v:?} is not a {f:?}"),
+            }
+        }
+
+        fn fields(
+            &self,
+            ty: &str,
+            values: &[V],
+            out: &mut Vec<u8>,
+            strings: &mut Vec<u8>,
+            arrays: &mut Vec<(u16, u32, Vec<u8>)>,
+        ) {
+            let fields = &self.types[usize::from(self.type_index(ty))].2;
+            assert_eq!(fields.len(), values.len(), "values for {ty}");
+            for (&(_, f), v) in fields.iter().zip(values) {
+                self.value(f, v, out, strings, arrays);
+            }
+        }
+
+        /// The partition `name` with the GUID `guid`.
+        pub(crate) fn build(&self, name: &str, guid: [u8; 16]) -> Vec<u8> {
+            let mut d = vec![0; 0x40];
+            for (p, i) in &self.imports {
+                d.extend_from_slice(p);
+                d.extend_from_slice(i);
+            }
+            let mut names = Vec::new();
+            for (ty, _, fields) in &self.types {
+                for n in std::iter::once(ty).chain(fields.iter().map(|f| &f.0)) {
+                    names.extend_from_slice(n.as_bytes());
+                    names.push(0);
+                }
+            }
+            d.extend_from_slice(&names);
+            let mut field_count = 0;
+            for (_, flags, fields) in &self.types {
+                let mut offset = if *flags == CLASS { 8 } else { 0 };
+                for &(n, f) in fields {
+                    let (k, ty) = match f {
+                        F::F32 => (0x13, 0),
+                        F::U32 => (0x10, 0),
+                        F::Str => (0x07, 0),
+                        F::Ref => (0x03, 0),
+                        F::Struct(t) => (0x02, self.type_index(t)),
+                        F::Array(t) => (0x04, self.type_index(t)),
+                    };
+                    put32(&mut d, name_hash(n));
+                    put16(&mut d, kind(k));
+                    put16(&mut d, ty);
+                    // An array type's member sits at offset 0.
+                    put32(
+                        &mut d,
+                        if *flags == ARRAY_TYPE {
+                            0
+                        } else {
+                            offset as u32
+                        },
+                    );
+                    put32(&mut d, 0);
+                    offset += self.width(f);
+                }
+            }
+            for (ty, flags, fields) in &self.types {
+                let size = match *flags {
+                    ARRAY_TYPE => self.width(fields[0].1),
+                    _ => self.size(ty),
+                };
+                put32(&mut d, name_hash(ty));
+                put32(&mut d, field_count);
+                d.extend_from_slice(&[fields.len() as u8, 4]);
+                put16(&mut d, *flags);
+                put16(&mut d, size as u16);
+                put16(&mut d, 0);
+                field_count += fields.len() as u32;
+            }
+            for (ty, _, _) in &self.instances {
+                put16(&mut d, self.type_index(ty));
+                put16(&mut d, 1);
+            }
+            pad(&mut d, 16);
+
+            let mut strings = name.as_bytes().to_vec();
+            strings.push(0);
+            let mut arrays = Vec::new();
+            let mut data = Vec::new();
+            for (ty, guid, values) in &self.instances {
+                pad(&mut data, 4);
+                data.extend_from_slice(guid);
+                self.fields(ty, values, &mut data, &mut strings, &mut arrays);
+            }
+            let mut records = vec![(0u32, 0u32, 2u32)];
+            let mut elements = vec![0; 12];
+            for (ty, count, bytes) in &arrays {
+                put32(&mut elements, *count);
+                records.push((elements.len() as u32, *count, u32::from(*ty)));
+                elements.extend_from_slice(bytes);
+            }
+            for &(offset, count, ty) in &records {
+                put32(&mut d, offset);
+                put32(&mut d, count);
+                put32(&mut d, ty);
+            }
+            pad(&mut d, 16);
+            let meta = d.len();
+            d.extend_from_slice(&strings);
+            pad(&mut d, 16);
+            let instances = d.len();
+            d.extend_from_slice(&data);
+            let end = d.len();
+            d.resize((end + 4).next_multiple_of(16), 0);
+            let instance_data = d.len() - instances;
+            d.extend_from_slice(&elements);
+            let boxed = d.len() - instances;
+
+            let mut header = Vec::new();
+            put32(&mut header, MAGIC);
+            put32(&mut header, meta as u32);
+            put32(&mut header, (d.len() - meta) as u32);
+            put32(&mut header, self.imports.len() as u32);
+            let repeaters = self.instances.len() as u16;
+            put16(&mut header, repeaters);
+            put16(&mut header, repeaters); // all exported
+            put16(&mut header, repeaters);
+            put16(&mut header, self.types.len() as u16);
+            put16(&mut header, field_count as u16);
+            put16(&mut header, names.len() as u16);
+            put32(&mut header, strings.len() as u32);
+            put32(&mut header, records.len() as u32);
+            put32(&mut header, instance_data as u32);
+            header.extend_from_slice(&guid);
+            put32(&mut header, 0);
+            put32(&mut header, boxed as u32);
+            d[..0x40].copy_from_slice(&header);
+            d
+        }
+    }
+
+    #[test]
+    fn the_builder_writes_partitions_that_read_back() {
+        let b = Builder::default()
+            .ty("Vec2", false, &[("x", F::F32), ("y", F::F32)])
+            .array("Vec2[]", F::Struct("Vec2"))
+            .array("Uint32[]", F::U32)
+            .ty(
+                "Thing",
+                true,
+                &[
+                    ("Name", F::Str),
+                    ("At", F::Struct("Vec2")),
+                    ("Path", F::Array("Vec2[]")),
+                    ("Next", F::Ref),
+                ],
+            )
+            .ty(
+                "Holder",
+                true,
+                &[
+                    ("Lists", F::Array("Uint32[]")),
+                    ("Empty", F::Array("Uint32[]")),
+                ],
+            )
+            .import([1; 16], [2; 16])
+            .instance(
+                "Thing",
+                [3; 16],
+                vec![
+                    V::Str("one"),
+                    V::Struct(vec![V::F32(1.0), V::F32(2.0)]),
+                    V::Array(vec![V::Struct(vec![V::F32(3.0), V::F32(4.0)])]),
+                    V::Ref(2),
+                ],
+            )
+            .instance(
+                "Holder",
+                [4; 16],
+                vec![V::Array(vec![V::U32(7), V::U32(8)]), V::Array(vec![])],
+            )
+            .instance(
+                "Thing",
+                [5; 16],
+                vec![
+                    V::Str("two"),
+                    V::Struct(vec![V::F32(0.0), V::F32(0.0)]),
+                    V::Array(vec![]),
+                    V::Ref(0x8000_0000),
+                ],
+            );
+        let data = b.build("test/built", [9; 16]);
+        let p = Partition::parse(&data).unwrap();
+        assert_eq!(p.name, "test/built");
+        assert_eq!(p.header.guid, [9; 16]);
+        assert_eq!(
+            p.instances.iter().map(|i| i.guid).collect::<Vec<_>>(),
+            [Some([3; 16]), Some([4; 16]), Some([5; 16])]
+        );
+        let v = values(&p).unwrap();
+        let ok = |i: usize, want: &str| assert_eq!(v[i], want, "{v:#?}");
+        ok(0, r#"Name = String(Some("one"))"#);
+        ok(2, "Path = Array(1, 1)");
+        ok(4, "Next = Class(Internal(1))");
+        ok(5, "Lists = Array(2, 2)");
+        ok(6, "  UInt(7)");
+        ok(7, "  UInt(8)");
+        ok(8, "Empty = Array(0, 2)");
+        ok(9, r#"Name = String(Some("two"))"#);
+        ok(12, "Next = Class(Import(0))");
+        // Structs hold their fields in place, in arrays too.
+        let xy = |o: Object| -> Vec<Value> {
+            p.fields_of(o.type_index)
+                .unwrap()
+                .iter()
+                .map(|f| p.value(f, o.base).unwrap())
+                .collect()
+        };
+        let fields = p.fields_of(p.instances[0].type_index).unwrap();
+        let Value::Struct(at) = p.value(fields[1], p.instances[0].base).unwrap() else {
+            panic!("At is not a struct");
+        };
+        assert_eq!(xy(at), [Value::Float32(1.0), Value::Float32(2.0)]);
+        let Value::Struct(first) = p.element(&p.arrays[1], 0).unwrap() else {
+            panic!("Path[0] is not a struct");
+        };
+        assert_eq!(xy(first), [Value::Float32(3.0), Value::Float32(4.0)]);
     }
 
     /// Every value of every instance, as text, so one comparison checks them all.

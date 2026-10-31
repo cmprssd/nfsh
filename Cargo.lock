@@ -28,7 +28,7 @@ checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "frostbite"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "zstd",
 ]
@@ -62,7 +62,7 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "nfsh"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "frostbite",
 ]

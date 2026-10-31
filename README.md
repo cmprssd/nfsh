@@ -6,8 +6,9 @@ scratch: Heat's engine and code were never released.
 
 It ships no game data. It reads the assets from your own copy of the game.
 
-Status: early. nfsh can read the install's tables, list everything in it and
-decompress its entries; nothing renders yet. The goal is in [docs/BRIEF.md](docs/BRIEF.md).
+Status: early. nfsh can read the install's tables, list everything in it, copy it into
+its own store, read the asset descriptions and find where Palm City places every mesh;
+nothing renders yet. The goal is in [docs/BRIEF.md](docs/BRIEF.md).
 
 ## Use
 
@@ -43,6 +44,16 @@ cargo run --release -- ebx <store folder> levels/mainlevel/staticworld
 
 prints one ebx partition (an asset description) from the store as text: its imports,
 then each object with its fields, structs and arrays spelled out. It also works anywhere.
+
+```
+cargo run --release -- reindex <store folder>
+cargo run --release -- level <store folder>
+cargo run --release -- level <store folder> 495
+```
+
+`reindex` lists every partition's GUID in a store made before 0.6.0 (new imports do it
+already). `level` then prints Palm City's level graph: the bundles it loads and its 232
+streaming zones, or, given a zone, every mesh that zone places and where.
 
 ## License
 

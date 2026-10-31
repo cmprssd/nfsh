@@ -6,7 +6,9 @@
 //!
 //! In a store, the archive a [`Location`] names is a pack: [`CasRef::cas`] is the pack
 //! number, with `patch` false and `package` 0. The index is our own format (see
-//! `docs/FORMATS.md`), big-endian like Heat's tables.
+//! `docs/FORMATS.md`), big-endian like Heat's tables. It also lists each ebx's
+//! partition GUID, so a reference into another partition is found without reading
+//! every ebx.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -15,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::cas::{Archives, Decoder};
+use crate::ebx::Partition;
 use crate::frames::{self, FrameDecoder, FrameEncoder};
 use crate::install::{BundleEntry, ChunkEntry, Install, Layer, Superbundle};
 use crate::reader::Reader;
@@ -24,7 +27,10 @@ use crate::{CasRef, Location, Result, bail};
 
 pub const INDEX: &str = "index.nfsh";
 const MAGIC: &[u8; 8] = b"NFSHSTOR";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
+/// The version before the partition GUIDs, still read: such a store has none until
+/// [`reindex`] adds them.
+const VERSION_WITHOUT_GUIDS: u32 = 2;
 
 /// A pack is closed once the next entry would take it past this size, so packs stay
 /// easy to copy and their offsets fit the 32-bit [`Location::offset`].
@@ -61,6 +67,34 @@ pub struct Store {
     pub packs: Vec<u64>,
     /// The ebx frames' dictionary; empty for none.
     pub dictionary: Vec<u8>,
+    /// Every ebx's partition GUID with where it is listed, sorted by GUID; empty for
+    /// a store not indexed yet.
+    by_guid: Vec<([u8; 16], EbxRef)>,
+}
+
+/// Where an ebx is listed in a store: indices into [`Store::superbundles`], its
+/// bundles, and their ebx.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EbxRef {
+    pub superbundle: u32,
+    pub bundle: u32,
+    pub ebx: u32,
+}
+
+/// Every ebx of `superbundles` with where it is listed, in index order.
+fn each_ebx(superbundles: &[Superbundle]) -> impl Iterator<Item = (EbxRef, &Asset)> {
+    superbundles.iter().zip(0..).flat_map(|(sb, s)| {
+        sb.bundles.iter().zip(0..).flat_map(move |(b, n)| {
+            b.bundle.ebx.iter().zip(0..).map(move |(a, e)| {
+                let at = EbxRef {
+                    superbundle: s,
+                    bundle: n,
+                    ebx: e,
+                };
+                (at, a)
+            })
+        })
+    })
 }
 
 impl Store {
@@ -79,12 +113,49 @@ impl Store {
                 bail!("{}: {len} bytes, the index says {size}", path.display());
             }
         }
+        let mut by_guid: Vec<([u8; 16], EbxRef)> = index
+            .partitions
+            .iter()
+            .zip(each_ebx(&index.superbundles))
+            .map(|(&guid, (at, _))| (guid, at))
+            .collect();
+        by_guid.sort_unstable();
         Ok(Self {
             dir: dir.to_owned(),
             superbundles: index.superbundles,
             packs: index.packs,
             dictionary: index.dictionary,
+            by_guid,
         })
+    }
+
+    /// Whether the index lists the partition GUIDs (see [`reindex`]).
+    pub fn has_guids(&self) -> bool {
+        !self.by_guid.is_empty()
+    }
+
+    /// Every ebx holding the partition `guid`, in index order: a partition is often
+    /// copied into several bundles. An error for a store without GUIDs.
+    pub fn partitions(&self, guid: &[u8; 16]) -> Result<impl Iterator<Item = EbxRef> + '_> {
+        let guid = *guid;
+        if !self.has_guids() {
+            bail!(
+                "{} has no partition GUIDs; run `nfsh reindex` on it",
+                self.dir.display()
+            );
+        }
+        let start = self.by_guid.partition_point(|(g, _)| *g < guid);
+        Ok(self.by_guid[start..]
+            .iter()
+            .take_while(move |(g, _)| *g == guid)
+            .map(|&(_, at)| at))
+    }
+
+    /// The bundle and the ebx at `at`, if the store lists it.
+    pub fn ebx_at(&self, at: EbxRef) -> Option<(&BundleEntry, &Asset)> {
+        let sb = self.superbundles.get(at.superbundle as usize)?;
+        let b = sb.bundles.get(at.bundle as usize)?;
+        Some((b, b.bundle.ebx.get(at.ebx as usize)?))
     }
 
     pub fn pack_path(&self, cas: CasRef) -> Option<PathBuf> {
@@ -364,12 +435,10 @@ pub fn import(
         packs,
         dictionary,
         superbundles,
+        partitions: Vec::new(),
     };
-    let bytes = encode(&index);
-    let tmp = dir.join(format!("{INDEX}.tmp"));
-    std::fs::write(&tmp, &bytes).map_err(|e| io_error(&tmp, e))?;
     let path = dir.join(INDEX);
-    std::fs::rename(&tmp, &path).map_err(|e| io_error(&path, e))?;
+    write_index(dir, &index)?;
 
     progress("checking the copy");
     let store = Store::open(dir)?;
@@ -389,14 +458,71 @@ pub fn import(
             },
         )?;
     }
+    progress("listing the partition GUIDs");
+    let index_size = reindex(dir)?;
     Ok(Imported {
         superbundles: store.superbundles.len(),
         bundles: store.superbundles.iter().map(|s| s.bundles.len()).sum(),
         entries: pairs.len(),
         packs: store.packs,
-        index: bytes.len() as u64,
+        index: index_size,
         dictionary: store.dictionary.len() as u64,
     })
+}
+
+/// Writes `index` as the index of the store in `dir`, under a temporary name renamed
+/// at the end, so a reader never sees half an index. Returns its size.
+fn write_index(dir: &Path, index: &Index) -> Result<u64> {
+    let bytes = encode(index);
+    let tmp = dir.join(format!("{INDEX}.tmp"));
+    std::fs::write(&tmp, &bytes).map_err(|e| io_error(&tmp, e))?;
+    let path = dir.join(INDEX);
+    std::fs::rename(&tmp, &path).map_err(|e| io_error(&path, e))?;
+    Ok(bytes.len() as u64)
+}
+
+/// Reads the partition GUID of every ebx in the store in `dir`, on every core, and
+/// rewrites its index with them (replacing any it had). Every ebx is parsed on the
+/// way, so a damaged one fails here. Returns the new index's size. Running it again
+/// writes the same index.
+pub fn reindex(dir: &Path) -> Result<u64> {
+    let store = Store::open(dir)?;
+    // Entries shared by several bundles are read once.
+    let mut guids: BTreeMap<Location, [u8; 16]> = each_ebx(&store.superbundles)
+        .map(|(_, a)| (a.location, [0; 16]))
+        .collect();
+    let locations: Vec<Location> = guids.keys().copied().collect();
+    let found = in_parallel(
+        &locations,
+        || store.entries(),
+        |entries, &l| {
+            let data = entries.read(l)?;
+            let partition =
+                Partition::parse(&data).map_err(|e| crate::Error(format!("{l:?}: {e}")))?;
+            Ok(partition.header.guid)
+        },
+    )?;
+    for (l, guid) in locations.into_iter().zip(found) {
+        guids.insert(l, guid);
+    }
+    let partitions = each_ebx(&store.superbundles)
+        .map(|(_, a)| guids[&a.location])
+        .collect();
+    let Store {
+        superbundles,
+        packs,
+        dictionary,
+        ..
+    } = store;
+    write_index(
+        dir,
+        &Index {
+            packs,
+            dictionary,
+            superbundles,
+            partitions,
+        },
+    )
 }
 
 fn finish(path: &Path, file: BufWriter<File>) -> Result<()> {
@@ -478,6 +604,9 @@ pub struct Index {
     pub dictionary: Vec<u8>,
     /// With their locations in the packs.
     pub superbundles: Vec<Superbundle>,
+    /// Each ebx's partition GUID, in the order the superbundles list them; empty for
+    /// none.
+    pub partitions: Vec<[u8; 16]>,
 }
 
 pub fn encode(index: &Index) -> Vec<u8> {
@@ -519,6 +648,8 @@ pub fn encode(index: &Index) -> Vec<u8> {
             w.location(c.chunk.location);
         }
     }
+    w.count(&index.partitions);
+    index.partitions.iter().for_each(|g| w.raw(g));
     w.0
 }
 
@@ -631,8 +762,10 @@ pub fn decode(bytes: &[u8]) -> Result<Index> {
         bail!("not an nfsh store index");
     }
     let version = r.u32_be()?;
-    if version != VERSION {
-        bail!("store version {version}; this nfsh reads version {VERSION}");
+    if version != VERSION && version != VERSION_WITHOUT_GUIDS {
+        bail!(
+            "store version {version}; this nfsh reads versions {VERSION_WITHOUT_GUIDS} and {VERSION}"
+        );
     }
     let mut i = IndexReader {
         r,
@@ -645,6 +778,14 @@ pub fn decode(bytes: &[u8]) -> Result<Index> {
     let len = i.r.u32_be()? as usize;
     let dictionary = i.r.bytes(len)?.to_vec();
     let superbundles = i.list(IndexReader::superbundle)?;
+    let partitions = match version {
+        VERSION => i.list(|i| i.r.array())?,
+        _ => Vec::new(),
+    };
+    let ebx = each_ebx(&superbundles).count();
+    if !partitions.is_empty() && partitions.len() != ebx {
+        bail!("{} partition GUIDs for {ebx} ebx", partitions.len());
+    }
     if i.r.pos() != bytes.len() {
         bail!("{} bytes after the index", bytes.len() - i.r.pos());
     }
@@ -652,6 +793,7 @@ pub fn decode(bytes: &[u8]) -> Result<Index> {
         packs: i.packs,
         dictionary,
         superbundles,
+        partitions,
     })
 }
 
@@ -713,6 +855,7 @@ mod tests {
             packs,
             dictionary: b"dict".to_vec(),
             superbundles: sample(),
+            partitions: vec![[8; 16]],
         }
     }
 
@@ -737,6 +880,26 @@ mod tests {
         let mut version = bytes.clone();
         version[11] = 1;
         assert!(decode(&version).unwrap_err().0.contains("version 1"));
+        // One GUID per ebx, or none.
+        let mut two = index(vec![30, 35]);
+        two.partitions.push([9; 16]);
+        assert!(
+            decode(&encode(&two))
+                .unwrap_err()
+                .0
+                .contains("2 partition GUIDs")
+        );
+    }
+
+    #[test]
+    fn a_version_2_index_reads_without_guids() {
+        let mut old = index(vec![30, 35]);
+        old.partitions.clear();
+        let mut bytes = encode(&old);
+        // Version 2 ended after the superbundles: drop the empty GUID list.
+        bytes.truncate(bytes.len() - 4);
+        bytes[11] = 2;
+        assert_eq!(decode(&bytes), Ok(old));
     }
 
     #[test]
@@ -813,6 +976,7 @@ mod tests {
                 packs,
                 dictionary,
                 superbundles: sb,
+                partitions: Vec::new(),
             }),
         )
         .unwrap();
@@ -824,6 +988,58 @@ mod tests {
         assert!(entries.read(at(0, 0, e + c)).is_err());
         assert!(entries.read(at(0, e, c + 1)).is_err());
         assert!(entries.read(at(1, 0, 4)).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A store by hand whose one ebx is the ebx tests' sample partition, listed by two
+    /// bundles: `reindex` finds its GUID, and the store finds both copies by it.
+    #[test]
+    fn reindex_lists_every_copy_of_a_partition() {
+        let dir = std::env::temp_dir().join(format!("nfsh-reindex-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let frame = FrameEncoder::new(None)
+            .unwrap()
+            .encode(&crate::ebx::tests::sample(), true)
+            .unwrap();
+        std::fs::write(dir.join(pack_name(0)), &frame).unwrap();
+        let mut sb = sample();
+        let bundle = &mut sb[0].bundles[0];
+        bundle.bundle.ebx[0].location = at(0, 0, frame.len() as u32);
+        bundle.bundle.res.clear();
+        bundle.bundle.chunks.clear();
+        let copy = bundle.clone();
+        sb[0].bundles.push(copy);
+        sb[0].chunks.clear();
+        let old = Index {
+            packs: vec![frame.len() as u64],
+            dictionary: Vec::new(),
+            superbundles: sb,
+            partitions: Vec::new(),
+        };
+        std::fs::write(dir.join(INDEX), encode(&old)).unwrap();
+        let store = Store::open(&dir).unwrap();
+        assert!(!store.has_guids());
+        assert!(store.partitions(&[0x44; 16]).is_err());
+
+        let size = reindex(&dir).unwrap();
+        let bytes = std::fs::read(dir.join(INDEX)).unwrap();
+        assert_eq!(size, bytes.len() as u64);
+        assert_eq!(decode(&bytes).unwrap().partitions, [[0x44; 16]; 2]);
+        let store = Store::open(&dir).unwrap();
+        let found: Vec<EbxRef> = store.partitions(&[0x44; 16]).unwrap().collect();
+        let at = |bundle| EbxRef {
+            superbundle: 0,
+            bundle,
+            ebx: 0,
+        };
+        assert_eq!(found, [at(0), at(1)]);
+        assert_eq!(store.ebx_at(at(1)).unwrap().1.name, "cars/a");
+        assert!(store.ebx_at(at(2)).is_none());
+        assert_eq!(store.partitions(&[0x45; 16]).unwrap().count(), 0);
+        // Again: the same index.
+        reindex(&dir).unwrap();
+        assert_eq!(std::fs::read(dir.join(INDEX)).unwrap(), bytes);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -873,7 +1089,11 @@ mod tests {
         assert_eq!(store.packs, imported.packs);
         assert!(imported.entries > 100, "only {} entries", imported.entries);
         assert!(imported.dictionary > 0, "no dictionary");
-        assert_eq!(said.last().map(String::as_str), Some("checking the copy"));
+        assert_eq!(
+            said.last().map(String::as_str),
+            Some("listing the partition GUIDs")
+        );
+        assert!(store.has_guids());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

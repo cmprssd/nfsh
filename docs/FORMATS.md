@@ -240,21 +240,67 @@ Palm City is `Win32/levels/mainlevel/mainlevel`. Its root partition,
 StaticWorld, GameSpatialData, GameLogic, RobotoGameLogic, Prototypes, GameCollectibles
 and CinematicsProduction.
 
-How the drawable world hangs together, as far as read:
+How the drawable world hangs together, read by `frostbite::level` and printed by
+`nfsh level STORE [ZONE]`; checked on the whole city (see the end of this section).
 
-- `levels/mainlevel/staticworld` is a `SubWorldData` with 8 sub-world and 3 layer
-  references.
-- The world is 232 streaming zones, `worldart_zs_<n>`, each its own bundle. A zone's
-  root partition is a `SubWorldData` with its `StaticModelGroupEntityData` (the placed
-  static meshes), physics and `ZoneStreamerSubWorldRod`s; its `_layer` partition holds
-  the placed objects (`ObjectReferenceObjectData`), lights, reflection volumes and
-  effects.
+**Sub-levels are bundles, linked by name.** A `SubWorldReferenceObjectData` or a
+`ZoneStreamerSubWorldRod` has a `BundleName` string (`levels/mainlevel/worldart_zs_495`),
+which is the bundle `Win32/<name>` (any case), and the bundle's root partition has the
+same name. Following every such link in every ebx of each bundle, from
+`levels/mainlevel/mainlevel`, reaches 2,034 bundles, six links deep:
+
+- `mainlevel` links to 7 sub-levels; `levels/mainlevel/staticworld` (a `SubWorldData`)
+  to WorldArt, TimeOfDay_Databases, InteriorLightmaps, DrivableSurfaces, WorldVista,
+  WorldRoadDecals, BakingLights and WorldAudio, and to 3 layers by reference.
+- The `worldart` bundle's root partition is empty; its rods are in another of its
+  partitions, `overridenassets/<guid>_subworlddata` (a `ZoneStreamerEntityData` and 19
+  `ZoneStreamerSubWorldRod`). Zones then link to further zones, regions
+  (`worldart_zs_mainlevel_region_{common,city,jungle,rural}`) and their own lighting
+  variants, so the 232 zones `worldart_zs_<n>` are reached at depths 3 to 6.
+- `ZoneStreamerNotificationEntityData` has a `BundleName` too, but it names no bundle
+  (`617`, `mainlevel_region_common`): it is not a link.
+
+**Everything else is a class reference**, often an import into another partition,
+found by its partition GUID (nfsh's store lists them, see below). A partition is often
+copied into several bundles: 725,215 ebx entries hold 221,738 distinct partitions, and
+of the 41,414 with copies, all but 7 keep one name and all but 236 the same bytes. The
+level reader takes the copy in the level's own superbundle when there is one.
+
+**What a zone places.** A zone's root partition holds a `SubWorldData` whose `Objects`
+list is followed, recursively:
+
+| object | what it places |
+|--------|----------------|
+| `StaticModelGroupEntityData` | its `MemberDatas`: each a `MeshAsset` reference and `InstanceTransforms` (exactly `InstanceCount` of them), under the group's `Transform` |
+| `StaticModelEntityData` | its `Mesh` at its `Transform` |
+| `ObjectReferenceObjectData`, `SpatialPrefabReferenceObjectData`, `LayerReferenceObjectData` | its `Blueprint` at `BlueprintTransform` |
+| `ObjectBlueprint` | its `Object` (usually a `StaticModelEntityData` in the same partition) |
+| `SubWorldData`, `LayerData`, `SpatialPrefabBlueprint`, `PrefabBlueprint` | each of its `Objects` |
+
+A zone's `LayerReferenceObjectData` places its `_layer` partition's `LayerData`, which
+holds the placed objects (`ObjectReferenceObjectData`, prefabs, lights, effects).
+
+A `LinearTransform` is four `Vec3`: `right`, `up`, `forward` (the axes) and `trans`
+(the origin), in the parent's space; a point (x, y, z) goes to
+x·right + y·up + z·forward + trans. Placements in zones are in world coordinates
+(zone 495, the speedway, sits around x 3,700-4,400, y 80-95, z 2,800-3,350); the zone
+and group transforms seen so far are the identity. Composing a prefab's child into
+its parent was checked by hand on zone 495 (a tube light inside a tripod prefab).
+
+Checked on the whole city, 2026-10-31: all 232 zones walk with every reference
+resolved, placing 259,999 meshes; counted once per zone, 21,015 `RigidMeshAsset` and
+6,738 `CompositeMeshAsset`. Not followed yet (counted by `nfsh level`): lights,
+probe and emitter volumes, effects locators, sound locators, `ClothObjectBlueprint`
+(87) and the zones' lighting (`DynamicEnlightenEntityData`).
+
 - Every zone has four lighting variants, `worldart_zs_<n>_midday`, `_overcast`,
   `_sunset` and `_tealnight`: each a small bundle with the zone's precomputed global
   illumination (`StaticEnlightenEntityData`, a GI grid, and `worldart_radiosity/`
   textures).
-- Meshes are `RigidMeshAsset` ebx whose geometry is a res and chunks; textures are
-  `TextureAsset` ebx with a `Texture` res (the header) and a chunk (the pixels).
+- Meshes are `RigidMeshAsset` ebx whose geometry is a res (`MeshSetResource` names it
+  by id) and chunks; textures are `TextureAsset` ebx with a `Texture` res (the header)
+  and a chunk (the pixels). A zone's bundle holds most of the meshes, blueprints and
+  textures it uses; the rest are in shared bundles (the regions).
 - The terrain is `mainlevel_terrain_2048`, in the root bundle.
 
 ## nfsh's store (our own format)
@@ -280,7 +326,7 @@ offset in it and the size (u32 each), and must lie inside the pack.
 
 | field | |
 |-------|--|
-| magic, version | `NFSHSTOR`, u32 2 (version 1 kept Heat's Oodle blocks) |
+| magic, version | `NFSHSTOR`, u32 3 (version 2 had no partition GUIDs and is still read; version 1 kept Heat's Oodle blocks) |
 | packs | list of u64 sizes (checked against the files on open) |
 | dictionary | byte run: the ebx frames' zstd dictionary, empty for none |
 | superbundles | list: name, bundles, chunks |
@@ -289,6 +335,9 @@ offset in it and the size (u32 each), and must lie inside the pack.
 | res | as ebx, then type hash (u32), metadata (16 bytes), id (u64) |
 | bundle chunk | id (16 bytes), SHA-1, logical offset, logical size (u32), location |
 | superbundle chunk | id, layer, location |
+| partitions | after the superbundles: list of each ebx's partition GUID (16 bytes, from its header), in the order the superbundles list their ebx; empty for none, else one per ebx |
 
-Nothing may follow the last superbundle. The index is written after the packs, under
+Nothing may follow the partition list. The import lists the GUIDs at the end, by
+reading every ebx back from the packs; `nfsh reindex` does the same for a version 2
+store, in about 90 seconds. The index is written after the packs, under
 a temporary name renamed at the end, so a store without `index.nfsh` is incomplete.

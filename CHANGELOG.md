@@ -4,6 +4,21 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-10-31
+
+### Added
+
+- `nfsh level STORE` prints Palm City's level graph: the 2,034 bundles the level loads,
+  found by following its sub-level links, and its 232 streaming zones.
+- `nfsh level STORE ZONE` (a zone number such as `495`) prints what that zone places:
+  every mesh with its position and axes in world space, following mesh groups,
+  layers, prefabs and blueprints across partitions, plus a count of the objects not
+  drawn yet (lights, volumes, effects). Across the whole city that is 259,999 placed
+  meshes, with every reference resolved.
+- `nfsh reindex STORE` adds every ebx's partition GUID to a store's index, so a
+  reference into another partition is found at once. Stores made by 0.4.0 and 0.5.0
+  still open; run it on them once (about 90 seconds). New imports do it themselves.
+
 ## [0.5.0] - 2026-10-31
 
 ### Added
