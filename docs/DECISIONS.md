@@ -257,3 +257,36 @@ The plan, one PR each (decided by Claude, pending review):
   land on instances of the field's class, non-empty arrays have the field's type,
   fields fit their types, the header counts). Why: the rules were found on a sample of
   2,379 partitions; the test proves them on all 725,119.
+
+## 2026-10-31: The level graph (decided by Claude, pending review)
+
+- **Each ebx's partition GUID is kept in the store's index** (version 3: a list after
+  the superbundles, 16 bytes an ebx, 11.6 MB on 155 MB), and `nfsh reindex` adds it to
+  a version 2 store. Why: resolving an import means finding a partition by GUID, and
+  reading every ebx's header to find one takes 80-90 seconds; a stored list opens with
+  the index. The alternatives were a scan at every start (too slow for the viewer) or a
+  separate cache file next to the store (two files to keep in step, against "one
+  index plus packs"). The import fills the list by reading the packs back, the same
+  code as `reindex`, so there is one way it is made; it adds about a minute and a half
+  to a two-hour import. Version 2 stays readable so the owner's store needed no new
+  import.
+- **Every copy is listed; the level's own superbundle's copy is preferred.** Why:
+  221,738 partitions are stored 725,215 times, nearly always identical; preferring the
+  level's superbundle reads what the game would load for that level, and any copy
+  serves otherwise.
+- **Sub-levels are followed by `BundleName`, in every ebx of a bundle**, not only its
+  root partition. Why: the WorldArt bundle's zone links are in a second partition
+  (`overridenassets/…_subworlddata`), not in `worldart` itself; scanning every ebx
+  reaches all 232 zones, and `ZoneStreamerNotificationEntityData`, whose `BundleName`
+  names no bundle, is left out by type.
+- **What is followed is a list of type names; everything else is counted, not
+  guessed.** Why: the report then says what the viewer will not draw yet (lights,
+  volumes, cloth: about 10,000 objects city-wide) instead of hiding it; an explicit
+  list is easy to extend as the viewer grows.
+- **An imported blueprint is walked once and its placements reused** wherever it is
+  placed; a blueprint inside itself is cut off and counted, as is nesting past 32
+  levels. Why: the same props are placed thousands of times, and damaged or unexpected
+  data must never loop or crash.
+- **`nfsh level STORE [ZONE]`** prints the bundle tree, or one zone's placements as
+  one line each (position, axes, mesh). Why: text is what the next PRs (meshes, then
+  the viewer) need to check against, and it can be diffed.
