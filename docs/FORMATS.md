@@ -55,6 +55,31 @@ size. The stored bytes are compressed blocks, each with an 8-byte header (decomp
 size u32, codec u16 `0x1170` (Oodle in Heat's files), stored size u16), with no gap
 between entries.
 
+## Stored blocks
+
+An entry's stored bytes are a chain of blocks that ends exactly at the location's size.
+Each block is an 8-byte header and a payload:
+
+| field | |
+|-------|--|
+| decompressed size | u32, 1 to 0x10000 (the top byte, flags in other games, is always 0) |
+| codec | u16 |
+| stored size | u16, the payload's length |
+
+| codec | payload |
+|-------|---------|
+| 0x1170 | Oodle, decompressed with the install's `oo2core_6_win64.dll` |
+| 0x0070, 0x0071 | stored as is: as long as the decompressed size; for a full 0x10000-byte block the stored size field wraps to 0 |
+
+No other codec appears in the first 256 MiB of the archives sampled, and `nfsh verify`
+finds none in any current entry. An ebx or res entry decompresses to exactly its listed
+size. A chunk entry in a bundle stores only the chunk's blocks that cover its logical
+range: from the 0x10000 boundary at or before the logical offset to the offset plus
+the logical size, so it decompresses to `offset % 0x10000 + size` bytes. For a texture,
+that is the last small mips of the chain; where the rest is stored is not confirmed
+yet. All 1,317,687 distinct entries of the owner's install (31.5 GiB stored, 65.4 GiB
+decompressed) pass these checks.
+
 ## Table of contents (`.toc` body)
 
 Twelve words, offsets from the start of the body:

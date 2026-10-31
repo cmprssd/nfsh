@@ -100,3 +100,28 @@ Settled while writing the brief (`docs/BRIEF.md`), over six rounds of questions.
   hand after each merge (`scripts/publish-progress.sh`, which refuses unless HEAD is
   `origin/main`). Why: as swjkja; the page always matches main as merged, and the repo
   doesn't grow with each refresh.
+
+## 2026-10-31: Releases (chosen by the owner)
+
+- **Each shipped version gets a tag and a GitHub Release**, starting with `v0.1.0` (on
+  PR #3's merge), with the CHANGELOG section as notes. Made locally, at no cost.
+
+## 2026-10-31: Decompressing the cas blocks (chosen by the owner)
+
+- **Oodle blocks are decompressed by the install's own `oo2core_6_win64.dll`**, loaded
+  at run time from the game folder and never shipped, rather than a clean-room Rust
+  decoder. Why: exact output from the start, for a fraction of the work. The cost: only
+  Windows can load it, so on Linux nfsh can't read compressed entries yet (a native
+  decoder, or Wine, can come later), and the tests that decompress real data run on
+  the Windows side of local-ci.
+
+## 2026-10-31: `nfsh verify` (decided by Claude, pending review)
+
+- **A command that decompresses every distinct entry the patched tables point at** and
+  checks its size: ebx and res their listed size, a bundle's chunk entry the
+  blocks covering its logical range (see `docs/FORMATS.md`), and a
+  chunk listed only in a `.toc` just has to decompress. It exits non-zero on any failure and lists the first 20. Why:
+  it proves the block format and the decoder against the whole install, not a sample,
+  and the import step will read everything the same way.
+- **SHA-1s are not checked yet.** Why: no hashing code exists, and the size checks
+  already catch a wrong decoder; worth adding with the import step.
