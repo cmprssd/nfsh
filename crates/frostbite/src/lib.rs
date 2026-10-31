@@ -4,6 +4,7 @@
 
 pub mod cas;
 pub mod dbobject;
+pub mod frames;
 pub mod install;
 pub mod oodle;
 pub mod reader;

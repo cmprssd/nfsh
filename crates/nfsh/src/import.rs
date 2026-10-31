@@ -1,18 +1,21 @@
-//! `nfsh import`: copies what the install's patched tables still point at into nfsh's
-//! own store (see [`frostbite::store`]), and reports how big it came out.
+//! `nfsh import`: recompresses what the install's patched tables still point at into
+//! nfsh's own store (see [`frostbite::store`]), and reports how big it came out.
 
 use std::fmt::Write as _;
 use std::path::Path;
 
 use frostbite::Result;
 use frostbite::install::Install;
+use frostbite::oodle::Oodle;
 use frostbite::store::{self, Imported};
 
 use crate::inventory::size;
 
 pub fn run(root: &Path, dir: &Path) -> Result<Imported> {
     let install = Install::open(root)?;
-    store::import(&install, &install.superbundles, dir)
+    let oodle = Oodle::load(root)?;
+    let names = &install.superbundles;
+    store::import(&install, &oodle, names, dir, &mut |s| eprintln!("{s}"))
 }
 
 pub fn markdown(i: &Imported) -> String {
@@ -20,8 +23,12 @@ pub fn markdown(i: &Imported) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{} superbundles, {} bundles, {} distinct entries.\n",
-        i.superbundles, i.bundles, i.entries
+        "{} superbundles, {} bundles, {} distinct entries; the index holds a {} ebx \
+         dictionary.\n",
+        i.superbundles,
+        i.bundles,
+        i.entries,
+        size(i.dictionary)
     );
     let _ = writeln!(out, "| file | count | bytes | size |");
     let _ = writeln!(out, "|------|------:|------:|-----:|");
@@ -48,10 +55,12 @@ mod tests {
             entries: 9,
             packs: vec![1 << 30, 1 << 29],
             index: 1 << 20,
+            dictionary: 256 << 10,
         };
         assert_eq!(
             markdown(&imported),
-            "2 superbundles, 5 bundles, 9 distinct entries.\n\n\
+            "2 superbundles, 5 bundles, 9 distinct entries; the index holds a 0.25 MiB \
+             ebx dictionary.\n\n\
              | file | count | bytes | size |\n\
              |------|------:|------:|-----:|\n\
              | packs | 2 | 1610612736 | 1.50 GiB |\n\

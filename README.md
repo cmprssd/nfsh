@@ -28,6 +28,15 @@ cargo run --release -- verify "<path to Need for Speed Heat>"
 decompresses every entry and checks it against the sizes the tables list (Windows only
 for now: it uses the game's own Oodle library from the install folder).
 
+```
+cargo run --release -- import "<path to Need for Speed Heat>" <store folder>
+cargo run --release -- verify <store folder>
+```
+
+recompresses the data the install still uses into nfsh's own store (zstd; Windows only,
+since it decompresses the game's blocks first), checks it entry by entry, and prints its
+size. Verifying a store works anywhere: it needs no game files.
+
 ## License
 
 GPLv3 (see [LICENSE](LICENSE)). Need for Speed is a trademark of Electronic Arts; this

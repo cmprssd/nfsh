@@ -9,3 +9,6 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+zstd = { version = "0.13", default-features = false, features = ["zdict_builder"] }
