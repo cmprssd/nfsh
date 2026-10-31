@@ -66,3 +66,20 @@ Settled while writing the brief (`docs/BRIEF.md`), over six rounds of questions.
   `D:\SteamLibrary\steamapps\common\Need for Speed Heat`
   (`/mnt/d/SteamLibrary/steamapps/common/Need for Speed Heat` from WSL). Found on disk
   when the repo was created.
+
+## 2026-10-30: The inventory tool (decided by Claude, pending review)
+
+- **One command, `nfsh inventory [INSTALL]`, printing Markdown.** The same output reads
+  in a terminal and goes into `docs/INVENTORY.md` unedited, so the doc is a real run's
+  numbers rather than typed ones. Why: one format to keep correct.
+- **The install path is an argument (or `NFSH_INSTALL`), with no built-in default.**
+  Why: the owner's path is not everyone's, and local-ci already passes it as
+  `NFSH_INSTALL`.
+- **"Live" bytes are the union of the archive extents that current entries (patch
+  applied) point at.** Overlapping or shared extents count once. Why: it measures
+  exactly how much of each archive is still read, and so how much the patch left dead.
+- **Resource type names appear only when confirmed** (the type hash matches the name
+  and the assets carrying it fit); the others show the hash and one example asset.
+  Why: guessed names would mislead the import step.
+- **Two PRs: the format readers (`crates/frostbite`), then the command.** Why: each
+  stays reviewable, and the readers are the base for the import step and the viewer.
