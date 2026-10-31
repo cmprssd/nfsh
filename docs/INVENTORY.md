@@ -25,8 +25,8 @@ cargo run --release -- inventory "/mnt/d/SteamLibrary/steamapps/common/Need for 
 - **Bundle references are heavily shared**: 725k ebx references name only 222k distinct
   ebx. Stored bytes counted per reference (37.53 GiB) exceed the live bytes
   (29.28 GiB) for that reason, not because data is stored twice.
-- **Palm City is almost certainly `Win32/levels/mainlevel/mainlevel`**, the only world
-  level besides the frontend (not yet confirmed by reading its contents): 2,033 bundles, 135k ebx, 71k res
+- **Palm City is `Win32/levels/mainlevel/mainlevel`**, the only world level besides the
+  frontend (confirmed by reading its root partition, see FORMATS.md): 2,033 bundles, 135k ebx, 71k res
   and 67k chunk references, 2.53 GiB stored, plus the chunks it pulls from `chunks*`.
   That is what the viewer has to read.
 - `NeedForSpeedHeatTrial.exe` (400 MiB) is half of the executables' size and is not
