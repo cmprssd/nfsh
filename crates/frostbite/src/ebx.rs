@@ -643,6 +643,23 @@ impl<'a> Partition<'a> {
             .find(|f| f.offset == value)
             .and_then(|f| self.name(f.name_hash))
     }
+
+    /// The res id in the resource field `name` of the first instance that has one (a
+    /// mesh asset's `MeshSetResource`, a texture asset's `Resource`).
+    pub fn resource(&self, name: &str) -> Result<u64> {
+        for instance in &self.instances {
+            let o = self.object(instance);
+            for f in self.fields_of(o.type_index)? {
+                if self.name(f.name_hash) == Some(name) {
+                    match self.value(f, o.base)? {
+                        Value::ResourceRef(id) if id != 0 => return Ok(id),
+                        _ => bail!("{}: {name} names no res", self.name),
+                    }
+                }
+            }
+        }
+        bail!("{}: no instance has a {name}", self.name)
+    }
 }
 
 #[cfg(test)]

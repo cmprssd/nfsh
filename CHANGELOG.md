@@ -4,6 +4,21 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-10-31
+
+### Added
+
+- `nfsh texture STORE NAME` prints a texture (a `TextureAsset`, as a mesh's materials
+  name them): its kind, size, format, texture group and each mip's size.
+  `nfsh texture STORE NAME DDS` also writes it, every mip and layer, to the file DDS
+  as a .dds, which opens in common image viewers and tools.
+- The texture reader behind it (`frostbite::texture`) reads a texture's header and
+  its pixels from the store, block-compressed as stored (BC1, BC3, BC4, BC5, BC6H,
+  BC7), and lists the textures each of a mesh's materials names (diffuse, normal and
+  so on). It checks every header and mip size and never panics on damaged data. A
+  test reads every texture Palm City's placed meshes use: 8,015 textures, 4.7 GiB of
+  pixels, all their mips.
+
 ## [0.7.0] - 2026-10-31
 
 ### Added

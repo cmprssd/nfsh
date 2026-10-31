@@ -10,9 +10,9 @@
 
 use std::collections::HashMap;
 
-use crate::ebx::{Partition, Value};
+use crate::ebx::Partition;
 use crate::reader::{Reader, cstr_at};
-use crate::store::{Entries, Store};
+use crate::store::{Entries, Store, guid_order};
 use crate::{Location, Result, bail};
 
 /// The res type of a mesh set: the hash of `MeshSet` (see [`crate::sb::res_type_hash`]).
@@ -432,38 +432,6 @@ fn read_section(data: &[u8], pos: u64) -> Result<Section> {
     })
 }
 
-/// A GUID as stored in memory (a res, an ebx) in the order a bundle's chunk list
-/// stores it: its first three fields byte-swapped.
-pub fn guid_order(mut id: [u8; 16]) -> [u8; 16] {
-    id[0..4].reverse();
-    id[4..6].reverse();
-    id[6..8].reverse();
-    id
-}
-
-/// The chunk id a `.toc` lists in the order a bundle's chunk list stores it: a toc
-/// stores the in-memory GUID with all 16 bytes reversed.
-pub fn toc_chunk_id(mut id: [u8; 16]) -> [u8; 16] {
-    id.reverse();
-    guid_order(id)
-}
-
-/// The `MeshSetResource` id of the mesh asset in `p`: the first instance with one.
-pub fn mesh_set_id(p: &Partition) -> Result<u64> {
-    for instance in &p.instances {
-        let o = p.object(instance);
-        for f in p.fields_of(o.type_index)? {
-            if p.name(f.name_hash) == Some("MeshSetResource") {
-                match p.value(f, o.base)? {
-                    Value::ResourceRef(id) if id != 0 => return Ok(id),
-                    _ => bail!("{}: MeshSetResource names no res", p.name),
-                }
-            }
-        }
-    }
-    bail!("{}: no instance has a MeshSetResource", p.name)
-}
-
 /// Finds meshes' res and chunks in a store.
 pub struct Meshes<'s> {
     store: &'s Store,
@@ -476,30 +444,11 @@ pub struct Meshes<'s> {
 
 impl<'s> Meshes<'s> {
     pub fn new(store: &'s Store) -> Result<Self> {
-        let mut sets = HashMap::new();
-        let mut chunks = HashMap::new();
-        for sb in &store.superbundles {
-            for b in &sb.bundles {
-                for r in b.bundle.res.iter().filter(|r| r.res_type == MESH_SET) {
-                    sets.entry(r.id).or_insert(r.asset.location);
-                }
-                // A bundle stores only a chunk's blocks that cover its logical range;
-                // from offset 0 that is the whole chunk.
-                for c in b.bundle.chunks.iter().filter(|c| c.logical_offset == 0) {
-                    chunks.entry(c.id).or_insert(c.location);
-                }
-            }
-            for c in &sb.chunks {
-                chunks
-                    .entry(toc_chunk_id(c.chunk.id))
-                    .or_insert(c.chunk.location);
-            }
-        }
         Ok(Self {
             store,
             entries: store.entries()?,
-            sets,
-            chunks,
+            sets: store.res_of_type(MESH_SET),
+            chunks: store.whole_chunks(),
         })
     }
 
@@ -523,7 +472,7 @@ impl<'s> Meshes<'s> {
     fn by_location(&mut self, location: Location, name: &str) -> Result<MeshSet> {
         let data = self.entries.read(location)?;
         let p = Partition::parse(&data).map_err(|e| crate::Error(format!("{name}: {e}")))?;
-        let id = mesh_set_id(&p)?;
+        let id = p.resource("MeshSetResource")?;
         let Some(&res) = self.sets.get(&id) else {
             bail!("{name}: no mesh set res {id:016x} in the store");
         };
@@ -717,16 +666,6 @@ mod tests {
         let mut format = res;
         put(&mut format, 0xA0 + 0x54, &7u32.to_le_bytes());
         assert!(MeshSet::parse(&format).is_err());
-    }
-
-    #[test]
-    fn chunk_ids_in_toc_and_bundle_order() {
-        let memory: [u8; 16] = std::array::from_fn(|i| i as u8);
-        let bundle = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
-        assert_eq!(guid_order(memory), bundle);
-        let mut toc = memory;
-        toc.reverse();
-        assert_eq!(toc_chunk_id(toc), bundle);
     }
 
     /// Reads every mesh the 232 zones of Palm City place, in the store `NFSH_STORE`

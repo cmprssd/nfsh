@@ -172,7 +172,7 @@ pub fn bundle_key(name: &str) -> String {
 }
 
 /// The value of the field `name` of `o`, if its type has one.
-fn field<'a>(p: &Partition<'a>, o: Object, name: &str) -> Result<Option<Value<'a>>> {
+pub(crate) fn field<'a>(p: &Partition<'a>, o: Object, name: &str) -> Result<Option<Value<'a>>> {
     for f in p.fields_of(o.type_index)? {
         if p.name(f.name_hash) == Some(name) {
             return Ok(Some(p.value(f, o.base)?));
@@ -190,7 +190,7 @@ fn class_ref(p: &Partition, o: Object, name: &str) -> Result<Ref> {
 }
 
 /// The elements of the array field `name` of `o`.
-fn elements<'a>(p: &Partition<'a>, o: Object, name: &str) -> Result<Vec<Value<'a>>> {
+pub(crate) fn elements<'a>(p: &Partition<'a>, o: Object, name: &str) -> Result<Vec<Value<'a>>> {
     let Some(Value::Array(i, _)) = field(p, o, name)? else {
         bail!(
             "{}: {} has no array {name}",
@@ -231,7 +231,7 @@ fn transform(p: &Partition, v: Option<Value>) -> Result<Transform> {
     })
 }
 
-fn instance_object(p: &Partition, index: usize) -> Result<Object> {
+pub(crate) fn instance_object(p: &Partition, index: usize) -> Result<Object> {
     match p.instances.get(index) {
         Some(i) => Ok(p.object(i)),
         None => bail!("{}: instance {index} is out of range", p.name),
