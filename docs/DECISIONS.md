@@ -236,3 +236,24 @@ The plan, one PR each (decided by Claude, pending review):
    formats).
 5. The viewer: a Vulkan window, fly camera, frame time shown, one zone drawn untextured.
 6. Textured and lit, with the midday/tealnight toggle; then zones outward.
+
+## 2026-10-31: The ebx reader (decided by Claude, pending review)
+
+- **`Partition::parse` checks the whole layout before anything is read**: sections end
+  at the meta size, every type's fields are in range, every instance fits the
+  instance data, every array's stored count matches its record and its elements fit.
+  Reading a value afterwards can still fail (a string, array or instance index out of
+  range), and returns an error. Why: the viewer reads tens of thousands of partitions;
+  a bad one should be found at once, with a message, and never crash.
+- **Values are read on demand, not decoded into a tree**: a partition borrows its
+  bytes, and `value`/`element` read one field at a time. Why: the level root has
+  23,599 instances and the viewer needs a handful of fields from most of them.
+- **Kinds not worked out are reported, not guessed**: their values come back as
+  `Value::Other(kind, bytes)`, with the bytes only where the width is measured (0x09,
+  0x16). Why: a wrong meaning would misread quietly; an explicit "not worked out" shows
+  where the format still needs work.
+- **The store test reads every value of every ebx** (Windows side, `NFSH_STORE`, like
+  the install test) and checks the rules `parse` does not enforce (class references
+  land on instances of the field's class, non-empty arrays have the field's type,
+  fields fit their types, the header counts). Why: the rules were found on a sample of
+  2,379 partitions; the test proves them on all 725,119.

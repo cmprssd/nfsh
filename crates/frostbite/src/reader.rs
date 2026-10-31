@@ -59,6 +59,24 @@ impl<'a> Reader<'a> {
         Ok(u64::from_be_bytes(self.array()?))
     }
 
+    pub fn u16_le(&mut self) -> Result<u16> {
+        Ok(u16::from_le_bytes(self.array()?))
+    }
+
+    pub fn u32_le(&mut self) -> Result<u32> {
+        Ok(u32::from_le_bytes(self.array()?))
+    }
+
+    pub fn u64_le(&mut self) -> Result<u64> {
+        Ok(u64::from_le_bytes(self.array()?))
+    }
+
+    /// Moves the cursor forward to the next multiple of `align` (at least 1).
+    pub fn align(&mut self, align: usize) -> Result<()> {
+        let pos = self.pos.next_multiple_of(align.max(1));
+        self.bytes(pos - self.pos).map(|_| ())
+    }
+
     /// An unsigned LEB128 number (7 bits per byte, low first), at most 64 bits.
     pub fn leb128(&mut self) -> Result<u64> {
         let start = self.pos;

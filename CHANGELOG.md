@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-10-31
+
+### Added
+
+- `nfsh ebx STORE NAME` prints one ebx partition from a store as text: its imports,
+  then every instance with its fields, structs, arrays, enums by member name, and
+  references to other instances or imports. It reads the store only, so it works on
+  any system.
+- The ebx reader behind it (`frostbite::ebx`) checks a partition's whole layout before
+  anything is read and never panics on damaged data. A test reads every value of all
+  725,119 ebx partitions in the owner's store.
+
 ## [0.4.0] - 2026-10-31
 
 ### Changed
