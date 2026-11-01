@@ -4,14 +4,15 @@
 //!
 //! [`Texture::parse`] checks the header, including every mip's size against its format
 //! where the format is worked out; [`Texture::mip`] finds one mip of one layer in the
-//! chunk. [`material_textures`] lists the textures a mesh asset's materials name, and
-//! [`Textures`] finds a texture's res and chunk in nfsh's store.
+//! chunk. [`materials`] lists what a mesh asset's materials name (their shader, textures
+//! and vector parameters), and [`Textures`] finds a texture's res and chunk in nfsh's
+//! store.
 
 use std::collections::HashMap;
 use std::ops::Range;
 
-use crate::ebx::{Partition, Ref, Value};
-use crate::level::{elements, field, instance_object};
+use crate::ebx::{Object, Partition, Ref, Value};
+use crate::level::{elements, field, float, instance_object};
 use crate::reader::Reader;
 use crate::store::{Entries, Store, guid_order};
 use crate::{Location, Result, bail};
@@ -297,9 +298,33 @@ pub struct TextureParameter {
     pub texture: Option<[u8; 16]>,
 }
 
-/// The textures each of the mesh asset's `Materials` names, in order (a section's
-/// material indexes this list): its shader's `TextureParameters`.
-pub fn material_textures(p: &Partition) -> Result<Vec<Vec<TextureParameter>>> {
+/// What one of a mesh asset's materials names: its shader's `Shader`,
+/// `TextureParameters` and `VectorParameters`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Material {
+    /// The shader's partition (e.g. `shaders/world/roads/rd_drv_blendwithterrain`);
+    /// `None` when null.
+    pub shader: Option<[u8; 16]>,
+    pub textures: Vec<TextureParameter>,
+    /// Each vector parameter's name and value (a scalar is in `x`, a colour in `xyz`).
+    pub vectors: Vec<(String, [f32; 4])>,
+}
+
+impl Material {
+    /// The texture the parameter `name` names, if it names one.
+    pub fn texture(&self, name: &str) -> Option<[u8; 16]> {
+        self.textures.iter().find(|t| t.name == name)?.texture
+    }
+
+    /// The value of the vector parameter `name`, if the material sets it.
+    pub fn vector(&self, name: &str) -> Option<[f32; 4]> {
+        Some(self.vectors.iter().find(|v| v.0 == name)?.1)
+    }
+}
+
+/// Each of the mesh asset's `Materials`, in order (a section's material indexes this
+/// list).
+pub fn materials(p: &Partition) -> Result<Vec<Material>> {
     let mut asset = None;
     for instance in &p.instances {
         let o = p.object(instance);
@@ -319,30 +344,59 @@ pub fn material_textures(p: &Partition) -> Result<Vec<Vec<TextureParameter>>> {
         let Some(Value::Struct(shader)) = field(p, instance_object(p, i)?, "Shader")? else {
             bail!("{}: material {i} has no Shader", p.name);
         };
-        let mut parameters = Vec::new();
+        let mut material = Material {
+            shader: import(p, field(p, shader, "Shader")?)?,
+            ..Material::default()
+        };
         for t in elements(p, shader, "TextureParameters")? {
             let Value::Struct(t) = t else {
                 bail!("{}: a texture parameter is {t:?}", p.name);
             };
-            let Some(Value::String(name)) = field(p, t, "ParameterName")? else {
-                bail!("{}: a texture parameter has no ParameterName", p.name);
-            };
-            let texture = match field(p, t, "Value")? {
-                Some(Value::Class(Ref::Null)) => None,
-                Some(Value::Class(Ref::Import(n))) => match p.imports.get(n) {
-                    Some(import) => Some(import.partition),
-                    None => bail!("{}: import {n} is out of range", p.name),
-                },
-                other => bail!("{}: texture parameter value {other:?}", p.name),
-            };
-            parameters.push(TextureParameter {
-                name: name.unwrap_or_default().to_owned(),
-                texture,
+            material.textures.push(TextureParameter {
+                name: parameter_name(p, t)?,
+                texture: import(p, field(p, t, "Value")?)?,
             });
         }
-        materials.push(parameters);
+        // Not every shader struct has vector parameters.
+        if field(p, shader, "VectorParameters")?.is_some() {
+            for v in elements(p, shader, "VectorParameters")? {
+                let Value::Struct(v) = v else {
+                    bail!("{}: a vector parameter is {v:?}", p.name);
+                };
+                let Some(Value::Struct(value)) = field(p, v, "Value")? else {
+                    bail!("{}: a vector parameter has no Vec4 Value", p.name);
+                };
+                let [x, y, z, w] = ["x", "y", "z", "w"].map(|c| float(p, value, c));
+                material
+                    .vectors
+                    .push((parameter_name(p, v)?, [x?, y?, z?, w?]));
+            }
+        }
+        materials.push(material);
     }
     Ok(materials)
+}
+
+fn parameter_name(p: &Partition, o: Object) -> Result<String> {
+    let Some(Value::String(name)) = field(p, o, "ParameterName")? else {
+        bail!("{}: a shader parameter has no ParameterName", p.name);
+    };
+    Ok(name.unwrap_or_default().to_owned())
+}
+
+/// The partition a reference to another partition's instance names; `None` for null.
+fn import(p: &Partition, v: Option<Value>) -> Result<Option<[u8; 16]>> {
+    match v {
+        Some(Value::Class(Ref::Null)) => Ok(None),
+        Some(Value::Class(Ref::Import(n))) => match p.imports.get(n) {
+            Some(import) => Ok(Some(import.partition)),
+            None => bail!("{}: import {n} is out of range", p.name),
+        },
+        other => bail!(
+            "{}: {other:?} is not a reference to another partition",
+            p.name
+        ),
+    }
 }
 
 /// Finds textures' res and chunks in a store.
@@ -529,9 +583,10 @@ mod tests {
     }
 
     #[test]
-    fn lists_the_textures_of_each_material() {
+    fn lists_what_each_material_names() {
         let diffuse = [0xD1; 16];
         let normal = [0xA1; 16];
+        let shader = [0x5A; 16];
         let p = Builder::default()
             .ty(
                 "TextureShaderParameter",
@@ -543,9 +598,27 @@ mod tests {
                 F::Struct("TextureShaderParameter"),
             )
             .ty(
+                "Vec4",
+                false,
+                &[("x", F::F32), ("y", F::F32), ("z", F::F32), ("w", F::F32)],
+            )
+            .ty(
+                "VectorShaderParameter",
+                false,
+                &[("Value", F::Struct("Vec4")), ("ParameterName", F::Str)],
+            )
+            .array(
+                "VectorShaderParameter[]",
+                F::Struct("VectorShaderParameter"),
+            )
+            .ty(
                 "SurfaceShaderInstanceDataStruct",
                 false,
-                &[("TextureParameters", F::Array("TextureShaderParameter[]"))],
+                &[
+                    ("VectorParameters", F::Array("VectorShaderParameter[]")),
+                    ("TextureParameters", F::Array("TextureShaderParameter[]")),
+                    ("Shader", F::Ref),
+                ],
             )
             .ty(
                 "MeshMaterial",
@@ -560,6 +633,7 @@ mod tests {
             )
             .import(diffuse, [1; 16])
             .import(normal, [2; 16])
+            .import(shader, [3; 16])
             .instance(
                 "RigidMeshAsset",
                 [0x10; 16],
@@ -568,18 +642,26 @@ mod tests {
             .instance(
                 "MeshMaterial",
                 [0x11; 16],
-                vec![V::Struct(vec![V::Array(vec![
-                    V::Struct(vec![V::Ref(0x8000_0000), V::Str("Diffuse")]),
-                    V::Struct(vec![V::Ref(0x8000_0001), V::Str("Normal")]),
-                ])])],
+                vec![V::Struct(vec![
+                    V::Array(vec![V::Struct(vec![
+                        V::Struct([0.2, 0.3, 0.4, 1.0].map(V::F32).to_vec()),
+                        V::Str("Tint"),
+                    ])]),
+                    V::Array(vec![
+                        V::Struct(vec![V::Ref(0x8000_0000), V::Str("Diffuse")]),
+                        V::Struct(vec![V::Ref(0x8000_0001), V::Str("Normal")]),
+                    ]),
+                    V::Ref(0x8000_0002),
+                ])],
             )
             .instance(
                 "MeshMaterial",
                 [0x12; 16],
-                vec![V::Struct(vec![V::Array(vec![V::Struct(vec![
+                vec![V::Struct(vec![
+                    V::Array(vec![]),
+                    V::Array(vec![V::Struct(vec![V::Ref(0), V::Str("Mask")])]),
                     V::Ref(0),
-                    V::Str("Mask"),
-                ])])])],
+                ])],
             )
             .build("props/crate_mesh", [0x20; 16]);
         let p = Partition::parse(&p).unwrap();
@@ -587,23 +669,31 @@ mod tests {
             name: name.to_owned(),
             texture,
         };
+        let found = materials(&p).unwrap();
         assert_eq!(
-            material_textures(&p).unwrap(),
+            found,
             [
-                vec![param("Mask", None)],
-                vec![
-                    param("Diffuse", Some(diffuse)),
-                    param("Normal", Some(normal))
-                ],
+                Material {
+                    shader: None,
+                    textures: vec![param("Mask", None)],
+                    vectors: vec![],
+                },
+                Material {
+                    shader: Some(shader),
+                    textures: vec![
+                        param("Diffuse", Some(diffuse)),
+                        param("Normal", Some(normal))
+                    ],
+                    vectors: vec![("Tint".to_owned(), [0.2, 0.3, 0.4, 1.0])],
+                },
             ]
         );
+        assert_eq!(found[1].texture("Normal"), Some(normal));
+        assert_eq!(found[0].texture("Mask"), None);
+        assert_eq!(found[1].vector("Tint"), Some([0.2, 0.3, 0.4, 1.0]));
+        assert_eq!(found[1].vector("Opacity"), None);
     }
 
-    /// Reads every texture the materials of the meshes Palm City's 232 zones place
-    /// name, in the store `NFSH_STORE` points at (local-ci sets it on the Windows
-    /// side): each header, and each whole chunk, checked to be exactly its mips; and
-    /// where a bundle stores only a chunk's end, that it starts after the streamed
-    /// mips and matches the whole chunk.
     #[test]
     fn reads_every_texture_palm_city_places() {
         let Some(dir) = std::env::var_os("NFSH_STORE") else {
@@ -639,9 +729,9 @@ mod tests {
             let (_, asset) = store.ebx_at(at).unwrap();
             let data = entries.read(asset.location).unwrap();
             let p = Partition::parse(&data).unwrap();
-            for material in material_textures(&p).unwrap() {
+            for material in materials(&p).unwrap() {
                 *count.entry("materials").or_default() += 1;
-                for t in material {
+                for t in material.textures {
                     *count.entry("texture parameters").or_default() += 1;
                     used.extend(t.texture);
                 }

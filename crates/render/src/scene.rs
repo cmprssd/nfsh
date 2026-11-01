@@ -1,20 +1,21 @@
 //! A zone made ready to draw, on the CPU: every placed mesh's first LOD packed into
 //! one vertex and one index buffer, its placements into one instance buffer, and one
-//! instanced draw per section, with the section's diffuse texture.
+//! instanced draw per section, with the section's colour texture and how it is
+//! shaded.
 
 use std::collections::HashMap;
 
 use frostbite::level::{Mesh, Transform, Zone};
 use frostbite::mesh::{Geometry, Meshes};
 use frostbite::terrain::Ground;
-use frostbite::texture::TextureParameter;
+use frostbite::texture::Material;
 
 /// A placement's transform as the vertex shader reads it: right, up and forward,
 /// each followed by one coordinate of the translation.
 pub type Instance = [f32; 12];
 
 /// One instanced indexed draw.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Draw {
     pub first_index: u32,
     pub index_count: u32,
@@ -23,18 +24,40 @@ pub struct Draw {
     pub instance_count: u32,
     /// Index into [`Scene::textures`]; `None` draws plain grey.
     pub texture: Option<u32>,
-    /// Pixels whose texture alpha is under a half are not drawn (leaves).
-    pub cutout: bool,
+    pub shading: Shading,
+}
+
+/// How a draw's colour comes from its texture (see `docs/DECISIONS.md`, "Road
+/// materials").
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum Shading {
+    /// The texture's colour.
+    #[default]
+    Colour,
+    /// The texture's colour; pixels whose alpha is under a half are not drawn
+    /// (leaves).
+    Cutout,
+    /// The texture's red channel as a grey, times `tint`: a road's asphalt.
+    Grey { tint: [f32; 3] },
+    /// Blended over what is drawn under it, after everything opaque: the opacity is
+    /// the texture's channels weighted by `select`, times `opacity` and the vertex
+    /// colour's red; the colour is `colour`, or else the texture's red times the
+    /// vertex colour (road lines, white or yellow).
+    Decal {
+        select: [f32; 4],
+        opacity: f32,
+        colour: Option<[f32; 3]>,
+    },
 }
 
 /// A mesh section and what it is drawn with.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Section {
     pub geometry: Geometry,
-    /// The `TextureAsset` partition of its diffuse colour; `None` for none, or when
+    /// The `TextureAsset` partition its colour comes from; `None` for none, or when
     /// the section has no texture coordinates.
     pub texture: Option<[u8; 16]>,
-    pub cutout: bool,
+    pub shading: Shading,
 }
 
 /// The texture parameters that hold a material's colour, in the order they are
@@ -46,12 +69,32 @@ const COLOUR: [(&str, bool); 4] = [
     ("foregroundBasecolor", false),
 ];
 
-/// The colour texture of a material with the texture parameters `parameters`, and
-/// whether it cuts out.
-pub fn colour_texture(parameters: &[TextureParameter]) -> Option<([u8; 16], bool)> {
+/// The texture a material's colour comes from, and how it is shaded, for the
+/// material `m` of the shader named `shader`: road decals (shaders named
+/// `…transparentdcl…`) blend their `Diffuse` by `alphaSelector`, `Opacity` and
+/// `lineColor`; asphalt (`Tarmac_FG_Diffuse`) is that texture's grey times
+/// `Tarmac_Tint_FG`; anything else takes the first colour texture it names.
+pub fn look(shader: &str, m: &Material) -> Option<([u8; 16], Shading)> {
+    let rgb = |v: [f32; 4]| [v[0], v[1], v[2]];
+    if shader.contains("transparentdcl") {
+        let shading = Shading::Decal {
+            select: m.vector("alphaSelector").unwrap_or([0.0, 0.0, 0.0, 1.0]),
+            opacity: m.vector("Opacity").map_or(1.0, |v| v[0]),
+            colour: m.vector("lineColor").map(rgb),
+        };
+        return Some((m.texture("Diffuse")?, shading));
+    }
+    if let Some(t) = m.texture("Tarmac_FG_Diffuse") {
+        let tint = m.vector("Tarmac_Tint_FG").map_or([1.0; 3], rgb);
+        return Some((t, Shading::Grey { tint }));
+    }
     COLOUR.iter().find_map(|&(name, cutout)| {
-        let p = parameters.iter().find(|p| p.name == name)?;
-        Some((p.texture?, cutout))
+        let shading = if cutout {
+            Shading::Cutout
+        } else {
+            Shading::Colour
+        };
+        Some((m.texture(name)?, shading))
     })
 }
 
@@ -61,6 +104,8 @@ pub struct Scene {
     pub positions: Vec<[f32; 3]>,
     /// One per position; zero where a section has none.
     pub uvs: Vec<[f32; 2]>,
+    /// One per position (RGBA, 255 is 1); white where a section has none.
+    pub colours: Vec<[u8; 4]>,
     pub indices: Vec<u32>,
     pub instances: Vec<Instance>,
     pub draws: Vec<Draw>,
@@ -130,6 +175,10 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
                 Some(uvs) if uvs.len() == g.positions.len() => scene.uvs.extend_from_slice(uvs),
                 _ => scene.uvs.resize(scene.positions.len(), [0.0; 2]),
             }
+            match &g.colours {
+                Some(c) if c.len() == g.positions.len() => scene.colours.extend_from_slice(c),
+                _ => scene.colours.resize(scene.positions.len(), [255; 4]),
+            }
             scene.indices.extend_from_slice(&g.indices);
             if g.indices.is_empty() {
                 continue;
@@ -148,12 +197,18 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
                 first_instance,
                 instance_count: transforms.len() as u32,
                 texture,
-                cutout: s.cutout && texture.is_some(),
+                // What has no texture is drawn plain grey.
+                shading: if texture.is_some() {
+                    s.shading
+                } else {
+                    Shading::Colour
+                },
             });
         }
         if scene.draws.len() == first_draw {
             scene.positions.truncate(first_vertex);
             scene.uvs.truncate(first_vertex);
+            scene.colours.truncate(first_vertex);
             scene.indices.truncate(first_index);
             scene
                 .failed
@@ -187,6 +242,7 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground) {
     let first_index = scene.indices.len() as u32;
     scene.positions.extend_from_slice(&ground.positions);
     scene.uvs.resize(scene.positions.len(), [0.0; 2]);
+    scene.colours.resize(scene.positions.len(), [255; 4]);
     scene.indices.extend_from_slice(&ground.indices);
     scene.draws.push(Draw {
         first_index,
@@ -195,14 +251,13 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground) {
         first_instance: scene.instances.len() as u32,
         instance_count: 1,
         texture: None,
-        cutout: false,
+        shading: Shading::Colour,
     });
     scene.instances.push(instance(&Transform::IDENTITY));
 }
 
 /// Every section of the first LOD of the mesh asset `mesh`, with its material's
-/// colour texture, from the store. A section whose material is out of range is drawn
-/// grey.
+/// [`look`], from the store. A section whose material is out of range is drawn grey.
 pub fn first_lod(meshes: &mut Meshes, mesh: &Mesh) -> frostbite::Result<Vec<Section>> {
     let set = meshes.by_partition(&mesh.partition)?;
     let Some(lod) = set.lods.first() else {
@@ -213,13 +268,14 @@ pub fn first_lod(meshes: &mut Meshes, mesh: &Mesh) -> frostbite::Result<Vec<Sect
     lod.sections
         .iter()
         .map(|s| {
-            let colour = materials
-                .get(s.material as usize)
-                .and_then(|m| colour_texture(m));
+            let look = materials.get(s.material as usize).and_then(|m| {
+                let shader = m.shader.and_then(|g| meshes.store().partition_name(&g));
+                look(shader.unwrap_or_default(), m)
+            });
             Ok(Section {
                 geometry: lod.section(s, &data)?,
-                texture: colour.map(|c| c.0),
-                cutout: colour.is_some_and(|c| c.1),
+                texture: look.map(|l| l.0),
+                shading: look.map(|l| l.1).unwrap_or_default(),
             })
         })
         .collect()
@@ -245,6 +301,7 @@ pub fn overview(scene: &Scene, width: u32, height: u32) -> crate::Camera {
 mod tests {
     use super::*;
     use frostbite::level::Placement;
+    use frostbite::texture::TextureParameter;
 
     fn mesh(name: &str) -> Mesh {
         Mesh {
@@ -265,18 +322,19 @@ mod tests {
             geometry: Geometry {
                 positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: None,
+                colours: None,
                 indices: vec![0, 1, 2],
             },
             ..Section::default()
         }
     }
 
-    /// A triangle with texture coordinates, coloured by `texture`.
-    fn textured(texture: u8, cutout: bool) -> Section {
+    /// A triangle with texture coordinates, coloured by `texture` as `shading` says.
+    fn textured(texture: u8, shading: Shading) -> Section {
         let mut s = triangle();
         s.geometry.uvs = Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
         s.texture = Some([texture; 16]);
-        s.cutout = cutout;
+        s.shading = shading;
         s
     }
 
@@ -288,7 +346,7 @@ mod tests {
             first_instance,
             instance_count: instances,
             texture: None,
-            cutout: false,
+            shading: Shading::Colour,
         }
     }
 
@@ -311,6 +369,7 @@ mod tests {
         assert_eq!(loaded, ["a", "b"]);
         assert_eq!(scene.positions.len(), 9);
         assert_eq!(scene.uvs, [[0.0; 2]; 9]);
+        assert_eq!(scene.colours, [[255; 4]; 9]);
         assert_eq!(scene.indices, [0, 1, 2, 0, 1, 2, 0, 1, 2]);
         assert_eq!(
             scene.draws,
@@ -342,6 +401,7 @@ mod tests {
         add_ground(&mut scene, &ground);
         assert_eq!(scene.positions.len(), 7);
         assert_eq!(scene.uvs.len(), 7);
+        assert_eq!(scene.colours.len(), 7);
         assert_eq!(scene.indices[3..], [0, 2, 1, 0, 3, 2]);
         let ground_draw = Draw {
             index_count: 6,
@@ -388,6 +448,7 @@ mod tests {
         assert_eq!(scene.placements_left_out, 3);
         assert_eq!(scene.positions.len(), 3);
         assert_eq!(scene.uvs.len(), 3);
+        assert_eq!(scene.colours.len(), 3);
         assert_eq!(scene.draws.len(), 1);
         assert_eq!(scene.draws[0].vertex_offset, 0);
     }
@@ -399,54 +460,160 @@ mod tests {
             placements: vec![at(0, 0.0), at(1, 0.0)],
             ..Zone::default()
         };
+        let decal = Shading::Decal {
+            select: [1.0, 0.0, 0.0, 0.0],
+            opacity: 0.5,
+            colour: None,
+        };
         let scene = build(&zone, |m| {
             Ok(match m.name.as_str() {
-                // A section without texture coordinates is drawn grey, its texture
-                // not loaded.
-                "a" => vec![textured(7, false), {
-                    let mut s = textured(9, false);
+                // A section without texture coordinates is drawn plain grey, its
+                // texture not loaded.
+                "a" => vec![textured(7, Shading::Colour), {
+                    let mut s = textured(9, decal);
                     s.geometry.uvs = None;
                     s
                 }],
-                _ => vec![textured(8, true), textured(7, false)],
+                _ => vec![textured(8, Shading::Cutout), {
+                    let mut s = textured(7, decal);
+                    s.geometry.colours = Some(vec![[255, 146, 19, 255]; 3]);
+                    s
+                }],
             })
         });
         assert_eq!(scene.textures, [[7; 16], [8; 16]]);
-        let used: Vec<_> = scene.draws.iter().map(|d| (d.texture, d.cutout)).collect();
+        let used: Vec<_> = scene.draws.iter().map(|d| (d.texture, d.shading)).collect();
         assert_eq!(
             used,
             [
-                (Some(0), false),
-                (None, false),
-                (Some(1), true),
-                (Some(0), false)
+                (Some(0), Shading::Colour),
+                (None, Shading::Colour),
+                (Some(1), Shading::Cutout),
+                (Some(0), decal)
             ]
         );
         assert_eq!(scene.uvs[1], [1.0, 0.0]);
         assert_eq!(scene.uvs[4], [0.0; 2]);
+        assert_eq!(scene.colours[11], [255, 146, 19, 255]);
+        assert_eq!(scene.colours[8], [255; 4]);
+        assert_eq!(scene.colours[5], [255; 4]);
+    }
+
+    fn material(textures: &[(&str, Option<u8>)], vectors: &[(&str, [f32; 4])]) -> Material {
+        Material {
+            shader: None,
+            textures: textures
+                .iter()
+                .map(|&(name, t)| TextureParameter {
+                    name: name.into(),
+                    texture: t.map(|t| [t; 16]),
+                })
+                .collect(),
+            vectors: vectors.iter().map(|&(n, v)| (n.into(), v)).collect(),
+        }
     }
 
     #[test]
     fn the_colour_is_the_first_named_texture_set() {
-        let p = |name: &str, t: Option<u8>| TextureParameter {
-            name: name.into(),
-            texture: t.map(|t| [t; 16]),
-        };
+        let look =
+            |textures: &[(&str, Option<u8>)]| look("shaders/props", &material(textures, &[]));
         assert_eq!(
-            colour_texture(&[p("Normal", Some(1)), p("Diffuse", Some(2))]),
-            Some(([2; 16], false))
+            look(&[("Normal", Some(1)), ("Diffuse", Some(2))]),
+            Some(([2; 16], Shading::Colour))
         );
         assert_eq!(
-            colour_texture(&[p("Diffuse", None), p("ColorAlpha", Some(3))]),
-            Some(([3; 16], true))
+            look(&[("Diffuse", None), ("ColorAlpha", Some(3))]),
+            Some(([3; 16], Shading::Cutout))
         );
         assert_eq!(
-            colour_texture(&[p("Diffuse_Tiling", Some(4)), p("Diffuse", Some(5))]),
-            Some(([5; 16], false))
+            look(&[("Diffuse_Tiling", Some(4)), ("Diffuse", Some(5))]),
+            Some(([5; 16], Shading::Colour))
+        );
+        assert_eq!(look(&[("Normal", Some(1)), ("SMD", Some(2))]), None);
+    }
+
+    #[test]
+    fn asphalt_is_its_foreground_layer_tinted() {
+        let road = material(
+            &[
+                ("Shoulder_NH", Some(1)),
+                ("Tarmac_FG_Diffuse", Some(2)),
+                ("Tarmac_BG_Diffuse", Some(3)),
+            ],
+            &[
+                ("Tarmac_Tint_BG", [0.5, 0.5, 0.5, 0.0]),
+                ("Tarmac_Tint_FG", [0.57, 0.57, 0.57, 0.0]),
+            ],
+        );
+        let shader = "shaders/world/roads/rd_drv_blendwithterrain";
+        assert_eq!(
+            look(shader, &road),
+            Some((
+                [2; 16],
+                Shading::Grey {
+                    tint: [0.57, 0.57, 0.57]
+                }
+            ))
+        );
+        // Without a tint, untinted.
+        let road = material(&[("Tarmac_FG_Diffuse", Some(2))], &[]);
+        assert_eq!(
+            look(shader, &road),
+            Some(([2; 16], Shading::Grey { tint: [1.0; 3] }))
+        );
+    }
+
+    #[test]
+    fn road_decals_blend_by_their_selected_channel() {
+        let shader = "wstroads/rd_dcl_transparentdcl_lerp";
+        let lines = material(
+            &[
+                ("Diffuse", Some(4)),
+                ("Normal", Some(5)),
+                ("detailMask", Some(6)),
+            ],
+            &[
+                ("alphaSelector", [0.0, 1.0, 0.0, 0.0]),
+                ("Opacity", [1.0, 0.0, 0.0, 0.0]),
+            ],
         );
         assert_eq!(
-            colour_texture(&[p("Normal", Some(1)), p("SMD", Some(2))]),
-            None
+            look(shader, &lines),
+            Some((
+                [4; 16],
+                Shading::Decal {
+                    select: [0.0, 1.0, 0.0, 0.0],
+                    opacity: 1.0,
+                    colour: None
+                }
+            ))
+        );
+        // A line colour paints it; without a selector or opacity, the alpha, whole.
+        let marks = material(
+            &[("Diffuse", Some(4))],
+            &[("lineColor", [0.003, 0.003, 0.003, 0.0])],
+        );
+        assert_eq!(
+            look(
+                "shaders/world/roads/rd_dcl_transparentdcl_lerpnsmultiply",
+                &marks
+            ),
+            Some((
+                [4; 16],
+                Shading::Decal {
+                    select: [0.0, 0.0, 0.0, 1.0],
+                    opacity: 1.0,
+                    colour: Some([0.003; 3])
+                }
+            ))
+        );
+        // A decal without a colour texture is not drawn with another one.
+        let bare = material(&[("Normal", Some(5))], &[]);
+        assert_eq!(look(shader, &bare), None);
+        // The same parameters under another shader are an ordinary colour.
+        assert_eq!(
+            look("shaders/world/roads/rd_dcl_base_parallax", &lines),
+            Some(([4; 16], Shading::Colour))
         );
     }
 
@@ -481,5 +648,43 @@ mod tests {
         assert_eq!(scene.instances.len(), 2171);
         assert_eq!(scene.positions.len(), 1_356_354);
         assert_eq!(scene.triangles(), 3_988_832);
+    }
+
+    /// The roads near zone 495, from the store `NFSH_STORE` points at: asphalt is
+    /// drawn as tinted grey and road lines, cracks and tyre marks as decals.
+    #[test]
+    fn the_speedway_roads_are_asphalt_and_decals() {
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let store = frostbite::store::Store::open(std::path::Path::new(&dir)).unwrap();
+        let mut level =
+            frostbite::level::Level::new(&store, "Win32/levels/mainlevel/mainlevel").unwrap();
+        let mut zone = level.zone("levels/mainlevel/worldart_zs_495").unwrap();
+        level.add_drivable_surfaces(&mut zone, 150.0).unwrap();
+        let mut meshes = Meshes::new(&store).unwrap();
+        let scene = build(&zone, |m| first_lod(&mut meshes, m));
+        assert_eq!(scene.failed, []);
+        let mut count = [0; 4];
+        for d in &scene.draws {
+            count[match d.shading {
+                Shading::Colour => 0,
+                Shading::Cutout => 1,
+                Shading::Grey { .. } => 2,
+                Shading::Decal { .. } => 3,
+            }] += 1;
+        }
+        let painted = scene
+            .draws
+            .iter()
+            .filter(|d| matches!(d.shading, Shading::Decal { colour: None, .. }))
+            .count();
+        // Counted on the owner's store, 2026-11-01: 88 asphalt sections (the 36 with
+        // positions only are plain grey), 130 decals, 53 of them lines coloured by
+        // their vertices.
+        assert_eq!(count, [1047, 20, 88, 130]);
+        assert_eq!(painted, 53);
+        assert_eq!(scene.textures.len(), 156);
     }
 }

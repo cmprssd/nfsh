@@ -319,10 +319,32 @@ They lie on a coarser grid than the art zones: numbers 24 to 167 in rows of 14, 
 about 1.4 km across (zone 123 places its roads between x 3,301 and 4,507, z 2,634 and
 3,982), against the art zones' numbers to 630. Which art zones a drivable zone covers
 is not stated anywhere found yet; the viewer takes, from all of them, the placements
-whose origin lies within 150 m of the art zone's own (zone 495: 341). Road materials
-(`RD_Asphalt_Clean`, …) carry several texture coordinate sets (usages 0x1E, 0x1F,
-0x21 to 0x23) and blend tiling layers by masks; the first colour texture alone draws
-them pale.
+whose origin lies within 150 m of the art zone's own (zone 495: 341).
+
+**Road materials.** A material names its shader by reference (`Shader`, a partition
+such as `shaders/world/roads/rd_drv_blendwithterrain`) and, beside its textures, sets
+`VectorParameters` (each a `Vec4` `Value` and a `ParameterName`: a scalar in `x`, a
+colour in `xyz`). The roads near zone 495 use six road shaders (counted 2026-11-01):
+
+| shader | sections | what it draws |
+|--------|---------:|---------------|
+| `rd_drv_blendwithterrain`, `rd_drv_basesurface_wetness` | 84, 40 | the asphalt: `Tarmac_FG_Diffuse` and `Tarmac_BG_Diffuse` (clean and damaged layers, tinted by `Tarmac_Tint_FG`/`_BG`, tiled by `Tarmac_Tiling_FG`/`_BG`), `detailMask` with `detailColor1`-`5`, normals, shoulder and dirt layers |
+| `rd_dcl_transparentdcl_lerp` (`shaders/world/roads/` and `wstroads/`) | 39, 53 | cracks, tar and road lines over the asphalt |
+| `rd_dcl_transparentdcl_lerpnsmultiply` | 28 | tyre marks, rumble strips |
+| `rd_dcl_transparentdcl_lerpbasecolor` | 5 | arrows and lettering |
+| `rd_dcl_base_parallax` | 14 | manholes, with an ordinary colour texture |
+
+The road textures are **unorm, with their channels packed**, not sRGB colour: the
+asphalt's `drv_set5_clean_d` (4096², BC7) has a grey in red (mean 86 of 255), another
+grey in green, a sparse mask in blue and alpha unused. Read as sRGB-encoded, the red
+is about 0.09, times the tint 0.57 is 0.05, the same as the material's `detailColor1`
+(0.053). A decal's texture holds its shape in one channel, which `alphaSelector`
+picks: (1, 0, 0, 0) for cracks and tyre marks (red), (0, 1, 0, 0) for road lines
+(green, the stripes); `Opacity` scales it (tyre marks 0.4), and `lineColor`, where
+set, is the colour (cracks 0.214, tyre marks 0.003, arrows 0.716). Road lines set no
+`lineColor`: their texture's red is near white (214) and their vertex colour makes
+them white or yellow. How the original blends the asphalt's layers (`Tarmac_Blend_*`,
+`RoadTire_*`, `Dirt_Height_*`) is not worked out.
 
 ## Terrain
 
@@ -457,9 +479,10 @@ Vertex elements seen (usage/format, bytes):
 | usage | formats | what it is |
 |------:|---------|------------|
 | 0x01 | 0x03 (3 floats, 12), 0x08 (4 halves, 8; the fourth not used) | position, in the mesh's space |
-| 0x21 | 0x06 (2 halves, 4), 0x02 (2 floats, 8) | texture coordinates, the first set (to be confirmed when textures are drawn) |
-| 0x22-0x26 | the same | probably further texture coordinate sets, by the same pattern |
-| 0x02-0x08, 0x1E, 0x1F, 0x2A, 0x33, 0x34, 0xBC, 0xD0 | 0x0C, 0x0D (4 bytes), 0x13 (4), 0x17, 0x19 (8), 0x03, 0x08 | not worked out: the tangent frame is among them (0x34 is a likely candidate), as are a second set of lightmap coordinates and vertex colours |
+| 0x21 | 0x06 (2 halves, 4), 0x02 (2 floats, 8) | texture coordinates, the first set: the colour texture's, and on roads the tiling layers' |
+| 0x22-0x26 | the same | further texture coordinate sets: on roads, 0x22 maps the road's mask (`detailMask`, 0 to 1 across the mask) |
+| 0x1E | 0x0D (4 bytes) | a vertex colour, RGBA, a byte each: road lines are white (219 to 255) or yellow (255, 146, 19); on cracks and tyre marks only red varies, 0 to 255 (taken as their fade) |
+| 0x02-0x08, 0x1F, 0x2A, 0x33, 0x34, 0xBC, 0xD0 | 0x0C, 0x0D (4 bytes), 0x13 (4), 0x17, 0x19 (8), 0x03, 0x08 | not worked out: the tangent frame is among them (0x34 is a likely candidate), as are a second set of lightmap coordinates; 0x1F is a second four-byte colour on roads; 0x2A (3 floats, the third 0) runs 0 to 1 across a road piece |
 
 Sections with positions only and no name (usually the last one or two of a LOD) look
 like shadow geometry: the same one often repeats in every LOD.
