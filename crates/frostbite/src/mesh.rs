@@ -4,16 +4,16 @@
 //! "Meshes".
 //!
 //! [`MeshSet::parse`] checks every pointer and table in the res before anything is
-//! read; [`Lod::section`] decodes one section's positions, texture coordinates and
-//! triangles from the LOD's chunk, checking each stream and every index. [`Meshes`]
-//! finds a mesh's res and chunks in nfsh's store.
+//! read; [`Lod::section`] decodes one section's positions, texture coordinates, vertex
+//! colours and triangles from the LOD's chunk, checking each stream and every index.
+//! [`Meshes`] finds a mesh's res and chunks in nfsh's store.
 
 use std::collections::HashMap;
 
 use crate::ebx::Partition;
 use crate::reader::{Reader, cstr_at};
 use crate::store::{Entries, Store, guid_order};
-use crate::texture::{TextureParameter, material_textures};
+use crate::texture::{Material, materials};
 use crate::{Location, Result, bail};
 
 /// The res type of a mesh set: the hash of `MeshSet` (see [`crate::sb::res_type_hash`]).
@@ -32,12 +32,15 @@ const IN_CHUNK: u32 = u32::MAX;
 /// Vertex element usages read so far.
 pub const POSITION: u8 = 0x01;
 pub const TEXCOORD0: u8 = 0x21;
+/// Taken as a vertex colour: road lines' are white or yellow (see `docs/FORMATS.md`).
+pub const COLOUR0: u8 = 0x1E;
 
 /// Vertex element formats read so far, with their sizes.
 pub const FLOAT2: u8 = 0x02;
 pub const FLOAT3: u8 = 0x03;
 pub const HALF2: u8 = 0x06;
 pub const HALF4: u8 = 0x08;
+pub const UNORM4: u8 = 0x0D;
 
 /// Index formats (the LOD's word after its flags).
 const INDEX_U16: u32 = 0x21;
@@ -125,6 +128,8 @@ pub struct Geometry {
     pub positions: Vec<[f32; 3]>,
     /// The first texture coordinates, if the section has them.
     pub uvs: Option<Vec<[f32; 2]>>,
+    /// The vertex colours (RGBA, 255 is 1), if the section has them as four bytes.
+    pub colours: Option<Vec<[u8; 4]>>,
     /// Three a triangle, counting from the section's first vertex.
     pub indices: Vec<u32>,
 }
@@ -170,6 +175,12 @@ impl Lod {
                 _ => None,
             })?),
         };
+        let colours = match section.element(COLOUR0) {
+            Some(c) if c.format == UNORM4 => {
+                Some(self.attribute(section, c, data, |v| v.first_chunk::<4>().copied())?)
+            }
+            _ => None,
+        };
 
         let width = usize::from(self.index_width);
         let count = u64::from(section.triangles) * 3;
@@ -209,6 +220,7 @@ impl Lod {
         Ok(Geometry {
             positions,
             uvs,
+            colours,
             indices,
         })
     }
@@ -453,6 +465,10 @@ impl<'s> Meshes<'s> {
         })
     }
 
+    pub fn store(&self) -> &'s Store {
+        self.store
+    }
+
     /// The mesh set of the mesh asset in the partition `guid`.
     pub fn by_partition(&mut self, guid: &[u8; 16]) -> Result<MeshSet> {
         let copy = self.store.partitions(guid)?.next();
@@ -462,9 +478,9 @@ impl<'s> Meshes<'s> {
         self.by_location(asset.location, &asset.name)
     }
 
-    /// The textures each material of the mesh asset in the partition `guid` names
-    /// (see [`crate::texture::material_textures`]).
-    pub fn materials(&mut self, guid: &[u8; 16]) -> Result<Vec<Vec<TextureParameter>>> {
+    /// The materials of the mesh asset in the partition `guid` (see
+    /// [`crate::texture::materials`]).
+    pub fn materials(&mut self, guid: &[u8; 16]) -> Result<Vec<Material>> {
         let copy = self.store.partitions(guid)?.next();
         let Some((_, asset)) = copy.and_then(|at| self.store.ebx_at(at)) else {
             bail!("no partition {guid:02x?} in the store");
@@ -472,7 +488,7 @@ impl<'s> Meshes<'s> {
         let data = self.entries.read(asset.location)?;
         let p =
             Partition::parse(&data).map_err(|e| crate::Error(format!("{}: {e}", asset.name)))?;
-        material_textures(&p)
+        materials(&p)
     }
 
     /// The mesh set of the mesh asset in the ebx `name`.
@@ -633,7 +649,30 @@ mod tests {
             [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
         );
         assert_eq!(g.uvs, Some(vec![[0.0, 0.5], [1.0, 0.0], [2.0, 1.0]]));
+        assert_eq!(g.colours, None);
         assert_eq!(g.indices, [0, 1, 2]);
+    }
+
+    #[test]
+    fn reads_four_byte_vertex_colours() {
+        let (res, chunk) = sample();
+        let set = MeshSet::parse(&res).unwrap();
+        let lod = &set.lods[0];
+        // Colours over the texture coordinates' bytes: each vertex's two halves.
+        let mut s = lod.sections[0].clone();
+        s.elements.push(Element {
+            usage: COLOUR0,
+            format: UNORM4,
+            offset: 0,
+            stream: 1,
+        });
+        assert_eq!(
+            lod.section(&s, &chunk).unwrap().colours,
+            Some(vec![[0, 0, 0, 0x38], [0, 0x3C, 0, 0], [0, 0x40, 0, 0x3C]])
+        );
+        // Another format is not read as a colour.
+        s.elements.last_mut().unwrap().format = HALF2;
+        assert_eq!(lod.section(&s, &chunk).unwrap().colours, None);
     }
 
     #[test]

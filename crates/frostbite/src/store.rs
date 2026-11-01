@@ -167,6 +167,12 @@ impl Store {
             .map(|&(_, at)| at))
     }
 
+    /// The name of the partition `guid`, if the store holds it.
+    pub fn partition_name(&self, guid: &[u8; 16]) -> Option<&str> {
+        let at = self.partitions(guid).ok()?.next()?;
+        Some(&self.ebx_at(at)?.1.name)
+    }
+
     /// The bundle and the ebx at `at`, if the store lists it.
     pub fn ebx_at(&self, at: EbxRef) -> Option<(&BundleEntry, &Asset)> {
         let sb = self.superbundles.get(at.superbundle as usize)?;

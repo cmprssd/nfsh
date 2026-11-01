@@ -435,3 +435,32 @@ The plan, one PR each (decided by Claude, pending review):
 - **The ground is one draw in plain grey**: the colour comes from the terrain's layers,
   which are in the blocks and the layer-combinations res not read yet.
 
+
+## 2026-11-01: Road materials (decided by Claude, pending review)
+
+Supersedes "Road materials are drawn with the first colour texture" above.
+
+- **A material's look is chosen by its shader and parameters**: shaders named
+  `…transparentdcl…` are decals; a material naming `Tarmac_FG_Diffuse` is asphalt;
+  anything else takes its first colour texture as before. Why: the shader's name says
+  what kind of surface it is (docs/FORMATS.md, "Road materials"), and matching
+  parameter names alone would turn the manholes (`rd_dcl_base_parallax`, which also
+  has an `alphaSelector`) into decals.
+- **Asphalt is its clean layer only**: `Tarmac_FG_Diffuse`'s red, read as
+  sRGB-encoded, times `Tarmac_Tint_FG`. The damaged layer, dirt, the `detailMask` and
+  its colours are not drawn. Why: the read gives 0.05, the material's own
+  `detailColor1`, and dark asphalt in the screenshot; how the layers blend
+  (`Tarmac_Blend_Offset`, `…_Contrast`, the mask's channels) is not worked out, and a
+  guessed blend would hide that.
+- **A decal is blended over the road after everything opaque**: its opacity is its
+  texture weighted by `alphaSelector`, times `Opacity` and its vertex colour's red;
+  its colour is `lineColor`, or else its texture's red (sRGB-encoded) times its
+  vertex colour. It writes no depth and is pulled slightly towards the eye (depth
+  bias), and decals keep the scene's order among themselves. Why: these are the
+  parameters the decal materials set; the vertex colour is what tells white lines
+  from yellow ones, and its red runs 0 to 255 along cracks and tyre marks like a
+  fade. Blending happens after the tonemap, in the frame's linear colour.
+- **A draw's look reaches the shader as a dynamic uniform** (one 256-byte slot per
+  distinct look, a few dozen a zone), the push constants staying the camera and the
+  light. Why: the push constants are already the 128 bytes Vulkan guarantees; a
+  dynamic offset needs no feature beyond Vulkan 1.0.

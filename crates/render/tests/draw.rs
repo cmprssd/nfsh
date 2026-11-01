@@ -4,7 +4,7 @@
 use frostbite::level::{Mesh, Placement, Transform, Zone};
 use frostbite::mesh::Geometry;
 use frostbite::texture::{Kind, Texture};
-use nfsh_render::scene::{self, Section};
+use nfsh_render::scene::{self, Section, Shading};
 use nfsh_render::zone::Loaded;
 use nfsh_render::{Camera, Gpu, Light, Target, ZoneRenderer};
 
@@ -50,6 +50,7 @@ fn square_zone(placed: &[f32]) -> (Zone, Geometry) {
             [-1.0, 1.0, 0.0],
         ],
         uvs: Some(vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]),
+        colours: None,
         indices: vec![0, 1, 2, 0, 2, 3],
     };
     (zone, square)
@@ -83,9 +84,17 @@ fn middle(
     section: impl Fn(&Geometry) -> Section,
     load: impl FnMut(&[u8; 16]) -> frostbite::Result<Loaded>,
 ) -> ([u8; 4], Vec<(String, String)>) {
+    middle_of(|g| vec![section(g)], load)
+}
+
+/// [`middle`], for a mesh of several sections, each the same square.
+fn middle_of(
+    sections: impl Fn(&Geometry) -> Vec<Section>,
+    load: impl FnMut(&[u8; 16]) -> frostbite::Result<Loaded>,
+) -> ([u8; 4], Vec<(String, String)>) {
     let gpu = Gpu::new_headless().unwrap();
     let (zone, square) = square_zone(&[5.0]);
-    let scene = scene::build(&zone, |_| Ok(vec![section(&square)]));
+    let scene = scene::build(&zone, |_| Ok(sections(&square)));
     let renderer = ZoneRenderer::new(&gpu, &scene, Target::COLOR_FORMAT, load).unwrap();
     let mut target = Target::new(&gpu, W, H).unwrap();
     let extent = target.color.extent;
@@ -96,11 +105,19 @@ fn middle(
     (pixel(&rgba, W / 2, H / 2), renderer.missing.clone())
 }
 
-fn textured(texture: u8, cutout: bool) -> impl Fn(&Geometry) -> Section {
+fn textured(texture: u8, shading: Shading) -> impl Fn(&Geometry) -> Section {
     move |g| Section {
         geometry: g.clone(),
         texture: Some([texture; 16]),
-        cutout,
+        shading,
+    }
+}
+
+/// Plain grey, without a texture.
+fn grey(g: &Geometry) -> Section {
+    Section {
+        geometry: g.clone(),
+        ..Section::default()
     }
 }
 
@@ -137,19 +154,64 @@ fn draws_a_placed_mesh_where_the_camera_sees_it() {
 
 #[test]
 fn a_texture_colours_what_it_is_on() {
-    let (m, missing) = middle(textured(1, false), |_| Ok(bc1(0x37, RED)));
+    let (m, missing) = middle(textured(1, Shading::Colour), |_| Ok(bc1(0x37, RED)));
     assert_eq!(missing, []);
     assert!(m[0] > 100 && m[1] < 20 && m[2] < 20, "middle {m:?}");
 }
 
 #[test]
 fn a_cutout_leaves_out_what_its_alpha_does() {
-    let (m, missing) = middle(textured(1, true), |_| Ok(bc1(0x39, CLEAR)));
+    let (m, missing) = middle(textured(1, Shading::Cutout), |_| Ok(bc1(0x39, CLEAR)));
     assert_eq!(missing, []);
     assert_eq!(m, [0, 0, 0, 255]);
     // An opaque texel of a cutout is drawn.
-    let (m, _) = middle(textured(1, true), |_| Ok(bc1(0x39, RED)));
+    let (m, _) = middle(textured(1, Shading::Cutout), |_| Ok(bc1(0x39, RED)));
     assert!(m[0] > 100, "middle {m:?}");
+}
+
+#[test]
+fn asphalt_is_its_textures_red_as_grey_times_its_tint() {
+    let asphalt = Shading::Grey {
+        tint: [1.0, 1.0, 0.5],
+    };
+    let (m, missing) = middle(textured(1, asphalt), |_| Ok(bc1(0x37, RED)));
+    assert_eq!(missing, []);
+    // Red's 1 in every channel, the blue halved (the sky adds a little blue back).
+    assert!(m[0] > 100 && m[0] == m[1] && m[2] < m[1], "middle {m:?}");
+}
+
+#[test]
+fn decals_blend_over_what_is_under_them() {
+    let blue_paint = |opacity| Shading::Decal {
+        select: [1.0, 0.0, 0.0, 0.0],
+        opacity,
+        colour: Some([0.0, 0.0, 1.0]),
+    };
+    let (plain, _) = middle_of(|g| vec![grey(g)], |_| unreachable!());
+    // Listed before the road it lies on, a decal is still drawn over it: half blue
+    // paint (the texture's red, weighted by select, times the opacity) over grey,
+    // blended in linear light (half of 213 in sRGB is 156).
+    let (m, missing) = middle_of(
+        |g| vec![textured(1, blue_paint(0.5))(g), grey(g)],
+        |_| Ok(bc1(0x37, RED)),
+    );
+    assert_eq!(missing, []);
+    assert!(
+        m[2] > m[0] + 40 && m[0] < plain[0] - 40 && m[0] > 20,
+        "middle {m:?}, grey {plain:?}"
+    );
+    // Opaque paint hides the grey.
+    let (m, _) = middle_of(
+        |g| vec![grey(g), textured(1, blue_paint(1.0))(g)],
+        |_| Ok(bc1(0x37, RED)),
+    );
+    assert!(m[0] < 5 && m[2] > 100, "middle {m:?}");
+    // Where the selected channel is 0, nothing shows.
+    let (m, _) = middle_of(
+        |g| vec![grey(g), textured(1, blue_paint(1.0))(g)],
+        |_| Ok(bc1(0x39, CLEAR)),
+    );
+    assert_eq!(m, plain);
 }
 
 #[test]
@@ -163,12 +225,12 @@ fn textures_that_fail_are_drawn_grey_and_listed() {
             Ok((name, t, data[..8].to_vec()))
         }),
     ] {
-        let (m, missing) = middle(textured(2, false), load);
+        let (m, missing) = middle(textured(2, Shading::Colour), load);
         assert_eq!(missing.len(), 1);
         // Grey, a little blue from the sky.
         assert!(m[0] > 40 && m[0] == m[1] && m[2] > m[1], "middle {m:?}");
     }
-    let (_, missing) = middle(textured(2, false), |_| Ok(bc1(0x3A, RED)));
+    let (_, missing) = middle(textured(2, Shading::Colour), |_| Ok(bc1(0x3A, RED)));
     assert_eq!(
         missing,
         [(
@@ -176,7 +238,7 @@ fn textures_that_fail_are_drawn_grey_and_listed() {
             "format 0x3a not worked out".to_owned()
         )]
     );
-    let (_, missing) = middle(textured(2, false), |_| {
+    let (_, missing) = middle(textured(2, Shading::Colour), |_| {
         Err(frostbite::Error("no chunk".into()))
     });
     assert_eq!(

@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-11-01
+
+### Changed
+
+- `nfsh view` draws the roads in their own colours: the asphalt is dark, from its
+  road layer and tint, and road lines, arrows, cracks and tyre marks are laid over it
+  as decals, white or yellow as each line says, instead of pale grey roads with pink
+  marks.
+
+### Not yet
+
+- The asphalt shows one layer: the damaged layer, dirt, puddles and the mask that
+  places them over each road, and the road normal maps, are not drawn yet.
+
 ## [0.12.0] - 2026-11-01
 
 ### Added
