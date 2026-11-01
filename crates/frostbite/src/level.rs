@@ -25,6 +25,10 @@ const MAX_DEPTH: usize = 32;
 /// The bundles a sub-level link names are listed with this prefix.
 const PLATFORM: &str = "win32/";
 
+/// A drivable-surface zone's bundle is this and its number: the roads, kerbs and
+/// bridges of a coarser grid than the art zones' (`worldart_zs_<n>`), walked the same way.
+pub const DRIVABLE: &str = "levels/mainlevel/drivablesurfaces_zs_";
+
 /// Objects that link to a sub-level bundle by its `BundleName`.
 const SUB_LEVEL_LINKS: &[&str] = &["SubWorldReferenceObjectData", "ZoneStreamerSubWorldRod"];
 
@@ -124,6 +128,46 @@ pub struct SubLevel {
     pub from: String,
     /// Whether the store has the bundle.
     pub found: bool,
+}
+
+/// The least and greatest x and z of a zone's placements; `None` for an empty zone.
+pub fn xz_bounds(zone: &Zone) -> Option<([f32; 2], [f32; 2])> {
+    zone.placements.iter().fold(None, |b, p| {
+        let [x, _, z] = p.transform.trans;
+        let (lo, hi) = b.unwrap_or(([x, z], [x, z]));
+        Some(([lo[0].min(x), lo[1].min(z)], [hi[0].max(x), hi[1].max(z)]))
+    })
+}
+
+/// Adds to `zone` the placements of `other` whose origin lies within `lo`..`hi` in x
+/// and z, each mesh listed once (by partition); returns how many.
+pub fn add_within(zone: &mut Zone, other: &Zone, lo: [f32; 2], hi: [f32; 2]) -> usize {
+    let mut index: HashMap<[u8; 16], usize> = zone
+        .meshes
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (m.partition, i))
+        .collect();
+    let mut added = 0;
+    for p in &other.placements {
+        let [x, _, z] = p.transform.trans;
+        if !(lo[0] <= x && x <= hi[0] && lo[1] <= z && z <= hi[1]) {
+            continue;
+        }
+        let Some(m) = other.meshes.get(p.mesh) else {
+            continue;
+        };
+        let mesh = *index.entry(m.partition).or_insert_with(|| {
+            zone.meshes.push(m.clone());
+            zone.meshes.len() - 1
+        });
+        zone.placements.push(Placement {
+            mesh,
+            transform: p.transform,
+        });
+        added += 1;
+    }
+    added
 }
 
 /// A partition read from the store, with the bytes it borrows.
@@ -350,6 +394,37 @@ impl<'s> Level<'s> {
             zone.placements.push(Placement { mesh, transform });
         }
         Ok(zone)
+    }
+
+    /// Every drivable-surface zone in the store (`drivablesurfaces_zs_<n>`, not its
+    /// lighting variants), by number.
+    pub fn drivable_zones(&self) -> Vec<String> {
+        let mut zones: Vec<(u32, &String)> = self
+            .bundles
+            .keys()
+            .filter_map(|k| Some((k.strip_prefix(DRIVABLE)?.parse().ok()?, k)))
+            .collect();
+        zones.sort();
+        zones.into_iter().map(|(_, k)| k.clone()).collect()
+    }
+
+    /// Adds to `zone` the drivable surfaces placed within `margin` metres of its own
+    /// placements (in x and z), from every drivable-surface zone; returns how many.
+    /// Roads belong to their own grid of zones, not to the art zone they run through.
+    pub fn add_drivable_surfaces(&mut self, zone: &mut Zone, margin: f32) -> Result<usize> {
+        let Some((lo, hi)) = xz_bounds(zone) else {
+            return Ok(0);
+        };
+        let (lo, hi) = (
+            [lo[0] - margin, lo[1] - margin],
+            [hi[0] + margin, hi[1] + margin],
+        );
+        let mut added = 0;
+        for name in self.drivable_zones() {
+            let other = self.zone(&name)?;
+            added += add_within(zone, &other, lo, hi);
+        }
+        Ok(added)
     }
 
     /// Reads the partition `guid`, preferring the home superbundle's copy; `None` if
@@ -920,6 +995,60 @@ mod tests {
     /// A prefab that places itself, and an object list that lists itself: each is cut
     /// off and reported, never followed forever.
     #[test]
+    fn drivable_surfaces_near_a_zone_are_added_once_per_mesh() {
+        let mesh = |n: u8| Mesh {
+            name: format!("m{n}"),
+            kind: "RigidMeshAsset".into(),
+            partition: [n; 16],
+        };
+        let at = |mesh, x, z| Placement {
+            mesh,
+            transform: Transform {
+                trans: [x, 5.0, z],
+                ..Transform::IDENTITY
+            },
+        };
+        let mut zone = Zone {
+            meshes: vec![mesh(1)],
+            placements: vec![at(0, 0.0, 0.0), at(0, 100.0, 50.0)],
+            ..Zone::default()
+        };
+        let roads = Zone {
+            meshes: vec![mesh(2), mesh(1), mesh(3)],
+            placements: vec![
+                at(0, -10.0, 0.0),
+                at(1, 50.0, 60.0),
+                at(2, 300.0, 0.0),
+                at(0, 110.0, -10.0),
+            ],
+            ..Zone::default()
+        };
+        let (lo, hi) = xz_bounds(&zone).unwrap();
+        assert_eq!((lo, hi), ([0.0, 0.0], [100.0, 50.0]));
+        // Within 20 m: the first, second and fourth; the third is 200 m out.
+        let added = add_within(&mut zone, &roads, [-20.0, -20.0], [120.0, 70.0]);
+        assert_eq!(added, 3);
+        let names: Vec<&str> = zone.meshes.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["m1", "m2"]);
+        let placed: Vec<(usize, [f32; 3])> = zone
+            .placements
+            .iter()
+            .map(|p| (p.mesh, p.transform.trans))
+            .collect();
+        assert_eq!(
+            placed,
+            [
+                (0, [0.0, 5.0, 0.0]),
+                (0, [100.0, 5.0, 50.0]),
+                (1, [-10.0, 5.0, 0.0]),
+                (0, [50.0, 5.0, 60.0]),
+                (1, [110.0, 5.0, -10.0]),
+            ]
+        );
+        assert_eq!(xz_bounds(&Zone::default()), None);
+    }
+
+    #[test]
     fn cycles_are_cut_off() {
         let zone = types()
             .import([0x70; 16], [0x71; 16])
@@ -1078,6 +1207,34 @@ mod tests {
         assert_eq!(
             kinds,
             [("CompositeMeshAsset", 6738), ("RigidMeshAsset", 21_015)]
+        );
+    }
+
+    #[test]
+    fn walks_every_drivable_surface_zone() {
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let store = Store::open(Path::new(&dir)).unwrap();
+        let mut level = Level::new(&store, HOME).unwrap();
+        let zones = level.drivable_zones();
+        assert_eq!(zones.len(), 66);
+        assert_eq!(zones[0], "levels/mainlevel/drivablesurfaces_zs_24");
+        let (mut placements, mut missing) = (0, 0);
+        for name in &zones {
+            let zone = level.zone(name).unwrap();
+            placements += zone.placements.len();
+            missing += zone.missing;
+        }
+        assert_eq!(missing, 0);
+        // Counted on the whole install, 2026-11-01.
+        assert_eq!(placements, 11_836);
+        let mut speedway = level.zone("levels/mainlevel/worldart_zs_495").unwrap();
+        assert_eq!(speedway.placements.len(), 2_171);
+        assert_eq!(
+            level.add_drivable_surfaces(&mut speedway, 150.0).unwrap(),
+            341
         );
     }
 }

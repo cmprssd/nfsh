@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-10-31 (14 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-11-01 (15 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -54,7 +54,7 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
-3 crates in one Cargo workspace, 12,298 lines of Rust (sources and tests), 98 tests.
+3 crates in one Cargo workspace, 12,461 lines of Rust (sources and tests), 100 tests.
 <!-- /progress -->
 
 ```mermaid
@@ -72,8 +72,8 @@ flowchart BT
 <!-- progress:crates -->
 | Crate | Rust lines | Tests | What it does |
 |------|------:|------:|------|
-| `frostbite` | 7,268 | 65 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store, with every ebx's partition GUID; reads ebx partitions (types, instances, fields, arrays, references); walks a level's sub-levels and what each zone places (meshes in world space); reads mesh sets and decodes their geometry (LODs, sections, positions, texture coordinates, triangles); reads texture headers and their pixels (block-compressed mips, layers), and the textures each material names; reads a time of day's sun, sky and exposure from its visual environment |
-| `nfsh` | 2,187 | 15 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store, `reindex` lists its partition GUIDs, `ebx` prints a partition as text, `level` prints Palm City's bundles or one zone's placements, `mesh` prints a mesh's LODs and writes one as an .obj, `texture` prints a texture and writes it as a .dds, `view` flies through one zone in a window, textured and lit at midday or tealnight (or writes a screenshot) |
+| `frostbite` | 7,425 | 67 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store, with every ebx's partition GUID; reads ebx partitions (types, instances, fields, arrays, references); walks a level's sub-levels and what each zone places (meshes in world space); reads mesh sets and decodes their geometry (LODs, sections, positions, texture coordinates, triangles); reads texture headers and their pixels (block-compressed mips, layers), and the textures each material names; reads a time of day's sun, sky and exposure from its visual environment |
+| `nfsh` | 2,193 | 15 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store, `reindex` lists its partition GUIDs, `ebx` prints a partition as text, `level` prints Palm City's bundles or one zone's placements, `mesh` prints a mesh's LODs and writes one as an .obj, `texture` prints a texture and writes it as a .dds, `view` flies through one zone in a window, textured and lit at midday or tealnight (or writes a screenshot) |
 | `render` | 2,843 | 18 | the Vulkan renderer (`nfsh-render`, Vulkan 1.3 through `ash`): device bring-up, a window's swapchain and frame loop with GPU timing, an offscreen target read back for screenshots and tests; packs a zone's placed meshes (first LOD) into one vertex, index and instance buffer and draws them with one instanced draw per section, each with its diffuse texture uploaded block-compressed as stored (grey when one can't be read), lit by the time of day's sun and sky, exposed and tonemapped, normals from the triangles |
 <!-- /progress -->
 
@@ -115,7 +115,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 20 decision entries, 8 chosen by the owner, 11 made by Claude for review.
+  So far: 21 decision entries, 8 chosen by the owner, 12 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -133,15 +133,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-15 commits, 14 merged PRs from 2026-10-30 to 2026-10-31, on 2 working days: 11 feat, 2
-docs, 1 ci. About 18,115 lines added and 587 removed; 57 tracked files.
+16 commits, 15 merged PRs from 2026-10-30 to 2026-11-01, on 3 working days: 12 feat, 2
+docs, 1 ci. About 18,381 lines added and 597 removed; 57 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
-    x-axis ["Oct 30", "Oct 31"]
+    x-axis ["Oct 30", "Oct 31", "Nov 1"]
     y-axis "PRs" 0 --> 15
-    bar [1, 13]
+    bar [1, 13, 1]
 ```
 <!-- /progress -->
 
@@ -197,7 +197,7 @@ From [BRIEF.md](BRIEF.md) and [DECISIONS.md](DECISIONS.md) (2026-10-31):
 | 1 | Data inventory: read the install's tables | done (0.1.0) |
 | 2 | Read entry contents: decompress the cas blocks | done (0.2.0) |
 | 3 | Import step: nfsh's own compact copy of the data | done (0.3.0: dead data dropped; 0.4.0: zstd) |
-| 4 | Palm City viewer: fly-through, frame time, day/night | started: ebx reader (0.5.0); level graph, every zone's placed meshes (0.6.0); mesh geometry (0.7.0); textures (0.8.0); a window flying through one zone, untextured (0.9.0); textured and lit, midday and tealnight (0.10.0) |
+| 4 | Palm City viewer: fly-through, frame time, day/night | started: ebx reader (0.5.0); level graph, every zone's placed meshes (0.6.0); mesh geometry (0.7.0); textures (0.8.0); a window flying through one zone, untextured (0.9.0); textured and lit, midday and tealnight (0.10.0); the roads under it (0.11.0) |
 | 5 | Baseline against the original: same camera path, same PC, screenshots | not started |
 | 6 | One drivable car, then races, police, campaign | later |
 

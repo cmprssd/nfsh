@@ -301,7 +301,72 @@ probe and emitter volumes, effects locators, sound locators, `ClothObjectBluepri
   by id) and chunks; textures are `TextureAsset` ebx with a `Texture` res (the header)
   and a chunk (the pixels). A zone's bundle holds most of the meshes, blueprints and
   textures it uses; the rest are in shared bundles (the regions).
-- The terrain is `mainlevel_terrain_2048`, in the root bundle.
+- The ground is in two other places: the roads in the drivable-surface zones and the
+  terrain in the root bundle (the next two sections).
+
+## Drivable surfaces
+
+The roads, kerbs, bridges, car parks and their decals are not in the art zones: they
+are 66 bundles `levels/mainlevel/drivablesurfaces_zs_<n>` (reached through
+`levels/mainlevel/drivablesurfaces`, a `SubWorldData` whose two objects are imports),
+each with `_midday`, `_overcast`, `_sunset` and `_tealnight` lighting variants like the
+art zones'. A drivable zone's root partition is a `SubWorldData` placing
+`RigidMeshAsset` roads (`worldassets_roboto/roads/…/rd_…_mesh`), manholes, bridges and
+collision walls, walked exactly as an art zone is: all 66 walk with every reference
+resolved, 11,836 placements (2026-11-01).
+
+They lie on a coarser grid than the art zones: numbers 24 to 167 in rows of 14, each
+about 1.4 km across (zone 123 places its roads between x 3,301 and 4,507, z 2,634 and
+3,982), against the art zones' numbers to 630. Which art zones a drivable zone covers
+is not stated anywhere found yet; the viewer takes, from all of them, the placements
+whose origin lies within 150 m of the art zone's own (zone 495: 341). Road materials
+(`RD_Asphalt_Clean`, …) carry several texture coordinate sets (usages 0x1E, 0x1F,
+0x21 to 0x23) and blend tiling layers by masks; the first colour texture alone draws
+them pale.
+
+## Terrain
+
+Palm City's terrain is `levels/mainlevel/mainlevel_terrain_2048/mainlevel_terrain_2048`
+(root bundle): a `TerrainData` ebx naming three res by id and listing its 39
+`TerrainLayers` (each with mesh scattering, the grass and bushes). Worked out so far,
+2026-11-01:
+
+| res (type hash) | size | what |
+|-----------------|-----:|------|
+| `TerrainStreamingTreeResource`, `…streamingtree_win32` (`0x22FE8AC8`) | 5,957,625 | the quadtree and the chunk of every tile (below) |
+| `VisualResource`, `mainlevel_terrain_2048` (`0x1CA38E06`) | 19,833 | the scattering: mesh names (`sct_grass_…_mesh`) and their settings |
+| `TerrainLayerCombinationsResource`, `…layercombinations_win32` (`0xA23E75DB`) | 1,680,272 | not read |
+
+**The streaming tree** is packed little-endian with no alignment. From offset `0x7F`, a
+depth-first **quadtree** of 10,077 nodes covers x and z from −8,192 to 8,192 m, down to
+128 m leaves (6,968 of them). A node is its bounding box (six f32: minimum x, y, z, then
+maximum; y is the height range) and an f32, then a byte: 1 marks an empty node (the
+open sea; 50 of them) and ends it there, 29 bytes in all. Otherwise four more bytes
+follow (the second is 1 for the root and the four 8,192 m nodes, which then carry 340
+bytes: min/max height pairs, u16, for 1 + 4 + 16 + 64 cells), and a last byte, 1 when
+four children follow, in the order (0, 0), (1, 0), (1, 1), (0, 1) (x first). The tree
+ends at `0x54083`. What follows up to `0x562388` (rectangles with bit masks, likely
+the layers each area uses) is not worked out.
+
+From `0x562388` to the end, **8,251 tile records**: a chunk's size (u32) and id (16
+bytes, in the order a bundle's chunk list stores ids), a count (0 or 1) of further
+chunks with their size and id, then two bytes. The chunks are superbundle chunks of
+`mainlevel`. A record's first chunk is one of two kinds, told by its size:
+
+- `42,231 + 18,496·k` bytes (7,618 records): a **heightfield**, 137 × 137 u16 first
+  (37,538 bytes; the rest holds 68 × 68 pages not read yet). Height is the u16 ÷ 32 m
+  (the sea floor's 5 is the root's minimum, 0.156 m; the maximum 30,292 is 946.6 m).
+  Rows run along z and columns along x, with a 4-sample border: sample (r, c) of a node
+  at (x0, z0) of size S lies at (x0 + (c − 4)·S/128, z0 + (r − 4)·S/128). A child's
+  even samples equal its parent's exactly, which is how this was checked.
+- multiples of 2,312 bytes (630 records): no heights (block-compressed data).
+
+The records follow the nodes depth-first, but not every node has its own: a 256 m
+node's record whose extra chunk is four heightfields (168,924 = 4 × 42,231 bytes)
+holds its four 128 m leaves; the root and the 8,192 m nodes have none. Matching tiles
+by their samples places 4,162 of the 7,618 heightfields (all of the city's
+x ≥ 0, z < 4,096 and the south-west), but the rule saying which nodes have a record
+is not worked out, so the terrain is not drawn yet.
 
 ## Meshes
 
