@@ -3,7 +3,7 @@
 //! instanced draw per section, with the section's colour texture and how it is
 //! shaded.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use frostbite::level::{Mesh, Transform, Zone};
 use frostbite::mesh::{Geometry, Meshes};
@@ -39,8 +39,10 @@ pub enum Shading {
     Cutout,
     /// The texture's red channel as a grey, times `tint`: a road's asphalt.
     Grey { tint: [f32; 3] },
-    /// The vertex colour (sRGB-encoded), no texture: the ground's.
-    Vertex,
+    /// The ground: the vertex colour (sRGB-encoded), with [`Scene::detail`]'s layers
+    /// over it as detail, each weighted by the vertex's weight for it (packed in its
+    /// texture coordinates' bytes).
+    Ground,
     /// Blended over what is drawn under it, after everything opaque: the opacity is
     /// the texture's channels weighted by `select`, times `opacity` and the vertex
     /// colour's red; the colour is `colour`, or else the texture's red times the
@@ -118,10 +120,55 @@ pub struct Scene {
     /// steps already in world space, which their placements then move kilometres
     /// away); `None` if nothing is drawn.
     pub bounds: Option<([f32; 3], [f32; 3])>,
+    /// The ground's detail: one per weight its vertices carry, in that order.
+    pub detail: Vec<Detail>,
     /// Meshes that could not be read, with why, and how many placements that left
     /// out.
     pub failed: Vec<(String, String)>,
     pub placements_left_out: usize,
+}
+
+/// A layer drawn as detail over the ground's colour.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Detail {
+    /// Its diffuse map's ebx name.
+    pub texture: String,
+    /// World x and z times this are its coordinates.
+    pub scale: f32,
+}
+
+/// The road sets' maps (`drv_…_d`), whose channels are not plain colour.
+const ROAD_SET: &str = "drv_";
+
+/// Each layer's detail, from its diffuse maps ([`frostbite::layers::diffuse`]): the
+/// one with the finest scale (the first by name among equals), leaving out maps with
+/// no scale and the road sets'. A layer with none has no detail.
+pub fn ground_detail(
+    diffuse: &BTreeMap<u16, Vec<frostbite::layers::Diffuse>>,
+) -> BTreeMap<u16, Detail> {
+    diffuse
+        .iter()
+        .filter_map(|(&layer, maps)| {
+            let finest = maps
+                .iter()
+                .filter(|d| {
+                    !d.name
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("")
+                        .starts_with(ROAD_SET)
+                })
+                .filter_map(|d| Some((d.scale?, &d.name)))
+                .reduce(|a, b| if b.0 > a.0 { b } else { a })?;
+            Some((
+                layer,
+                Detail {
+                    texture: finest.1.clone(),
+                    scale: finest.0,
+                },
+            ))
+        })
+        .collect()
 }
 
 impl Scene {
@@ -234,16 +281,24 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
     scene
 }
 
-/// Adds `ground`, already in world space, as one draw in its vertices' colours; it
-/// leaves the bounds, which are of the placements, as they are.
-pub fn add_ground(scene: &mut Scene, ground: &Ground) {
+/// Adds `ground`, already in world space, as one draw in its vertices' colours with
+/// `detail` (one per layer of `ground.detail`) over them; it leaves the bounds, which
+/// are of the placements, as they are.
+pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
     if ground.indices.is_empty() {
         return;
     }
     let vertex_offset = scene.positions.len() as i32;
     let first_index = scene.indices.len() as u32;
     scene.positions.extend_from_slice(&ground.positions);
+    // The weights' 8 bytes go up as they are, in the texture coordinates' place.
+    scene
+        .uvs
+        .extend(ground.weights.iter().take(ground.positions.len()).map(|w| {
+            [0, 4].map(|i| f32::from_bits(u32::from_le_bytes(w[i..i + 4].try_into().expect("4"))))
+        }));
     scene.uvs.resize(scene.positions.len(), [0.0; 2]);
+    scene.detail = detail;
     // Ground::colours has one per position; a short list is made up in grey.
     scene
         .colours
@@ -259,7 +314,7 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground) {
         first_instance: scene.instances.len() as u32,
         instance_count: 1,
         texture: None,
-        shading: Shading::Vertex,
+        shading: Shading::Ground,
     });
     scene.instances.push(instance(&Transform::IDENTITY));
 }
@@ -404,19 +459,28 @@ mod tests {
         let ground = Ground {
             positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
             indices: vec![0, 2, 1, 0, 3, 2],
-            // One short: the last is grey.
+            // One short: the last is grey, with no weights.
             colours: vec![[10, 20, 30, 255]; 3],
+            weights: vec![[1, 2, 3, 4, 5, 6, 7, 8]; 3],
             ..Ground::default()
         };
-        add_ground(&mut scene, &ground);
+        let detail = vec![Detail {
+            texture: "grass".into(),
+            scale: 0.2,
+        }];
+        add_ground(&mut scene, &ground, detail.clone());
         assert_eq!(scene.positions.len(), 7);
         assert_eq!(scene.uvs.len(), 7);
+        let bytes: &[u8] = bytemuck::cast_slice(&scene.uvs[3..]);
+        assert_eq!(bytes[..8], [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(bytes[24..], [0; 8]);
+        assert_eq!(scene.detail, detail);
         assert_eq!(scene.colours[3..6], [[10, 20, 30, 255]; 3]);
         assert_eq!(scene.colours[6], [128, 128, 128, 255]);
         assert_eq!(scene.indices[3..], [0, 2, 1, 0, 3, 2]);
         let ground_draw = Draw {
             index_count: 6,
-            shading: Shading::Vertex,
+            shading: Shading::Ground,
             ..draw(3, 3, 1, 1)
         };
         assert_eq!(scene.draws[1], ground_draw);
@@ -428,8 +492,36 @@ mod tests {
         assert_eq!(scene.bounds, Some(([5.0, 0.0, 0.0], [5.0, 0.0, 0.0])));
         // Nothing to draw adds nothing.
         let before = scene.clone();
-        add_ground(&mut scene, &Ground::default());
+        add_ground(&mut scene, &Ground::default(), Vec::new());
         assert_eq!(scene, before);
+    }
+
+    #[test]
+    fn each_layers_detail_is_its_finest_scaled_diffuse_but_a_road_sets() {
+        use frostbite::layers::Diffuse;
+        let d = |name: &str, scale| Diffuse {
+            name: format!("textures/{name}"),
+            scale,
+        };
+        let diffuse = BTreeMap::from([
+            (1, vec![d("grass_d", Some(0.2))]),
+            (3, vec![d("footprints_d", Some(0.2)), d("waves_d", None)]),
+            (
+                6,
+                vec![d("burnt_01_d", Some(0.1)), d("burnt_02_d", Some(0.1))],
+            ),
+            (12, vec![d("pine_d", Some(0.48)), d("field_d", Some(0.4))]),
+            (8, vec![d("drv_set3_clean_d", Some(0.1))]),
+            (28, vec![d("gravel_d", None)]),
+            (30, vec![]),
+        ]);
+        let detail = ground_detail(&diffuse);
+        let pick = |layer| (detail[&layer].texture.as_str(), detail[&layer].scale);
+        assert_eq!(pick(1), ("textures/grass_d", 0.2));
+        assert_eq!(pick(3), ("textures/footprints_d", 0.2));
+        assert_eq!(pick(6), ("textures/burnt_01_d", 0.1));
+        assert_eq!(pick(12), ("textures/pine_d", 0.48));
+        assert_eq!(detail.keys().copied().collect::<Vec<_>>(), [1, 3, 6, 12]);
     }
 
     #[test]
@@ -681,7 +773,7 @@ mod tests {
         let mut count = [0; 4];
         for d in &scene.draws {
             count[match d.shading {
-                Shading::Colour | Shading::Vertex => 0,
+                Shading::Colour | Shading::Ground => 0,
                 Shading::Cutout => 1,
                 Shading::Grey { .. } => 2,
                 Shading::Decal { .. } => 3,

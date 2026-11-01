@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use crate::reader::Reader;
 use crate::store::{Store, guid_order};
+use crate::texture::bc1_palette;
 use crate::{Error, Location, Result, bail};
 
 /// The res holding Palm City's streaming tree (in the terrain's root bundle).
@@ -44,6 +45,11 @@ const PAGES: u32 = 18_496;
 pub const COLOUR_SIDE: usize = 68;
 pub const COLOUR_BORDER: usize = 2;
 const COLOUR_BYTES: usize = COLOUR_SIDE * COLOUR_SIDE / 2;
+/// A page: one layer's weight, 0 to 255, `PAGE_SIDE` × `PAGE_SIDE` texels with a
+/// `BORDER` beyond the tile on each side; the pages lie just before the colour.
+pub const PAGE_SIDE: usize = 136;
+/// How many layers a ground vertex carries weights for.
+pub const DETAIL_SLOTS: usize = 8;
 /// Metres per height unit.
 const UNIT: f32 = 1.0 / 32.0;
 
@@ -453,22 +459,68 @@ impl Colour {
     }
 }
 
-/// A BC1 block's four colours: its two end points (RGB 5:6:5) and the two between
-/// them, or their middle and black when the first is not the greater.
-fn bc1_palette(block: &[u8; 8]) -> [[u8; 3]; 4] {
-    let end = |at: usize| {
-        let c = u16::from_le_bytes([block[at], block[at + 1]]);
-        let (r, g, b) = (c >> 11, (c >> 5) & 63, c & 31);
-        [r * 255 / 31, g * 255 / 63, b * 255 / 31].map(|v| v as u8)
-    };
-    let (a, b) = (end(0), end(2));
-    let mix = |wa: u16, wb: u16| {
-        [0, 1, 2].map(|k| ((u16::from(a[k]) * wa + u16::from(b[k]) * wb) / (wa + wb)) as u8)
-    };
-    if u16::from_le_bytes([block[0], block[1]]) > u16::from_le_bytes([block[2], block[3]]) {
-        [a, b, mix(2, 1), mix(1, 2)]
-    } else {
-        [a, b, mix(1, 1), [0; 3]]
+/// A tile's pages: one weight mask per layer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pages {
+    /// The layer of each page, in page order.
+    pub layers: Vec<u16>,
+    masks: Vec<u8>,
+}
+
+impl Pages {
+    /// Reads the pages of a tile's chunk, for `layers` (one per page, as
+    /// [`Tree::pages`] gives them); an error when the chunk holds another number.
+    pub fn parse(chunk: &[u8], layers: Vec<u16>) -> Result<Self> {
+        let bytes = PAGE_SIDE * PAGE_SIDE * layers.len();
+        let tail = chunk.len().checked_sub(COLOUR_BYTES);
+        let start = tail.and_then(|t| t.checked_sub(bytes));
+        let (Some(tail), Some(start)) = (tail, start) else {
+            bail!(
+                "{} bytes, too short for {} pages",
+                chunk.len(),
+                layers.len()
+            );
+        };
+        let heights = chunk.len() == HEIGHTFIELD as usize + bytes;
+        if !(heights || start == 0) {
+            bail!("{} bytes do not hold {} pages", chunk.len(), layers.len());
+        }
+        Ok(Self {
+            layers,
+            masks: chunk[start..tail].to_vec(),
+        })
+    }
+
+    /// Each of `slots`' share of the weight at `at` (x and z) of a tile at `min` of
+    /// side `size`, out of all its pages' (255 is all of it): each page blended
+    /// between the four nearest texels' middles. Zero for a layer it has no page for,
+    /// and for all when no page has weight there.
+    pub fn weights(&self, min: [f32; 2], size: f32, at: [f32; 2], slots: &[u16]) -> [u8; 8] {
+        let per_texel = size / (PAGE_SIDE - 2 * BORDER) as f32;
+        let last = (PAGE_SIDE - 1) as f32;
+        let [u, v] =
+            [0, 1].map(|k| ((at[k] - min[k]) / per_texel + BORDER as f32 - 0.5).clamp(0.0, last));
+        let (c0, r0) = (u as usize, v as usize);
+        let (c1, r1) = ((c0 + 1).min(PAGE_SIDE - 1), (r0 + 1).min(PAGE_SIDE - 1));
+        let (fu, fv) = (u - c0 as f32, v - r0 as f32);
+        let weight = |page: usize| {
+            let m = &self.masks[page * PAGE_SIDE * PAGE_SIDE..][..PAGE_SIDE * PAGE_SIDE];
+            let t = |r: usize, c: usize| f32::from(m[r * PAGE_SIDE + c]);
+            let top = t(r0, c0) * (1.0 - fu) + t(r0, c1) * fu;
+            let bottom = t(r1, c0) * (1.0 - fu) + t(r1, c1) * fu;
+            top * (1.0 - fv) + bottom * fv
+        };
+        let all: Vec<f32> = (0..self.layers.len()).map(weight).collect();
+        let total: f32 = all.iter().sum();
+        let mut out = [0; DETAIL_SLOTS];
+        if total > 0.0 {
+            for (o, slot) in out.iter_mut().zip(slots) {
+                if let Some(p) = self.layers.iter().position(|l| l == slot) {
+                    *o = (all[p] / total * 255.0).round() as u8;
+                }
+            }
+        }
+        out
     }
 }
 
@@ -478,6 +530,11 @@ pub struct Ground {
     pub positions: Vec<[f32; 3]>,
     /// One per position, from the tile's colour (sRGB-encoded; alpha 255).
     pub colours: Vec<[u8; 4]>,
+    /// The layers whose weights the vertices carry, at most [`DETAIL_SLOTS`].
+    pub detail: Vec<u16>,
+    /// One per position: each of `detail`'s share of the weight of the tile's pages
+    /// (255 is all of it), from the tile's pages or its nearest ancestor's.
+    pub weights: Vec<[u8; DETAIL_SLOTS]>,
     pub indices: Vec<u32>,
     /// How many leaf tiles it covers.
     pub tiles: usize,
@@ -495,22 +552,27 @@ const NO_COLOUR: [u8; 3] = [128; 3];
 /// The ground over `lo`..`hi` (x and z): every leaf tile overlapping it, drawn from
 /// its own heightfield or its nearest ancestor's with one, at a vertex every
 /// `spacing` metres or the heightfield's own spacing if coarser, and coloured by its
-/// own colour or its nearest ancestor's. Holes are left out.
+/// own colour or its nearest ancestor's. Each vertex carries the weights of the
+/// layers of `detail` that have the most pages over the area (at most
+/// [`DETAIL_SLOTS`]). Holes are left out.
 pub fn ground(
     tree: &Tree,
     lo: [f32; 2],
     hi: [f32; 2],
     spacing: f32,
+    detail: &[u16],
     mut load: impl FnMut(&[u8; 16]) -> Result<Vec<u8>>,
 ) -> Ground {
-    let mut ground = Ground::default();
+    let mut ground = Ground {
+        detail: detail_slots(tree, lo, hi, detail),
+        ..Ground::default()
+    };
     if !tree.tiles.is_empty() {
         walk(
             tree,
             0,
-            (None, None),
-            lo,
-            hi,
+            Sources::default(),
+            (lo, hi),
             spacing,
             &mut load,
             &mut ground,
@@ -519,13 +581,72 @@ pub fn ground(
     ground
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Of `candidates`, those with the most page area over `lo`..`hi`: each leaf tile's
+/// square (clipped to it) counted for the layers it is weighted by (its own pages',
+/// or its nearest ancestor's), at most [`DETAIL_SLOTS`], most first.
+pub fn detail_slots(tree: &Tree, lo: [f32; 2], hi: [f32; 2], candidates: &[u16]) -> Vec<u16> {
+    let mut area: HashMap<u16, f32> = HashMap::new();
+    if !tree.tiles.is_empty() {
+        leaf_pages(tree, 0, Vec::new(), (lo, hi), 0, &mut area);
+    }
+    let mut ranked: Vec<(u16, f32)> = area
+        .into_iter()
+        .filter(|(l, a)| candidates.contains(l) && *a > 0.0)
+        .collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    ranked
+        .into_iter()
+        .take(DETAIL_SLOTS)
+        .map(|(l, _)| l)
+        .collect()
+}
+
+/// Adds each leaf under tile `index` overlapping `lo`..`hi` to `area`, for the
+/// layers of its pages or, without any, `pages` (its nearest ancestor's).
+fn leaf_pages(
+    tree: &Tree,
+    index: usize,
+    mut pages: Vec<u16>,
+    (lo, hi): ([f32; 2], [f32; 2]),
+    depth: usize,
+    area: &mut HashMap<u16, f32>,
+) {
+    let Some(t) = tree.tiles.get(index).filter(|t| t.overlaps(lo, hi)) else {
+        return;
+    };
+    let own = tree.pages(t);
+    if !own.is_empty() && t.page_count() == own.len() {
+        pages = own;
+    }
+    match t.children.filter(|_| depth < MAX_DEPTH) {
+        Some(children) => {
+            for c in children {
+                leaf_pages(tree, c as usize, pages.clone(), (lo, hi), depth + 1, area);
+            }
+        }
+        None => {
+            let side = |k: usize| (hi[k].min(t.min[k] + t.size) - lo[k].max(t.min[k])).max(0.0);
+            for layer in pages {
+                *area.entry(layer).or_default() += side(0) * side(1);
+            }
+        }
+    }
+}
+
+/// The tiles a walk draws from: heights, colour and pages, each its own or an
+/// ancestor's.
+#[derive(Clone, Default)]
+struct Sources {
+    heights: Option<Source<Heightfield>>,
+    colour: Option<Source<Colour>>,
+    pages: Option<Source<Pages>>,
+}
+
 fn walk(
     tree: &Tree,
     index: usize,
-    sources: (Option<Source<Heightfield>>, Option<Source<Colour>>),
-    lo: [f32; 2],
-    hi: [f32; 2],
+    mut sources: Sources,
+    (lo, hi): ([f32; 2], [f32; 2]),
     spacing: f32,
     load: &mut impl FnMut(&[u8; 16]) -> Result<Vec<u8>>,
     ground: &mut Ground,
@@ -536,21 +657,30 @@ fn walk(
     if !tile.overlaps(lo, hi) {
         return;
     }
-    let (mut heights, mut colour) = sources;
     if let Some((id, _)) = tile.chunk.filter(|_| tile.has_colour()) {
         let read = load(&id).and_then(|c| {
             let h = tile
                 .has_heights()
                 .then(|| Heightfield::parse(&c))
                 .transpose()?;
-            Ok((h, Colour::parse(&c)?))
+            // Pages are detail: a tile without them (or whose chunk doesn't hold as
+            // many as the layer tree lists) is weighted by its ancestor's.
+            let layers = tree.pages(tile);
+            let p = (!layers.is_empty())
+                .then(|| Pages::parse(&c, layers).ok())
+                .flatten();
+            Ok((h, Colour::parse(&c)?, p))
         });
+        let (min, size) = (tile.min, tile.size);
         match read {
-            Ok((h, c)) => {
+            Ok((h, c, p)) => {
                 if let Some(h) = h {
-                    heights = Some((tile.min, tile.size, h.into()));
+                    sources.heights = Some((min, size, h.into()));
                 }
-                colour = Some((tile.min, tile.size, c.into()));
+                sources.colour = Some((min, size, c.into()));
+                if let Some(p) = p {
+                    sources.pages = Some((min, size, p.into()));
+                }
             }
             Err(e) => ground.failed.push((index, e.0)),
         }
@@ -561,9 +691,8 @@ fn walk(
                 walk(
                     tree,
                     c as usize,
-                    (heights.clone(), colour.clone()),
-                    lo,
-                    hi,
+                    sources.clone(),
+                    (lo, hi),
                     spacing,
                     load,
                     ground,
@@ -571,20 +700,20 @@ fn walk(
             }
         }
         None => {
-            if let Some(h) = &heights {
+            if let Some(h) = &sources.heights {
                 ground.tiles += 1;
-                emit(tile, h, colour.as_ref(), spacing, ground);
+                emit(tile, h, &sources, spacing, ground);
             }
         }
     }
 }
 
-/// Adds `tile`'s square, drawn from the heights of `source` (itself or an ancestor)
-/// and coloured by `colour`.
+/// Adds `tile`'s square, drawn from the heights of `source` (itself or an ancestor),
+/// coloured and weighted by `sources`' colour and pages.
 fn emit(
     tile: &Tile,
     (min, size, heights): &Source<Heightfield>,
-    colour: Option<&Source<Colour>>,
+    sources: &Sources,
     spacing: f32,
     ground: &mut Ground,
 ) {
@@ -609,9 +738,18 @@ fn emit(
                     min[1] + (row - BORDER) as f32 * cell,
                 );
                 ground.positions.push([x, y, z]);
-                let [r, g, b] =
-                    colour.map_or(NO_COLOUR, |(at, side, c)| c.sample(*at, *side, [x, z]));
+                let [r, g, b] = sources
+                    .colour
+                    .as_ref()
+                    .map_or(NO_COLOUR, |(at, side, c)| c.sample(*at, *side, [x, z]));
                 ground.colours.push([r, g, b, 255]);
+                let w = sources
+                    .pages
+                    .as_ref()
+                    .map_or([0; DETAIL_SLOTS], |(at, side, p)| {
+                        p.weights(*at, *side, [x, z], &ground.detail)
+                    });
+                ground.weights.push(w);
             }
         }
     }
@@ -938,6 +1076,55 @@ mod tests {
         assert_eq!(at(100.0, 100.0), [0; 3]);
     }
 
+    /// A colour-only chunk with a page per value of `pages`: the first texel of each
+    /// set to the value's first, the rest to its second.
+    fn paged(pages: &[(u8, u8)]) -> Vec<u8> {
+        let mut d = Vec::new();
+        for &(first, rest) in pages {
+            let mut page = vec![rest; PAGE_SIDE * PAGE_SIDE];
+            page[0] = first;
+            d.extend(page);
+        }
+        coloured(d, block(0, 0, 0), block(0, 0, 0))
+    }
+
+    #[test]
+    fn a_layers_weight_is_its_share_of_the_pages() {
+        let p = Pages::parse(&paged(&[(0, 200), (0, 100), (0, 0)]), vec![2, 5, 9]).unwrap();
+        let at = |x: f32, slots: &[u16]| p.weights([0.0, 0.0], 128.0, [x, 64.0], slots);
+        // Layer 2 has two thirds, 5 a third, 9 none; slots past the layers are zero.
+        assert_eq!(at(64.0, &[5, 2, 9]), [85, 170, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(at(64.0, &[7]), [0; 8], "a layer with no page");
+        // The first texel (3.5 texels before the tile's corner) has no weight at all.
+        let corner = p.weights([0.0, 0.0], 128.0, [-3.5, -3.5], &[2, 5]);
+        assert_eq!(corner, [0; 8]);
+        // Pages before a heightfield's colour, as many as the tree lists.
+        let mut h = rows();
+        h.resize(HEIGHTFIELD as usize - COLOUR_BYTES, 0);
+        h.extend(&paged(&[(0, 50)])[..]);
+        assert_eq!(h.len(), HEIGHTFIELD as usize + PAGE_SIDE * PAGE_SIDE);
+        let one = Pages::parse(&h, vec![4]).unwrap();
+        assert_eq!(one.weights([0.0; 2], 64.0, [9.0; 2], &[4])[0], 255);
+        assert!(
+            Pages::parse(&h, vec![4, 6]).is_err(),
+            "two pages listed, one held"
+        );
+        assert!(Pages::parse(&paged(&[(0, 9)]), vec![]).is_err());
+        assert!(Pages::parse(&[0; 10], vec![1]).is_err());
+    }
+
+    #[test]
+    fn the_detail_slots_are_the_layers_with_the_most_pages() {
+        let tree = Tree::parse(&sample()).unwrap();
+        // The layer tree lists 2 for the root and two leaves, 5 for the first leaf,
+        // but only the third leaf's chunk holds its page (2): the root has no chunk,
+        // the first leaf's none.
+        let all = [-128.0, -128.0];
+        assert_eq!(detail_slots(&tree, all, [128.0; 2], &[5, 2, 7]), [2]);
+        assert!(detail_slots(&tree, all, [128.0; 2], &[5]).is_empty());
+        assert!(detail_slots(&tree, [0.0, -128.0], [128.0, -1.0], &[2]).is_empty());
+    }
+
     #[test]
     fn heights_are_thirty_seconds_of_a_metre_and_zero_is_a_hole() {
         let h = Heightfield::parse(&rows()).unwrap();
@@ -961,7 +1148,7 @@ mod tests {
         };
         // Only the first two quadrants (z < 0), a vertex every 16 m (8 cells); the
         // second is read for its colour alone.
-        let g = ground(&tree, [-128.0, -128.0], [128.0, -1.0], 16.0, load);
+        let g = ground(&tree, [-128.0, -128.0], [128.0, -1.0], 16.0, &[], load);
         assert_eq!(asked, [1, 2]);
         // The second quadrant has no heights and the root none to fall back on.
         assert_eq!(g.tiles, 1);
@@ -970,11 +1157,11 @@ mod tests {
         assert_eq!(g.positions[0], [-128.0, 5.0 / 32.0, -128.0]);
         assert_eq!(g.positions[80], [0.0, 133.0 / 32.0, 0.0]);
         // The fourth quadrant, at full spacing, misses the hole's four cells.
-        let g = ground(&tree, [-128.0, 0.0], [0.0, 128.0], 0.5, |_| Ok(rows()));
+        let g = ground(&tree, [-128.0, 0.0], [0.0, 128.0], 0.5, &[], |_| Ok(rows()));
         assert_eq!(g.positions.len(), 129 * 129 - 1);
         assert_eq!(g.colours.len(), g.positions.len());
         assert_eq!(g.indices.len(), (128 * 128 - 4) * 6);
-        let g = ground(&tree, [0.0, 0.0], [128.0, 128.0], 1.0, |_| {
+        let g = ground(&tree, [0.0, 0.0], [128.0, 128.0], 1.0, &[], |_| {
             Err(Error("no".into()))
         });
         assert_eq!((g.tiles, g.failed.len()), (0, 1));
@@ -987,7 +1174,7 @@ mod tests {
         let tree = Tree::parse(&sample_with_root(HEIGHTFIELD)).unwrap();
         let grey = coloured(rows(), block(0x8410, 0x8410, 0), block(0x8410, 0x8410, 0));
         let green = coloured(vec![], block(0x07E0, 0x07E0, 0), block(0x07E0, 0x07E0, 0));
-        let g = ground(&tree, [-128.0, -128.0], [128.0, -1.0], 16.0, |id| {
+        let g = ground(&tree, [-128.0, -128.0], [128.0, -1.0], 16.0, &[], |id| {
             Ok(if id[0] == 2 {
                 green.clone()
             } else {
@@ -998,7 +1185,7 @@ mod tests {
         assert!(g.colours[..81].iter().all(|&c| c == [131, 129, 131, 255]));
         assert!(g.colours[81..].iter().all(|&c| c == [0, 255, 0, 255]));
         // The second's chunk unreadable: it is drawn in the root's colour.
-        let g = ground(&tree, [0.0, -128.0], [128.0, -1.0], 16.0, |id| {
+        let g = ground(&tree, [0.0, -128.0], [128.0, -1.0], 16.0, &[], |id| {
             if id[0] == 2 {
                 Err(Error("no".into()))
             } else {

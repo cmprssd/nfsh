@@ -512,3 +512,24 @@ Supersedes "The ground is one draw in plain grey" above.
   whose shaders bind a diffuse without sampling it (layer 28) gets none. Why: two
   layers sharing one bound texture sample it at their own scales, and going by the
   texture would give one of them the other's.
+
+## 2026-11-01: The ground's detail as drawn (decided by Claude, pending review)
+
+- **A layer's weight is its share of the tile's pages**: the pages don't sum to 255,
+  so each vertex takes each layer's page value over the sum of all the tile's pages
+  there (none: no detail). Why: it is the weighted mean the colour evidence used
+  (docs/FORMATS.md, "Terrain"), and it needs no guess at the shaders' blend.
+- **Detail is `colour × (1 + Σ wᵢ (diffuseᵢ ÷ averageᵢ − 1))`**, the average being
+  of the diffuse's 64 × 64 mip, linear. A layer drawn without detail (a road set, no
+  scale, or not given a slot) counts as 1, so its share keeps the colour as it is.
+  Why: from afar each detail averages to 1 and the tile's colour stays exactly the
+  original's.
+- **Weights per vertex, eight slots per area**: the ground's vertices (every 2 m)
+  carry eight weights in the bytes the meshes use for texture coordinates; the slots
+  go to the eight layers with the most area over the drawn ground (leaf tiles, by the
+  pages they are drawn with), and the textures are one BC1 array. Why: no extra
+  vertex buffer, image per tile or descriptor; the masks are 1 m, the colour 2 m,
+  so 2 m blends lose little.
+- **One diffuse per layer: its finest scaled one**, ties by name; the road sets'
+  `drv_…_d` maps are left out (their channels are not plain colour). Why: the
+  owner's one-sample rule, applied to the layers that have two diffuse maps.
