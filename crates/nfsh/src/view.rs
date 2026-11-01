@@ -1,4 +1,5 @@
-//! `nfsh view`: one streaming zone of Palm City, textured and lit, in a window to fly
+//! `nfsh view`: one streaming zone of Palm City with the roads and ground under it,
+//! textured and lit, in a window to fly
 //! through: mouse to look, W A S D to move, Space and C up and down, Shift to go
 //! faster, N to switch between midday and tealnight, Esc to quit. The title shows
 //! the time of day, the frame rate and frame time. With `--shot`, one frame is drawn
@@ -8,9 +9,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use frostbite::level::Level;
+use frostbite::level::xz_bounds;
 use frostbite::lighting::{self, Lighting};
 use frostbite::mesh::Meshes;
 use frostbite::store::Store;
+use frostbite::terrain::{self, Chunks, Ground, Tree};
 use frostbite::texture::Textures;
 use nfsh_render::scene::{self, Scene};
 use nfsh_render::zone::Loaded;
@@ -31,6 +34,10 @@ const SIZE: (u32, u32) = (1280, 720);
 /// How far beyond the zone's own placements its drivable surfaces are taken from,
 /// in metres: a road piece's origin can sit this far from the art over it.
 const ROAD_MARGIN: f32 = 150.0;
+/// The ground is drawn under the zone's placements and this far beyond them, in
+/// metres, with a vertex every `GROUND_SPACING` metres (its tiles have one a metre).
+const GROUND_MARGIN: f32 = ROAD_MARGIN;
+const GROUND_SPACING: f32 = 2.0;
 /// How often the title's frame rate is updated.
 const TITLE_EVERY: Duration = Duration::from_millis(500);
 
@@ -168,7 +175,32 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
     let mut zone = level.zone(name)?;
     let roads = level.add_drivable_surfaces(&mut zone, ROAD_MARGIN)?;
     let mut meshes = Meshes::new(store)?;
-    let scene = scene::build(&zone, |m| scene::first_lod(&mut meshes, m));
+    let mut scene = scene::build(&zone, |m| scene::first_lod(&mut meshes, m));
+    // The ground under the zone; without it the zone is still drawn.
+    let ground = xz_bounds(&zone).map(|(lo, hi)| -> frostbite::Result<Ground> {
+        let tree = Tree::read(store)?;
+        let mut chunks = Chunks::new(store)?;
+        let lo = lo.map(|v| v - GROUND_MARGIN);
+        let hi = hi.map(|v| v + GROUND_MARGIN);
+        Ok(terrain::ground(&tree, lo, hi, GROUND_SPACING, |id| {
+            chunks.read(id)
+        }))
+    });
+    match ground {
+        Some(Ok(g)) => {
+            eprintln!(
+                "  ground: {} tiles, {} triangles",
+                g.tiles,
+                g.indices.len() / 3
+            );
+            for (tile, why) in &g.failed {
+                eprintln!("  ground tile {tile}: {why}");
+            }
+            scene::add_ground(&mut scene, &g);
+        }
+        Some(Err(e)) => eprintln!("  ground not drawn: {e}"),
+        None => {}
+    }
     eprintln!(
         "{name}: {} placements ({roads} of them drivable surfaces) of {} meshes; {} vertices, {} triangles, {} draws; read in {:.1} s",
         zone.placements.len(),

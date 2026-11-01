@@ -337,36 +337,53 @@ Palm City's terrain is `levels/mainlevel/mainlevel_terrain_2048/mainlevel_terrai
 | `VisualResource`, `mainlevel_terrain_2048` (`0x1CA38E06`) | 19,833 | the scattering: mesh names (`sct_grass_…_mesh`) and their settings |
 | `TerrainLayerCombinationsResource`, `…layercombinations_win32` (`0xA23E75DB`) | 1,680,272 | not read |
 
-**The streaming tree** is packed little-endian with no alignment. From offset `0x7F`, a
-depth-first **quadtree** of 10,077 nodes covers x and z from −8,192 to 8,192 m, down to
-128 m leaves (6,968 of them). A node is its bounding box (six f32: minimum x, y, z, then
-maximum; y is the height range) and an f32, then a byte: 1 marks an empty node (the
-open sea; 50 of them) and ends it there, 29 bytes in all. Otherwise four more bytes
-follow (the second is 1 for the root and the four 8,192 m nodes, which then carry 340
-bytes: min/max height pairs, u16, for 1 + 4 + 16 + 64 cells), and a last byte, 1 when
+**The streaming tree** is packed little-endian with no alignment; `frostbite::terrain`
+reads it. Worked out on 2026-11-01 and checked on every heightfield (below).
+
+The header is 0x7F bytes; of it only two counts are read: the tiles (u32 at 0x15,
+8,253) and the nodes (u32 at 0x6B, 10,077). Then a depth-first **quadtree of nodes**
+covers x and z from −8,192 to 8,192 m, down to 128 m leaves (6,968 of them). A node is
+its bounding box (six f32: minimum x, y, z, then maximum; y is the height range) and an
+f32, then a byte: 1 marks an empty node (the open sea; 50 of them) and ends it there,
+29 bytes in all. Otherwise four more bytes follow (the first is 1 for the root and the
+four 8,192 m nodes, which then carry 340 bytes: min/max height pairs, u16, for
+1 + 4 + 16 + 64 cells; the second is 1 for every other node), and a last byte, 1 when
 four children follow, in the order (0, 0), (1, 0), (1, 1), (0, 1) (x first). The tree
-ends at `0x54083`. What follows up to `0x562388` (rectangles with bit masks, likely
-the layers each area uses) is not worked out.
+ends at `0x54083`.
 
-From `0x562388` to the end, **8,251 tile records**: a chunk's size (u32) and id (16
-bytes, in the order a bundle's chunk list stores ids), a count (0 or 1) of further
-chunks with their size and id, then two bytes. The chunks are superbundle chunks of
-`mainlevel`. A record's first chunk is one of two kinds, told by its size:
+Then **blocks**, each a kind (u8) and a length (u32) before its bytes, until a kind
+of 0xFF with no length. Palm City has four, kinds 1 to 4 (1,335,460, 128,136,
+3,836,271 and 1,063 bytes; rectangles with bit masks, likely the layers each area
+uses), not worked out.
 
-- `42,231 + 18,496·k` bytes (7,618 records): a **heightfield**, 137 × 137 u16 first
+Then, to the end, **the tiles**: a second quadtree over the same square, depth-first
+from the root, in the same child order. It is not the node tree: it stops at 256 m in
+some places and goes down to 64 m in others (108 tiles). A tile is a chunk's size (u32)
+and id (16 bytes, an in-memory GUID: `store::guid_order` gives the id a bundle's chunk
+list uses), a count (0 or 1) of further chunks with their size and id (20 bytes each),
+a byte (always 0), and a byte that is 1 when the tile's four children follow. The root
+and the four 8,192 m tiles have no chunk (size and id zero). The chunks are superbundle
+chunks of `mainlevel`. A tile's first chunk is one of two kinds, told by its size:
+
+- `42,231 + 18,496·k` bytes (7,618 tiles): a **heightfield**, 137 × 137 u16 first
   (37,538 bytes; the rest holds 68 × 68 pages not read yet). Height is the u16 ÷ 32 m
-  (the sea floor's 5 is the root's minimum, 0.156 m; the maximum 30,292 is 946.6 m).
-  Rows run along z and columns along x, with a 4-sample border: sample (r, c) of a node
-  at (x0, z0) of size S lies at (x0 + (c − 4)·S/128, z0 + (r − 4)·S/128). A child's
-  even samples equal its parent's exactly, which is how this was checked.
-- multiples of 2,312 bytes (630 records): no heights (block-compressed data).
+  (the sea floor's 5 is the root's minimum, 0.156 m; the maximum 30,292 is 946.6 m);
+  0 is a **hole** (the ground is left out: 64 tiles cut holes their parents don't
+  have). Rows run along z and columns along x, with a 4-sample border: sample (r, c)
+  of a tile at (x0, z0) of size S lies at (x0 + (c − 4)·S/128, z0 + (r − 4)·S/128), so
+  a 128 m tile has a sample every metre.
+- multiples of 2,312 bytes (630 tiles): no heights (block-compressed data). A tile
+  like this is drawn from its nearest ancestor's heights.
 
-The records follow the nodes depth-first, but not every node has its own: a 256 m
-node's record whose extra chunk is four heightfields (168,924 = 4 × 42,231 bytes)
-holds its four 128 m leaves; the root and the 8,192 m nodes have none. Matching tiles
-by their samples places 4,162 of the 7,618 heightfields (all of the city's
-x ≥ 0, z < 4,096 and the south-west), but the rule saying which nodes have a record
-is not worked out, so the terrain is not drawn yet.
+The further chunk, when there is one, is block-compressed data (multiples of 2,312
+bytes) or, on 300 of the 128 m leaves, 168,924 = 4 × 42,231 bytes: likely four 64 m
+heightfields. Neither is read yet.
+
+**How it was checked**: a child's even samples are its parent's, at the child's
+quadrant. Of the 7,602 parent and child pairs that both have heights, 7,477 agree on
+every sample, 61 differ by at most 2 units (1/16 m) on a few dozen samples, and 64
+differ only where one of them has a hole. The heights of every leaf also span exactly
+its node's y range in the node tree. A store test checks the first rule on every pair.
 
 ## Meshes
 

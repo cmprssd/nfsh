@@ -420,3 +420,18 @@ The plan, one PR each (decided by Claude, pending review):
   heights are worked out (docs/FORMATS.md, "Terrain"), but not which nodes own a tile
   record; matching tiles by their samples places only part of the city, and the viewer
   must not depend on a guess. The terrain is the next task.
+
+## 2026-11-01: Drawing the terrain (decided by Claude, pending review)
+
+- **The ground is drawn under the zone's placements and 150 m around them, the same
+  margin as the roads, with a vertex every 2 m.** Why: the tiles have a sample every
+  metre, which is 2.3 million triangles under zone 495; every second sample keeps the
+  hills' shape at a quarter of that (1.2 million). The spacing is one constant in the
+  viewer.
+- **Each leaf tile is drawn from its own heights, or its nearest ancestor's when its
+  chunk has none**; holes (height 0) are left out. Where a tile meets a neighbour of
+  coarser detail the edges don't share vertices, so small cracks can show; stitching
+  waits for streaming the terrain by distance.
+- **The ground is one draw in plain grey**: the colour comes from the terrain's layers,
+  which are in the blocks and the layer-combinations res not read yet.
+
