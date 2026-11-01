@@ -23,6 +23,9 @@ const NODE: usize = 28;
 const PYRAMID: usize = 340;
 /// The byte that ends the blocks between the node tree and the tiles.
 const LAST_BLOCK: u8 = 0xFF;
+/// The block holding the layer tree, and its header's size.
+const LAYER_BLOCK: u8 = 1;
+const LAYER_HEADER: usize = 0x38;
 /// Deeper than any tree the readers accept (Palm City's goes 9 levels down, to 64 m),
 /// so a malformed file can't recurse without end.
 const MAX_DEPTH: usize = 16;
@@ -76,9 +79,36 @@ impl Tile {
             })
     }
 
+    /// How many pages its chunk holds: 0 without a chunk of a known size.
+    pub fn page_count(&self) -> usize {
+        let Some((_, size)) = self.chunk.filter(|_| self.has_colour()) else {
+            return 0;
+        };
+        let base = if self.has_heights() {
+            HEIGHTFIELD
+        } else {
+            COLOUR_BYTES as u32
+        };
+        ((size - base) / PAGES) as usize
+    }
+
     fn overlaps(&self, lo: [f32; 2], hi: [f32; 2]) -> bool {
         (0..2).all(|k| self.min[k] < hi[k] && lo[k] < self.min[k] + self.size)
     }
+}
+
+/// A layer's record at one square of the layer tree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerRecord {
+    /// An index into the `TerrainData`'s `TerrainLayers`.
+    pub layer: u16,
+    /// Whether a tile at this square has a page (a weight mask) for the layer.
+    pub paged: bool,
+    /// Whether no square below lists the layer.
+    pub leaf: bool,
+    /// Which of the 1 + 4 + 16 + 64 cells below the square the layer touches, as
+    /// bits; not read yet.
+    pub cells: [u8; 11],
 }
 
 /// The streaming tree's tiles; the first is the root.
@@ -87,6 +117,13 @@ pub struct Tree {
     pub tiles: Vec<Tile>,
     /// The node tree's node count.
     pub nodes: usize,
+    /// The layer tree: each square's layers, in ascending order, by [`square`].
+    pub layers: HashMap<[u32; 3], Vec<LayerRecord>>,
+}
+
+/// A square's key in [`Tree::layers`]: its least x and z and its side, as bits.
+pub fn square(min: [f32; 2], size: f32) -> [u32; 3] {
+    [min[0].to_bits(), min[1].to_bits(), size.to_bits()]
 }
 
 impl Tree {
@@ -105,12 +142,17 @@ impl Tree {
         if nodes != node_count {
             bail!("the node tree has {nodes} nodes, its header says {node_count}");
         }
+        let mut layers = HashMap::new();
         loop {
-            if r.u8()? == LAST_BLOCK {
+            let kind = r.u8()?;
+            if kind == LAST_BLOCK {
                 break;
             }
             let len = r.u32_le()? as usize;
-            r.bytes(len)?;
+            let block = r.bytes(len)?;
+            if kind == LAYER_BLOCK {
+                layers = read_layers(block).map_err(|e| Error(format!("the layer tree: {e}")))?;
+            }
         }
         let mut tiles = Vec::with_capacity(tile_count.min(data.len() / 23));
         read_tile(&mut r, min, size, 0, &mut tiles)?;
@@ -124,20 +166,35 @@ impl Tree {
         if tiles.len() != tile_count {
             bail!("{} tiles, the header says {tile_count}", tiles.len());
         }
-        Ok(Self { tiles, nodes })
+        Ok(Self {
+            tiles,
+            nodes,
+            layers,
+        })
+    }
+
+    /// The layers of `tile`'s pages, in page order: the paged layers at its square,
+    /// ascending (likely; see docs/FORMATS.md, "Terrain layers"). Empty when no node of
+    /// the layer tree is at its square: such a tile has no pages.
+    pub fn pages(&self, tile: &Tile) -> Vec<u16> {
+        self.layers
+            .get(&square(tile.min, tile.size))
+            .map(|records| {
+                records
+                    .iter()
+                    .filter(|r| r.paged)
+                    .map(|r| r.layer)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Reads Palm City's tree from `store`.
     pub fn read(store: &Store) -> Result<Self> {
-        let location = store
-            .superbundles
-            .iter()
-            .flat_map(|sb| &sb.bundles)
-            .flat_map(|b| &b.bundle.res)
-            .find(|r| r.asset.name == STREAMING_TREE)
-            .map(|r| r.asset.location)
+        let asset = store
+            .res(STREAMING_TREE)
             .ok_or_else(|| Error(format!("{STREAMING_TREE}: not in the store")))?;
-        let data = store.entries()?.read(location)?;
+        let data = store.entries()?.read(asset.location)?;
         Self::parse(&data).map_err(|e| Error(format!("{STREAMING_TREE}: {e}")))
     }
 }
@@ -179,6 +236,99 @@ fn skip_node(r: &mut Reader, depth: usize, count: &mut usize) -> Result<()> {
         0 => Ok(()),
         1 => (0..4).try_for_each(|_| skip_node(r, depth + 1, count)),
         c => bail!("node {count}: children flag {c}"),
+    }
+}
+
+/// Reads the layer tree, the block of kind [`LAYER_BLOCK`]: a header, then a quadtree
+/// of nodes over the header's square, each listing the layers under it.
+fn read_layers(block: &[u8]) -> Result<HashMap<[u32; 3], Vec<LayerRecord>>> {
+    let header = Reader::at(block, 0)?.bytes(LAYER_HEADER)?;
+    let u32_at = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().expect("4 bytes"));
+    let f32_at = |at: usize| f32::from_bits(u32_at(at));
+    let (min, max) = ([f32_at(0x18), f32_at(0x1C)], [f32_at(0x20), f32_at(0x24)]);
+    let size = max[0] - min[0];
+    if !(size > 0.0 && size.is_finite() && max[1] - min[1] == size) {
+        bail!("the square {min:?} to {max:?} is not a square");
+    }
+    let (node_count, record_count) = (u32_at(0x28) as usize, u32_at(0x2C) as usize);
+    let mut r = Reader::at(block, LAYER_HEADER)?;
+    let mut layers = HashMap::new();
+    let mut nodes = 0;
+    read_layer_node(&mut r, min, size, 0, &mut nodes, &mut layers)?;
+    let records: usize = layers.values().map(Vec::len).sum();
+    if (nodes, records) != (node_count, record_count) {
+        bail!(
+            "{nodes} nodes and {records} records, the header says {node_count} and {record_count}"
+        );
+    }
+    if r.pos() != block.len() {
+        bail!("{} bytes after the last node", block.len() - r.pos());
+    }
+    Ok(layers)
+}
+
+/// Reads the layer node at `r` covering `min` to `min + size`, and its children.
+fn read_layer_node(
+    r: &mut Reader,
+    min: [f32; 2],
+    size: f32,
+    depth: usize,
+    nodes: &mut usize,
+    layers: &mut HashMap<[u32; 3], Vec<LayerRecord>>,
+) -> Result<()> {
+    if depth > MAX_DEPTH {
+        bail!("deeper than {MAX_DEPTH}");
+    }
+    *nodes += 1;
+    let _zero = r.u8()?;
+    let count = r.u16_le()?;
+    let paged = r.u16_le()?;
+    let _zero = r.u16_le()?;
+    // A node with no records is empty: no records, no children, nothing more.
+    if count == 0 {
+        return Ok(());
+    }
+    let flag = |b: u8, what: &str| match b {
+        0 | 1 => Ok(b == 1),
+        _ => Err(Error(format!("node {nodes}: {what} flag {b}"))),
+    };
+    let mut records: Vec<LayerRecord> = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let layer = r.u16_le()?;
+        let mut at = [0.0; 4];
+        for v in &mut at {
+            *v = f32_le(r)?;
+        }
+        if at != [min[0], min[1], min[0] + size, min[1] + size] {
+            bail!("node {nodes}: a record's square {at:?}, the node's is {min:?} + {size}");
+        }
+        if records.last().is_some_and(|last| last.layer >= layer) {
+            bail!("node {nodes}: layers not ascending");
+        }
+        let leaf = flag(r.u8()?, "leaf")?;
+        let unpaged = flag(r.u8()?, "page")?;
+        records.push(LayerRecord {
+            layer,
+            paged: !unpaged,
+            leaf,
+            cells: r.array()?,
+        });
+    }
+    if records.iter().filter(|r| r.paged).count() != usize::from(paged) {
+        bail!("node {nodes}: the paged records don't match its count {paged}");
+    }
+    layers.insert(square(min, size), records);
+    let _zero = r.u8()?;
+    match r.u8()? {
+        0 => Ok(()),
+        1 => QUADRANTS.iter().try_for_each(|[qx, qz]| {
+            let at = [
+                min[0] + *qx as f32 * size / 2.0,
+                min[1] + *qz as f32 * size / 2.0,
+            ];
+            read_layer_node(r, at, size / 2.0, depth + 1, nodes, layers)
+        }),
+        c => bail!("node {nodes}: children flag {c}"),
     }
 }
 
@@ -539,10 +689,66 @@ mod tests {
         out.extend_from_slice(&[0, u8::from(kids)]);
     }
 
+    /// A layer node at `min` + `size`: its records' layers, whether each is paged,
+    /// and whether four children follow; no layers makes an empty node.
+    fn layer_node(out: &mut Vec<u8>, min: [f32; 2], size: f32, layers: &[(u16, bool)], kids: bool) {
+        let paged = layers.iter().filter(|(_, p)| *p).count() as u16;
+        out.push(0);
+        out.extend_from_slice(&(layers.len() as u16).to_le_bytes());
+        out.extend_from_slice(&paged.to_le_bytes());
+        out.extend_from_slice(&[0, 0]);
+        if layers.is_empty() {
+            return;
+        }
+        for &(layer, paged) in layers {
+            out.extend_from_slice(&layer.to_le_bytes());
+            for v in [min[0], min[1], min[0] + size, min[1] + size] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            out.extend_from_slice(&[u8::from(!kids), u8::from(!paged)]);
+            out.extend_from_slice(&[0x1F; 11]);
+        }
+        out.extend_from_slice(&[0, u8::from(kids)]);
+    }
+
+    /// The sample's layer tree: the root with layers 0 (unpaged) and 2; its first
+    /// child with 0, 2 and 5, the third with 2, the others empty.
+    fn layer_block() -> Vec<u8> {
+        let mut d = vec![0; LAYER_HEADER];
+        for (at, v) in [
+            (0x18, -128.0f32),
+            (0x1C, -128.0),
+            (0x20, 128.0),
+            (0x24, 128.0),
+        ] {
+            d[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        d[0x28..0x2C].copy_from_slice(&5u32.to_le_bytes());
+        d[0x2C..0x30].copy_from_slice(&6u32.to_le_bytes());
+        layer_node(
+            &mut d,
+            [-128.0, -128.0],
+            256.0,
+            &[(0, false), (2, true)],
+            true,
+        );
+        layer_node(
+            &mut d,
+            [-128.0, -128.0],
+            128.0,
+            &[(0, false), (2, true), (5, true)],
+            false,
+        );
+        layer_node(&mut d, [0.0, -128.0], 128.0, &[], false);
+        layer_node(&mut d, [0.0, 0.0], 128.0, &[(2, true)], false);
+        layer_node(&mut d, [-128.0, 0.0], 128.0, &[], false);
+        d
+    }
+
     /// A 256 m tree from −128: the root, with four children, the third empty in the
     /// node tree; the root has no chunk, the first child a heightfield, the second
     /// none (2,312 bytes), and the third and fourth heightfields, the fourth with an
-    /// extra chunk.
+    /// extra chunk. The layer tree is [`layer_block`].
     fn sample() -> Vec<u8> {
         sample_with_root(0)
     }
@@ -557,7 +763,11 @@ mod tests {
         node(&mut d, [0.0, -128.0], 128.0, false, false, false);
         node(&mut d, [0.0, 0.0], 128.0, true, false, false);
         node(&mut d, [-128.0, 0.0], 128.0, false, false, false);
-        d.extend_from_slice(&[1, 3, 0, 0, 0, 9, 9, 9, LAST_BLOCK]);
+        let layers = layer_block();
+        d.push(LAYER_BLOCK);
+        d.extend_from_slice(&(layers.len() as u32).to_le_bytes());
+        d.extend_from_slice(&layers);
+        d.extend_from_slice(&[3, 3, 0, 0, 0, 9, 9, 9, LAST_BLOCK]);
         tile(&mut d, root, 0, false, true);
         tile(&mut d, HEIGHTFIELD, 1, false, false);
         tile(&mut d, 2312, 2, false, false);
@@ -590,6 +800,8 @@ mod tests {
         assert_eq!(t[1].chunk, Some(([1; 16], HEIGHTFIELD)));
         let heights: Vec<_> = t.iter().map(Tile::has_heights).collect();
         assert_eq!(heights, [false, true, false, true, true]);
+        let pages: Vec<_> = t.iter().map(Tile::page_count).collect();
+        assert_eq!(pages, [0, 0, 0, 1, 0]);
     }
 
     #[test]
@@ -608,6 +820,48 @@ mod tests {
         let last = bad_flag.len() - 1;
         bad_flag[last] = 2;
         assert!(Tree::parse(&bad_flag).is_err());
+    }
+
+    #[test]
+    fn a_tiles_pages_are_the_paged_layers_at_its_square() {
+        let tree = Tree::parse(&sample()).unwrap();
+        let pages: Vec<_> = tree.tiles.iter().map(|t| tree.pages(t)).collect();
+        assert_eq!(pages, [vec![2], vec![2, 5], vec![], vec![2], vec![]]);
+        let root = &tree.layers[&square([-128.0, -128.0], 256.0)];
+        assert_eq!(
+            root.iter()
+                .map(|r| (r.layer, r.paged, r.leaf))
+                .collect::<Vec<_>>(),
+            [(0, false, false), (2, true, false)]
+        );
+        assert_eq!(root[0].cells, [0x1F; 11]);
+    }
+
+    #[test]
+    fn a_damaged_layer_tree_is_an_error() {
+        let good = layer_block();
+        assert!(read_layers(&good).is_ok());
+        let first = LAYER_HEADER + 7;
+        let mut descending = good.clone();
+        descending[first..first + 2].copy_from_slice(&3u16.to_le_bytes());
+        let mut moved = good.clone();
+        moved[first + 2..first + 6].copy_from_slice(&64.0f32.to_le_bytes());
+        let mut miscounted = good.clone();
+        miscounted[0x2C] = 7;
+        let mut paged = good.clone();
+        paged[LAYER_HEADER + 3] = 2;
+        let mut longer = good.clone();
+        longer.push(0);
+        for (what, d) in [
+            ("descending", descending),
+            ("moved", moved),
+            ("miscounted", miscounted),
+            ("paged count", paged),
+            ("longer", longer),
+            ("cut", good[..good.len() - 1].to_vec()),
+        ] {
+            assert!(read_layers(&d).is_err(), "{what}");
+        }
     }
 
     /// A heightfield whose sample (r, c) is `r + 1` units, except a hole at (10, 10).
@@ -782,6 +1036,20 @@ mod tests {
                 .iter()
                 .all(|t| t.chunk.is_none() || t.has_colour())
         );
+        // A tile's pages are the paged layers at its square (none without a node).
+        assert!(
+            tree.tiles
+                .iter()
+                .all(|t| t.page_count() == tree.pages(t).len())
+        );
+        let records: usize = tree.layers.values().map(Vec::len).sum();
+        assert_eq!((tree.layers.len(), records), (18_689, 37_033));
+        let speedway = tree
+            .tiles
+            .iter()
+            .find(|t| (t.min, t.size) == ([3_712.0, 2_944.0], 128.0))
+            .unwrap();
+        assert_eq!(tree.pages(speedway), [2, 8, 9, 24, 25]);
         let heights: Vec<Option<Heightfield>> = tree
             .tiles
             .iter()

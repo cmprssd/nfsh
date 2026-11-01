@@ -378,17 +378,34 @@ of 0xFF with no length. Palm City has four, kinds 1 to 4 (1,335,460, 128,136,
 3,836,271 and 1,063 bytes). Kinds 2 to 4 are not worked out (each starts with the
 world's square as four f32, −8,192 to 8,192; kind 3 is mostly 3-byte cells).
 
-**Kind 1 is where each layer lies** (2026-11-01, read by hand, not by nfsh yet): a
-0x38-byte header (0x88, 1, 0, 4,096, 6,144, 2, the world's square, then 21,429 and
-37,033), then a quadtree whose nodes list the layers under them. A layer's record is
-31 bytes: the layer (u16, an index into the `TerrainData`'s `TerrainLayers`), the
-node's square (four f32: minimum x, z, then maximum), two bytes (0 or 1, not worked
-out) and an 85-bit pyramid (11 bytes) of the node's 1 + 4 + 16 + 64 cells below it
-that the layer touches. Searching for a tile's square finds its records: the 128 m
-speedway tile at (3,712, 2,944), with 5 pages, has exactly 5, layers 2, 8, 9, 24 and
-25, so **a tile's pages are likely its layers in this order** (ascending; not yet
-checked against the colour). How the node headers between the records nest is not
-worked out.
+**Kind 1 is the layer tree**, where each layer lies (worked out on 2026-11-01;
+`frostbite::terrain` reads it and a store test checks it): a 0x38-byte header (0x88,
+1, 0, 4,096, 6,144, 2, the world's square as four f32 at 0x18, then the node count,
+21,429, and the record count, 37,033, at 0x28 and 0x2C), then a depth-first quadtree
+of nodes over that square, in the tiles' child order, down to 32 m. A node is a zero
+byte, its record count (u16), how many of them have a page (u16) and a zero u16 (7
+bytes); with no records it is empty and ends there (2,740 of them). Otherwise its
+records follow, then a zero byte and a byte that is 1 when four children follow.
+
+A **record** is 31 bytes: the layer (u16, an index into the `TerrainData`'s
+`TerrainLayers`), the node's square (four f32: minimum x, z, then maximum), a byte
+that is 1 when no node below lists the layer, a byte that is 1 when the layer has
+**no page** at this square, and an 85-bit pyramid (11 bytes) of the node's
+1 + 4 + 16 + 64 cells below it that the layer touches (not read yet). A node's
+records are in ascending layer order. The root's one record is layer 0, which no
+shader lists.
+
+**A tile's pages are its square's records that have one**: on all 6,972 tiles with a
+node at their square, the page count (from the chunk's size, below) is exactly that
+node's count of records with a page; the other 1,276 tiles have no node of their own
+and no pages. The speedway tile at (3,712, 2,944) has pages for layers 2, 8, 9, 24
+and 25. **The pages are likely in the records' (ascending) order**: predicting each
+colour texel (below) as the pages' weighted mean of their layers' diffuse colours,
+on 150 128 m tiles whose layers all have plain colour maps, ascending order gives an
+RMS error of 24.8 (in 0 to 255 units), the best order for each tile 21.8, the reverse
+32.5; on the 108 two-layer tiles ascending is the better order 80 times. The model is
+crude (painting each layer over the last instead fits far worse, 61), so this is
+evidence, not proof.
 
 Then, to the end, **the tiles**: a second quadtree over the same square, depth-first
 from the root, in the same child order. It is not the node tree: it stops at 256 m in
@@ -427,8 +444,9 @@ of the 128 m leaves, 168,924 = 4 × 42,231 bytes: likely four 64 m heightfields.
 Neither is read yet.
 
 **The pages** (18,496 = 136 × 136 bytes each) look like one layer's weight each,
-0 to 255; on the speedway tile their means are 211, 88, 92, 9 and 118, so they don't
-sum to 255 per texel. Not read yet.
+0 to 255, in rows along z and columns along x with a 4-texel border like the
+heights; on the speedway tile their means are 211, 88, 92, 9 and 118, so they don't
+sum to 255 per texel. Which layer each is for: the layer tree, above. Not read yet.
 
 **How it was checked**: a child's even samples are its parent's, at the child's
 quadrant. Of the 7,602 parent and child pairs that both have heights, 7,477 agree on
@@ -438,14 +456,19 @@ its node's y range in the node tree. A store test checks the first rule on every
 
 ### Terrain layers
 
-Worked out by hand on 2026-11-01; nfsh reads none of it yet.
+Worked out on 2026-11-01; `frostbite::layers` and `frostbite::shaderdb` read what
+it takes to find each layer's diffuse maps, and a store test checks them.
 
 **The layer combinations res** is an array of 2,468 entries of 0x58 bytes from 0x20
 (the count, u32 at 8). An entry is seven arrays, each a count (u32) and an offset
-(u64, from the res's start), then a u32. They point at 0x28-byte records naming a
-shader (an offset to its name), each with two arrays of u16 layer indices: the
-shader `…mainlevel_terrain_2048__46M_46V__2d__0` lists layers 1, 2 and 6, the bits
-of its hex `46`. The names (2,368 shaders, all also ebx `ShaderGraph`s with no fields)
+(u64, from the res's start), then a u32. Arrays 1 to 6 point at 0x28-byte records
+naming a shader (an offset (u64) to its name), each with two arrays of u16 layer
+indices (a count (u32) and an offset (u64) each), then 8 bytes not worked out.
+Array 4 lists the entry's `__2d` shader (282 different ones), array 1 its
+`MaskScale2d` ones, 3 `GlobalColorSurfaceShader` and 6 a few `__3d` ones. A `__2d`
+shader's first array is its layers: `…mainlevel_terrain_2048__46M_46V__2d__0`
+lists layers 1, 2 and 6, the bits of its hex `46` (the name also sets bit 0 in 4
+shaders; the array leaves layer 0 out, and nfsh goes by the array). The names (2,368 shaders, all also ebx `ShaderGraph`s with no fields)
 come in two passes: `…__<M>M_<S>S__MaskScale2d__0` (2,080) and `…__<M>M_<V>V__2d__0`
 (282), M being the set of layers as bits. The speedway tile's layers {2, 8, 9, 24,
 25} are `3000304M`, and `…__3000304M_1000004S__MaskScale2d__0` exists.
@@ -455,27 +478,38 @@ come in two passes: `…__<M>M_<S>S__MaskScale2d__0` (2,080) and `…__<M>M_<V>V
 names every texture by the ebx name hash (`ebx::name_hash`) of its lowercase name
 and every shader by the hash of its lowercase name:
 
-- From 0x1C, 3,091 **parameter blocks** (the count, u32 at 0x18), each a u64 size
-  then six u64 offsets from the block's start. Between the second and third offsets
+- From 0x1C, 3,091 **parameter blocks** (the count, u32 at 0x18), back to back to
+  0x3662EC, each a u64 size then six u64 offsets from the block's start. Between the second and third offsets
   are its textures, 16 bytes each: the texture's name hash, a slot (u32), 8 zero
   bytes. Between the third and fourth, its constants, 60 bytes each: the name (32
   bytes), its hash, a slot word, a count, and a default `Vec4`.
-- At 0x3D0810, 57,340 **permutations** of 176 bytes (the count, u32 just before);
-  the u32 at 17 × 4 bytes in is the permutation's parameter block.
+- At 0x3D0810, 57,340 **permutations** of 176 bytes (the count, u32 at 0x3D0808);
+  the u32 at 17 × 4 bytes in is the permutation's parameter block, the u32 at 28 its
+  program among the bytecode res. The 435 KB between the blocks and these (from a
+  count of 65, then what look like packed u16s) are not worked out, so nfsh takes
+  both offsets as constants and checks the count and every block index.
 - At 0xD70550, the same 57,340 again, 32 bytes each, starting with the shader's name
   hash; a table at 0xF37BB0 lists each shader once (sorted by hash) with its first
   and last permutation.
 
 A `__2d` shader's textures are its layers' diffuse, normal and SMD maps in slot
-order, with a texture shared by two layers bound once: `46M_46V__2d` binds
+order, a group per layer in ascending layer order, with a texture shared by two
+layers bound once (all 282 have one permutation, so one block): `46M_46V__2d` binds
 `t_mega_grass_01` (layer 1), `t_field_base_03` (layer 2) and
 `t_burnforestground_01`/`_02` (layer 6), and `t_vrg_wheelerdam_rock_02_n`, a detail
 normal most of them bind. **A layer's own textures are those every `__2d` shader
-with that layer binds**: layer 1 is `t_mega_grass_01_d`, 2 `t_field_base_03_d`, 8
-`drv_set3_clean_d` and `drv_set4_damage_d`, 9 `drv_set4_damage_d` and
-`drv_set1_full_damage_d`, 25 `t_gravel_test_01_d`; some layers have two diffuse maps
-(3: sand footprints and sand waves). Layers 16, 17, 21 to 24, 27 and 31 to 38 have no
-`__2d` shader (likely masks with nothing to draw); 30 shares 29's textures.
+with that layer binds, less those another layer accounts for**: a texture is dropped
+when, in every shader with the layer, another of its layers binds it in all of that
+layer's shaders (layer 6 is in 16 shaders, each with layer 1 or 4, so mega grass is
+theirs, not 6's; the slot groups agree). 23 layers have their own textures: layer 1
+is `t_mega_grass_01_d`, 2 `t_field_base_03_d`, 4 shares 1's, 8 `drv_set3_clean_d` and
+`drv_set4_damage_d`, 9 `drv_set4_damage_d` and `drv_set1_full_damage_d`, 25
+`t_gravel_test_01_d`; some layers have two diffuse maps (3: sand footprints and sand
+waves; 13: forest slope and gravel). The road sets' `drv_…_d` maps are not plain
+colour (`drv_set3_clean_d` averages a purple, 105, 57, 139): their channels hold
+something else, not worked out. Layers 16, 17, 21 to 24, 27 and 31 to 38 have no
+`__2d` shader (likely masks with nothing to draw); 30 has one but owns only the
+shared detail normal.
 
 **Tiling is not a constant**: no `__2d` block has a `Tiling` (other shaders do); a
 layer's tiling, tint and how the layers blend are compiled into the shaders'
