@@ -2,11 +2,13 @@
 //! layer's own textures (see docs/FORMATS.md, "Terrain layers").
 //! Little-endian.
 
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::dxbc::{self, Scale};
 use crate::ebx::name_hash;
 use crate::reader::{Reader, cstr_at};
-use crate::shaderdb::ShaderDb;
+use crate::shaderdb::{self, ShaderDb};
 use crate::store::Store;
 use crate::{Error, Result, bail};
 
@@ -20,6 +22,8 @@ const ENTRIES: usize = 0x20;
 /// An entry: seven arrays, each a count (u32) and an offset (u64), then a u32.
 const ENTRY: usize = 0x58;
 const ARRAY: usize = 12;
+/// The res type of a shader program's bytecode.
+const BYTECODE: u32 = 0x0E2B_02F7;
 /// The array of an entry listing its `__2d` shaders: those drawing the ground flat,
 /// from the layers' textures.
 const FLAT: usize = 4;
@@ -113,15 +117,50 @@ pub fn own_textures(shaders: &[Shader], db: &ShaderDb) -> Result<BTreeMap<u16, B
         .collect())
 }
 
-/// Each layer's diffuse maps: the ebx names of its own textures ending in `_d`, in
-/// name order.
-pub fn diffuse(store: &Store) -> Result<BTreeMap<u16, Vec<String>>> {
+/// The scales a layer's texture is sampled at in each of the layer's shaders.
+///
+/// A layer's primary scale is the finest of those every one of them samples it at
+/// straight from the world position, or failing that the finest turned one; none when
+/// no scale is common to all (a texture a shader binds but only another layer reads).
+pub fn primary_scale<'a>(mut shaders: impl Iterator<Item = &'a [Scale]>) -> Option<f32> {
+    let first = shaders.next()?;
+    let mut common = first.to_vec();
+    for s in shaders {
+        common.retain(|c| s.contains(c));
+    }
+    let finest = |rotated: bool| {
+        common
+            .iter()
+            .filter_map(|c| match (c, rotated) {
+                (Scale::Direct(s), false) | (Scale::Rotated(s), true) => Some(*s),
+                _ => None,
+            })
+            .reduce(f32::max)
+    };
+    finest(false).or_else(|| finest(true))
+}
+
+/// A layer's diffuse map and the scale it is drawn at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Diffuse {
+    /// Its ebx name.
+    pub name: String,
+    /// Its primary scale ([`primary_scale`]): world x and z times this are its
+    /// coordinates (so it repeats every 1 / scale metres); none when it has none.
+    pub scale: Option<f32>,
+}
+
+/// Each layer's diffuse maps: its own textures whose names end in `_d`, in name
+/// order, each with its primary scale.
+pub fn diffuse(store: &Store) -> Result<BTreeMap<u16, Vec<Diffuse>>> {
     let asset = store
         .res(COMBINATIONS)
         .ok_or_else(|| Error(format!("{COMBINATIONS}: not in the store")))?;
     let data = store.entries()?.read(asset.location)?;
     let shaders = flat_shaders(&data).map_err(|e| Error(format!("{COMBINATIONS}: {e}")))?;
-    let own = own_textures(&shaders, &ShaderDb::read(store)?)?;
+    let db = ShaderDb::read(store)?;
+    let own = own_textures(&shaders, &db)?;
+    let sampled = sampled(store, &shaders, &db)?;
     let wanted: BTreeSet<u32> = own.values().flatten().copied().collect();
     let mut names: HashMap<u32, &str> = HashMap::new();
     for e in store
@@ -138,22 +177,88 @@ pub fn diffuse(store: &Store) -> Result<BTreeMap<u16, Vec<String>>> {
     Ok(own
         .into_iter()
         .map(|(layer, textures)| {
-            let mut d: Vec<String> = textures
+            let mut d: Vec<Diffuse> = textures
                 .iter()
-                .filter_map(|t| names.get(t))
-                .filter(|n| n.to_lowercase().ends_with("_d"))
-                .map(|n| n.to_string())
+                .filter_map(|t| Some((t, names.get(t)?)))
+                .filter(|(_, n)| n.to_lowercase().ends_with("_d"))
+                .map(|(t, n)| Diffuse {
+                    name: n.to_string(),
+                    scale: primary_scale(
+                        shaders
+                            .iter()
+                            .zip(&sampled)
+                            .filter(|(s, _)| s.layers.contains(&layer))
+                            .map(|(_, by)| by.get(t).map_or(&[][..], Vec::as_slice)),
+                    ),
+                })
                 .collect();
-            d.sort();
+            d.sort_by(|a, b| a.name.cmp(&b.name));
             (layer, d)
         })
         .collect())
+}
+
+/// For each of `shaders`, the scales its programs sample each of its textures at (by
+/// name hash).
+fn sampled(
+    store: &Store,
+    shaders: &[Shader],
+    db: &ShaderDb,
+) -> Result<Vec<HashMap<u32, Vec<Scale>>>> {
+    let programs: HashMap<String, crate::Location> = store
+        .superbundles
+        .iter()
+        .flat_map(|sb| &sb.bundles)
+        .flat_map(|b| &b.bundle.res)
+        .filter(|r| r.res_type == BYTECODE)
+        .map(|r| (r.asset.name.to_lowercase(), r.asset.location))
+        .collect();
+    let mut entries = store.entries()?;
+    let mut code: HashMap<u32, Vec<dxbc::Instruction>> = HashMap::new();
+    let mut out = Vec::with_capacity(shaders.len());
+    for s in shaders {
+        let mut by: HashMap<u32, Vec<Scale>> = HashMap::new();
+        for p in db.permutations_of(name_hash(&s.name.to_lowercase())) {
+            if let Entry::Vacant(e) = code.entry(p.program) {
+                let name = shaderdb::program_name(&db.programs[p.program as usize]);
+                let at = programs
+                    .get(&name)
+                    .ok_or_else(|| Error(format!("{}: {name} not in the store", s.name)))?;
+                let read =
+                    dxbc::parse(&entries.read(*at)?).map_err(|e| Error(format!("{name}: {e}")))?;
+                e.insert(read);
+            }
+            for b in &db.blocks[p.block as usize] {
+                by.entry(b.texture)
+                    .or_default()
+                    .extend(dxbc::sample_scales(&code[&p.program], b.slot));
+            }
+        }
+        out.push(by);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::shaderdb::tests::sample;
+
+    #[test]
+    fn the_primary_scale_is_the_finest_direct_one_all_shaders_share() {
+        use Scale::{Direct, Rotated};
+        let primary = |s: &[&[Scale]]| primary_scale(s.iter().copied());
+        assert_eq!(primary(&[&[Direct(0.02), Direct(0.2)]]), Some(0.2));
+        assert_eq!(
+            primary(&[&[Direct(0.2), Rotated(0.3)], &[Direct(0.2), Direct(0.25)]]),
+            Some(0.2),
+            "0.25 is only in one"
+        );
+        assert_eq!(primary(&[&[Rotated(0.1), Rotated(0.16)]]), Some(0.16));
+        assert_eq!(primary(&[&[Rotated(0.1), Direct(0.05)]]), Some(0.05));
+        assert_eq!(primary(&[&[Direct(0.1)], &[]]), None, "bound, not sampled");
+        assert_eq!(primary(&[]), None);
+    }
     use std::path::Path;
 
     /// A combinations res with one entry per list of `__2d` shaders (name, layers).
@@ -256,8 +361,15 @@ mod tests {
         let short = |layer: u16| -> Vec<&str> {
             diffuse[&layer]
                 .iter()
-                .map(|n| n.rsplit('/').next().unwrap())
+                .map(|d| d.name.rsplit('/').next().unwrap())
                 .collect()
+        };
+        let scale = |layer: u16, name: &str| {
+            diffuse[&layer]
+                .iter()
+                .find(|d| d.name.ends_with(name))
+                .unwrap()
+                .scale
         };
         assert_eq!(diffuse.len(), 23);
         assert_eq!(short(1), ["t_mega_grass_01_d"]);
@@ -273,5 +385,19 @@ mod tests {
         // 11 binds only a shared grass and an overlay; 30 only a shared detail normal.
         assert_eq!(short(11), ["t_miami_grass_01_d"]);
         assert!(short(30).is_empty());
+        // The scales: one texture two layers share can be drawn at two.
+        assert_eq!(scale(1, "t_mega_grass_01_d"), Some(0.2));
+        assert_eq!(scale(4, "t_mega_grass_01_d"), Some(0.25));
+        assert_eq!(scale(2, "t_field_base_03_d"), Some(0.1));
+        assert_eq!(scale(8, "drv_set4_damage_d"), Some(0.1));
+        assert_eq!(scale(9, "drv_set4_damage_d"), Some(0.15));
+        // Only turned: the finest turned scale.
+        let burnt = scale(6, "t_burnforestground_01_d").unwrap();
+        assert!((burnt - 0.1).abs() < 1e-6, "{burnt}");
+        // Bound for layers 5 and 29, never sampled for 28; the sand waves' coordinates
+        // are not a plain scale of the world position.
+        assert_eq!(scale(28, "t_terrain_desert_fine_gravel_02_d"), None);
+        assert_eq!(scale(3, "t_terrain_sand_wave_01_d"), None);
+        assert_eq!(scale(3, "t_terrain_sand_footprints_01_d"), Some(0.2));
     }
 }

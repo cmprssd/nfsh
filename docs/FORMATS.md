@@ -483,11 +483,19 @@ and every shader by the hash of its lowercase name:
   are its textures, 16 bytes each: the texture's name hash, a slot (u32), 8 zero
   bytes. Between the third and fourth, its constants, 60 bytes each: the name (32
   bytes), its hash, a slot word, a count, and a default `Vec4`.
+- At 0x367854, a count (4,154) and as many 48-byte records, then at 0x398338 the
+  **programs**: a count (4,787) and as many 48-byte records from 0x39833C. A
+  record is 16 bytes not worked out, then a GUID (the in-memory order, its first
+  three fields little-endian) naming a bytecode res, `shaders/bytecode/<guid>`
+  (type `0x0E2B02F7`; every one of the 4,787 is in the store), then 16 bytes
+  (a small number, 1, 0, 1 in the first). The 4,154 records have the same shape
+  and also name bytecode res; which programs they are is not worked out.
 - At 0x3D0810, 57,340 **permutations** of 176 bytes (the count, u32 at 0x3D0808);
   the u32 at 17 × 4 bytes in is the permutation's parameter block, the u32 at 28 its
-  program among the bytecode res. The 435 KB between the blocks and these (from a
-  count of 65, then what look like packed u16s) are not worked out, so nfsh takes
-  both offsets as constants and checks the count and every block index.
+  program, an index into the programs (the largest is 4,786). The 5.5 KB between the
+  blocks and the first table (from a count of 65, then what look like packed u16s)
+  and the 828 bytes after the programs are not worked out, so nfsh takes the
+  offsets as constants and checks the counts and every block and program index.
 - At 0xD70550, the same 57,340 again, 32 bytes each, starting with the shader's name
   hash; a table at 0xF37BB0 lists each shader once (sorted by hash) with its first
   and last permutation.
@@ -513,7 +521,41 @@ shared detail normal.
 
 **Tiling is not a constant**: no `__2d` block has a `Tiling` (other shaders do); a
 layer's tiling, tint and how the layers blend are compiled into the shaders'
-bytecode (the res of type `0x0E2B02F7`, `shaders/bytecode/…`).
+bytecode. nfsh reads the tiling from it (below, "Shader programs").
+
+### Shader programs
+
+Worked out on 2026-11-01; `frostbite::dxbc` reads a program as far as finding the
+scales a terrain shader samples a texture at, and `frostbite::layers` each layer
+diffuse's primary scale, which a store test checks.
+
+**A bytecode res** is a 32-byte header (u32s 1 and 1, the container's size, its
+offset, 0x20, then zeros) and a Direct3D shader container (`DXBC`): its chunk count
+at 28 and their offsets after it, each chunk a tag and a size. The `__2d` shaders'
+programs (one each, 282 different ones) are pixel shaders of shader
+model 5 with no reflection chunk: `ISGN` (`SV_Position`, `TEXCOORD0` in v1),
+`OSGN`, `SHEX`. Their code starts by mapping v1 to the world position with a `mad`
+by a constant (`r0.xy`, x and z), and a texture's `t` register is its slot in the
+parameter block.
+
+**A layer's coordinates** are the world position times a literal (a `mul`, or a
+`mad` adding a literal), or the position turned and scaled: one axis a `mad` adding
+the other's product, the other a `dp2` with a literal pair, the scale being the
+pair's length. A shader samples most layers several ways: one direct scale for
+detail, often a far scale (a tenth of it, for the detail normal), a turned copy to
+hide repeats. In `46M_46V__2d`, mega grass is `r0.yx × 0.2`; field_base_03 is
+`r0.yx × 0.1` and the same turned (0.0924, 0.0383), length 0.1.
+
+**A texture two layers share has a scale per layer**: mega grass is 0.2 for layer 1
+and 0.25 (and turned 0.325) for layer 4, so nfsh goes by the scales a layer's diffuse
+is sampled at in *every* shader with the layer: across the 282 shaders each layer
+has one such set. **Its primary scale** is the finest direct one in that set, or the
+finest turned one when there is none (the owner's choice, docs/DECISIONS.md): 0.2
+per metre for mega grass (layer 1), 0.1 for field_base_03 (2), 0.1 and 0.15 for the
+roads' `drv_set4_damage_d` in layers 8 and 9. Two have none: layer 28 binds
+`t_terrain_desert_fine_gravel_02_d` but only shaders also with layer 5 or 29 sample
+it, and layer 3's sand waves take their coordinates from something other than a
+literal scale (not worked out).
 
 ## Meshes
 
