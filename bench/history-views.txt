@@ -1,0 +1,9 @@
+# The views the progress page shows as each release drew them (bench/history.sh): zone
+# 495, the speedway. One per line: name, camera (x,y,z,yaw,pitch as `nfsh view
+# --camera` takes it), time of day (midday or tealnight), and what it shows. A view
+# added later is rendered by every release on the next run of history.sh.
+barrels    3886,82,3141,20,-12     midday     The barrels and stands by the track
+speedway   3700,130,2900,30,-45    midday     The speedway from above
+asphalt    3735,88,2960,20,-25     midday     The asphalt up close
+road-edge  3739,82.5,2978,20,-60   midday     Where a road gives way to the ground
+night      3700,130,2900,30,-45    tealnight  The speedway from above at night

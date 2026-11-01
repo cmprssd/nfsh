@@ -18,3 +18,5 @@
 !*.wgsl
 # The progress page's template (scripts/publish-progress.sh fills it).
 !scripts/progress_page.html
+# The views bench/history.sh renders for the progress page.
+!bench/history-views.txt
