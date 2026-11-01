@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.19.0] - 2026-11-01
+
+### Changed
+
+- `nfsh view` draws the normal maps on the meshes and the roads: the fine relief the
+  art paints in (seams and bolts on metal, grain on wood, the joints in concrete, the
+  cracks and grit of the asphalt) now catches the sun and the sky as in the game,
+  where those surfaces were flat before.
+
+### Not yet
+
+- The ground's layers have normal maps too; they come next. The ground is still lit
+  by its triangles, a vertex every 2 m.
+
 ## [0.18.0] - 2026-11-01
 
 ### Changed

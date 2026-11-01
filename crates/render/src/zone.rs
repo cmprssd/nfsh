@@ -272,7 +272,7 @@ pub struct ZoneRenderer {
     /// earlier. Each with its look's offset in the looks buffer and its set.
     draws: Vec<(Draw, u32, usize)>,
     /// `None` when the scene draws nothing (Vulkan has no empty buffers to bind).
-    buffers: Option<[Buffer; 9]>,
+    buffers: Option<[Buffer; 10]>,
     /// The looks, each at a multiple of [`LOOK_STRIDE`].
     looks: Option<Buffer>,
     /// Textures drawn grey, with why.
@@ -281,13 +281,14 @@ pub struct ZoneRenderer {
     pub texture_bytes: u64,
 }
 
-/// A draw's images, as indices into [`ZoneRenderer`]'s: its colour (binding 0), then
-/// asphalt's other layers (bindings 2 to 7), grey where it has none. Every set also
-/// binds the ground's map (8) and detail layers (9).
-type ImageSet = [usize; 7];
+/// A draw's images, as indices into [`ZoneRenderer`]'s: its colour (binding 0),
+/// asphalt's other layers (bindings 2 to 7) and its normal map (10), grey (a flat
+/// normal) where it has none. Every set also binds the ground's map (8) and detail
+/// layers (9).
+type ImageSet = [usize; 8];
 
 /// The bindings of an [`ImageSet`]'s images.
-const SET_BINDINGS: [u32; 7] = [0, 2, 3, 4, 5, 6, 7];
+const SET_BINDINGS: [u32; 8] = [0, 2, 3, 4, 5, 6, 7, 10];
 
 fn shader_module(gpu: &Gpu, spirv: &[u8]) -> Result<vk::ShaderModule> {
     let words = ash::util::read_spv(&mut std::io::Cursor::new(spirv))
@@ -343,6 +344,7 @@ impl ZoneRenderer {
                 upload(vertex, bytemuck::cast_slice(&scene.colours2))?,
                 upload(vertex, bytemuck::cast_slice(&scene.uvs3))?,
                 upload(vertex, bytemuck::cast_slice(&scene.normals))?,
+                upload(vertex, bytemuck::cast_slice(&scene.tangents))?,
                 upload(
                     vk::BufferUsageFlags::INDEX_BUFFER,
                     bytemuck::cast_slice(&scene.indices),
@@ -386,6 +388,7 @@ impl ZoneRenderer {
             image(7),
             image(8),
             image(9),
+            image(10),
         ];
         r.set_layout = unsafe {
             d.create_descriptor_set_layout(
@@ -474,11 +477,12 @@ impl ZoneRenderer {
             .draws
             .iter()
             .map(|draw| {
-                let mut set = [0; 7];
+                let mut set = [0; 8];
                 set[0] = image_of(draw.texture);
-                for (at, layer) in set[1..].iter_mut().zip(draw.layers) {
+                for (at, layer) in set[1..7].iter_mut().zip(draw.layers) {
                     *at = image_of(layer);
                 }
+                set[7] = image_of(draw.normal_map);
                 set
             })
             .collect();
@@ -490,7 +494,7 @@ impl ZoneRenderer {
         let sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
-                descriptor_count: count * 9,
+                descriptor_count: count * 10,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLER,
@@ -779,6 +783,7 @@ impl ZoneRenderer {
                     colours2,
                     uvs3,
                     normals,
+                    tangents,
                     indices,
                 ],
             ) = &self.buffers
@@ -804,8 +809,9 @@ impl ZoneRenderer {
                     colours2.buffer,
                     uvs3.buffer,
                     normals.buffer,
+                    tangents.buffer,
                 ],
-                &[0; 8],
+                &[0; 9],
             );
             d.cmd_bind_index_buffer(cmd, indices.buffer, 0, vk::IndexType::UINT32);
             let (mut pipeline, mut set, mut look) = (None, None, None);
@@ -951,6 +957,11 @@ fn pipeline(
             stride: 4,
             input_rate: vk::VertexInputRate::VERTEX,
         },
+        vk::VertexInputBindingDescription {
+            binding: 8,
+            stride: 4,
+            input_rate: vk::VertexInputRate::VERTEX,
+        },
     ];
     let attribute = |location, binding, format, offset| vk::VertexInputAttributeDescription {
         location,
@@ -971,6 +982,7 @@ fn pipeline(
         attribute(8, 5, bytes, 0),
         attribute(9, 6, vk::Format::R32G32_SFLOAT, 0),
         attribute(10, 7, vk::Format::R8G8B8A8_SNORM, 0),
+        attribute(11, 8, vk::Format::R8G8B8A8_SNORM, 0),
     ];
     let ground = [
         attribute(0, 0, vk::Format::R32G32B32_SFLOAT, 0),

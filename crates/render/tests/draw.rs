@@ -150,6 +150,60 @@ fn a_mesh_is_lit_by_its_own_normals() {
     assert_eq!(middle(grey_facing([0.0, 0.0, 1.0]), no_texture).0, flat);
 }
 
+/// A BC1 block of one colour, from its 5:6:5 red, green and blue.
+fn solid(r: u16, g: u16, b: u16) -> [u8; 8] {
+    let [lo, hi] = (r << 11 | g << 5 | b).to_le_bytes();
+    [lo, hi, lo, hi, 0, 0, 0, 0]
+}
+
+/// Plain grey facing the camera, its frame's tangent along +x (u) and bitangent
+/// along +y (v decreasing, as the square's coordinates run) when `sign` is -1, with a
+/// normal map.
+fn grey_mapped(sign: f32) -> impl Fn(&Geometry) -> Section {
+    move |g| {
+        let mut g = g.clone();
+        let frame = Frame {
+            normal: [0.0, 0.0, -1.0],
+            tangent: [1.0, 0.0, 0.0],
+            sign,
+        };
+        g.frames = Some(vec![frame; g.positions.len()]);
+        Section {
+            normal_map: Some([9; 16]),
+            ..grey(&g)
+        }
+    }
+}
+
+#[test]
+fn a_normal_map_bends_the_mesh_normal() {
+    let no_texture = |_: &[u8; 16]| unreachable!();
+    let (flat, _) = middle(grey, no_texture);
+    let map = |sign, block| {
+        let (m, missing) = middle(grey_mapped(sign), |_| Ok(bc1(0x36, block)));
+        assert_eq!(missing, []);
+        m
+    };
+    let close = |a: [u8; 4], b: [u8; 4]| a.iter().zip(&b).all(|(x, y)| x.abs_diff(*y) <= 2);
+    // Red and green a half: flat.
+    let level = map(1.0, solid(16, 32, 0));
+    assert!(close(level, flat), "{level:?} {flat:?}");
+    // Red 60 degrees along the tangent: lit as a mesh normal turned as much.
+    let s = 60f32.to_radians();
+    let (turned, _) = middle(grey_facing([s.sin(), 0.0, -s.cos()]), no_texture);
+    let red = map(1.0, solid(29, 32, 0));
+    assert!(close(red, turned), "{red:?} {turned:?}");
+    // Green towards v decreasing (up here): more sky than towards v increasing.
+    let (up, down) = (map(-1.0, solid(16, 55, 0)), map(-1.0, solid(16, 8, 0)));
+    assert!(up[2] > down[2] + 10, "{up:?} {down:?}");
+    // With the bitangent the other way, the other way.
+    assert_eq!(map(1.0, solid(16, 55, 0)), down);
+    // A grey stand-in for a missing map is flat.
+    let (m, missing) = middle(grey_mapped(1.0), |_| Ok(bc1(0x3A, RED)));
+    assert!(close(m, flat), "{m:?} {flat:?}");
+    assert_eq!(missing.len(), 1);
+}
+
 #[test]
 fn draws_a_placed_mesh_where_the_camera_sees_it() {
     let gpu = Gpu::new_headless().unwrap();
@@ -236,6 +290,7 @@ fn asphalt_shows_its_damaged_layer_where_the_mask_is_dark() {
         },
         texture: Some([1; 16]),
         layers: [2, 3, 4, 5, 0, 0].map(|t| (t > 0).then_some([t; 16])),
+        normal_map: None,
         shading: asphalt,
     };
     // A white clean layer, a black damaged one, a full height, no noise; the mask's
@@ -481,6 +536,7 @@ fn asphalt_over_ground(shoulder: [u8; 8], mask: [u8; 8]) -> [u8; 4] {
         },
         texture: Some([1; 16]),
         layers: [2, 3, 4, 5, 6, 7].map(|t| Some([t; 16])),
+        normal_map: None,
         shading: asphalt,
     };
     let mut scene = scene::build(&zone, |_| Ok(vec![section.clone()]));

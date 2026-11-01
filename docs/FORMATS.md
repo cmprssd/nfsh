@@ -393,8 +393,9 @@ The vertices carry two colours: the first (0x1E) scales the layers' blue (green 
 6. Clamped to 0.04 to 0.5, the terrain's share too.
 
 Besides these, the shader darkens it when wet (`WaterCycle`) and for occlusion
-(`OccShadow_*`, which leaves it as it is at the defaults), and adds the normal maps;
-nfsh does none of these yet.
+(`OccShadow_*`, which leaves it as it is at the defaults), and adds the normal maps.
+nfsh draws the normal maps (red and green as in "Normal maps" below), each as much as
+its layer shows; the wet look and occlusion not yet.
 
 A parameter block's constants (between its third and fourth offsets) are records of
 60 bytes: the constant's name (32 bytes, zero-padded), its name hash, a slot word,
@@ -753,6 +754,20 @@ A mesh asset's materials name their textures: each of its `Materials` (a
 has a `Shader` struct whose `TextureParameters` array holds `Value` (a reference to
 the texture asset's partition, or null) and `ParameterName` (`Diffuse`, `Normal`,
 `SMD`, …).
+
+**Normal maps** (`Normal`; worked out on 2026-11-01 from the 653 materials near zone
+495 that name one) are BC7 (465), BC1 (134), BC3 (50) or BC5 (4), all unorm. In every
+format red and green are the normal across the surface, 0.5 being none (their means
+are 0.49 to 0.53); the third component is not stored but made up to unit length: blue
+is 1 on some maps, a steady 0.44 to 0.73 on others and the height on asphalt's, and
+it doesn't follow √(1 − x² − y²). Red runs along the tangent (u increasing), green
+along the bitangent, v *decreasing*, the way the mesh's frame (0x34) runs. Settled by
+the curl of the slopes each map implies, which is none for a map baked from a height:
+on six maps (the asphalt's, concrete, wood, metal, a speedway wall, a cat's eye) it is
+1.2 to 1.9 times smaller with green taken towards v decreasing than towards v
+increasing. The shaders' defaults are flat: `shaders/generictextures/ut_default_n`
+(8², BC3: 0.5, 0.5, 1) and `systems/terrain/meshscattering/normalmapdefault_n`
+(4², BC5).
 
 The header (0x84 bytes; every texture res is exactly that, and its 16 bytes of res
 metadata are 0x0C, then the flags below in byte 4, then zeros):
