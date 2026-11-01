@@ -464,3 +464,24 @@ Supersedes "Road materials are drawn with the first colour texture" above.
   distinct look, a few dozen a zone), the push constants staying the camera and the
   light. Why: the push constants are already the 128 bytes Vulkan guarantees; a
   dynamic offset needs no feature beyond Vulkan 1.0.
+
+## 2026-11-01: The ground's colour (chosen by the owner)
+
+Supersedes "The ground is one draw in plain grey" above.
+
+- **The ground is coloured by each tile's own colour image**, not by blending its
+  layers: every terrain tile's chunk ends in a 68 × 68 BC1 image of its ground, the
+  layers already blended (docs/FORMATS.md, "Terrain"). The owner chose this over
+  reconstructing the layer blend first. Why: it gives the original's colours exactly
+  and seamlessly in a small change; the blend (the per-tile masks, the layer-
+  combinations res, each layer's textures) has several unknowns and comes later, as
+  the detail up close.
+- **The colour reaches the shader as vertex colour** (decided by Claude, pending
+  review): each ground vertex takes its leaf tile's colour, blended between the four
+  nearest texels' middles, or its nearest ancestor's when the leaf's chunk can't be
+  read. Why: the ground has a vertex every 2 m, the finest tiles a texel every 2 m,
+  so a texture per tile would add 143 images and descriptor sets for no visible
+  gain; the vertex colour slot was already there.
+- **The colour is read as sRGB-encoded** (decided by Claude, pending review), like
+  the meshes' colour textures. Why: read that way, the speedway's grass and asphalt
+  come out as in the colour mosaic and match the road meshes' own asphalt beside them.

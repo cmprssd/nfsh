@@ -1,5 +1,6 @@
-//! Palm City's terrain: the streaming tree's quadtree of tiles, a tile's heightfield,
-//! and a mesh of the ground under an area (see docs/FORMATS.md, "Terrain").
+//! Palm City's terrain: the streaming tree's quadtree of tiles, a tile's heightfield
+//! and colour, and a mesh of the ground under an area (see docs/FORMATS.md,
+//! "Terrain").
 //! Little-endian, packed with no alignment.
 
 use std::collections::HashMap;
@@ -31,9 +32,15 @@ const MAX_DEPTH: usize = 16;
 pub const SAMPLES: usize = 137;
 pub const BORDER: usize = 4;
 pub const CELLS: usize = 128;
-/// A heightfield chunk's size is `HEIGHTFIELD + PAGES·k` bytes.
+/// A heightfield chunk's size is `HEIGHTFIELD + PAGES·k` bytes; any other tile's,
+/// `COLOUR_BYTES + PAGES·k`.
 const HEIGHTFIELD: u32 = 42_231;
 const PAGES: u32 = 18_496;
+/// A tile's colour: the last bytes of its chunk, BC1 blocks of `COLOUR_SIDE` ×
+/// `COLOUR_SIDE` texels with a `COLOUR_BORDER` beyond the tile on each side.
+pub const COLOUR_SIDE: usize = 68;
+pub const COLOUR_BORDER: usize = 2;
+const COLOUR_BYTES: usize = COLOUR_SIDE * COLOUR_SIDE / 2;
 /// Metres per height unit.
 const UNIT: f32 = 1.0 / 32.0;
 
@@ -59,6 +66,14 @@ impl Tile {
         self.chunk.is_some_and(|(_, size)| {
             size >= HEIGHTFIELD && (size - HEIGHTFIELD).is_multiple_of(PAGES)
         })
+    }
+
+    /// Whether its chunk has one of the two sizes known, so ends in its colour.
+    pub fn has_colour(&self) -> bool {
+        self.has_heights()
+            || self.chunk.is_some_and(|(_, size)| {
+                size >= COLOUR_BYTES as u32 && (size - COLOUR_BYTES as u32).is_multiple_of(PAGES)
+            })
     }
 
     fn overlaps(&self, lo: [f32; 2], hi: [f32; 2]) -> bool {
@@ -239,10 +254,80 @@ impl Heightfield {
     }
 }
 
+/// A tile's colour, `COLOUR_SIDE` × `COLOUR_SIDE` texels (sRGB-encoded) in rows
+/// along z, columns along x, with a `COLOUR_BORDER` of texels beyond the tile on each
+/// side: half the heightfield's detail.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Colour {
+    texels: Vec<[u8; 3]>,
+}
+
+impl Colour {
+    /// Reads the colour at the end of a tile's chunk.
+    pub fn parse(chunk: &[u8]) -> Result<Self> {
+        let Some(at) = chunk.len().checked_sub(COLOUR_BYTES) else {
+            bail!("{} bytes, too short for a colour", chunk.len());
+        };
+        let blocks = &chunk[at..];
+        let side = COLOUR_SIDE / 4;
+        let mut texels = vec![[0; 3]; COLOUR_SIDE * COLOUR_SIDE];
+        for (b, block) in blocks.as_chunks::<8>().0.iter().enumerate() {
+            let (by, bx) = (b / side, b % side);
+            let palette = bc1_palette(block);
+            let bits = u32::from_le_bytes(block[4..].try_into().expect("4 bytes"));
+            for i in 0..16 {
+                let (y, x) = (by * 4 + i / 4, bx * 4 + i % 4);
+                texels[y * COLOUR_SIDE + x] = palette[(bits >> (2 * i)) as usize & 3];
+            }
+        }
+        Ok(Self { texels })
+    }
+
+    /// The colour at `at` (x and z) of a tile at `min` of side `size`, blended
+    /// between the four nearest texels' middles.
+    pub fn sample(&self, min: [f32; 2], size: f32, at: [f32; 2]) -> [u8; 3] {
+        let per_texel = size / (COLOUR_SIDE - 2 * COLOUR_BORDER) as f32;
+        let last = (COLOUR_SIDE - 1) as f32;
+        let [u, v] = [0, 1]
+            .map(|k| ((at[k] - min[k]) / per_texel + COLOUR_BORDER as f32 - 0.5).clamp(0.0, last));
+        let (c0, r0) = (u as usize, v as usize);
+        let (c1, r1) = ((c0 + 1).min(COLOUR_SIDE - 1), (r0 + 1).min(COLOUR_SIDE - 1));
+        let (fu, fv) = (u - c0 as f32, v - r0 as f32);
+        let t = |r: usize, c: usize| self.texels[r * COLOUR_SIDE + c];
+        let (a, b, c, d) = (t(r0, c0), t(r0, c1), t(r1, c0), t(r1, c1));
+        [0, 1, 2].map(|k| {
+            let top = f32::from(a[k]) * (1.0 - fu) + f32::from(b[k]) * fu;
+            let bottom = f32::from(c[k]) * (1.0 - fu) + f32::from(d[k]) * fu;
+            (top * (1.0 - fv) + bottom * fv).round() as u8
+        })
+    }
+}
+
+/// A BC1 block's four colours: its two end points (RGB 5:6:5) and the two between
+/// them, or their middle and black when the first is not the greater.
+fn bc1_palette(block: &[u8; 8]) -> [[u8; 3]; 4] {
+    let end = |at: usize| {
+        let c = u16::from_le_bytes([block[at], block[at + 1]]);
+        let (r, g, b) = (c >> 11, (c >> 5) & 63, c & 31);
+        [r * 255 / 31, g * 255 / 63, b * 255 / 31].map(|v| v as u8)
+    };
+    let (a, b) = (end(0), end(2));
+    let mix = |wa: u16, wb: u16| {
+        [0, 1, 2].map(|k| ((u16::from(a[k]) * wa + u16::from(b[k]) * wb) / (wa + wb)) as u8)
+    };
+    if u16::from_le_bytes([block[0], block[1]]) > u16::from_le_bytes([block[2], block[3]]) {
+        [a, b, mix(2, 1), mix(1, 2)]
+    } else {
+        [a, b, mix(1, 1), [0; 3]]
+    }
+}
+
 /// The ground under an area, in world space.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Ground {
     pub positions: Vec<[f32; 3]>,
+    /// One per position, from the tile's colour (sRGB-encoded; alpha 255).
+    pub colours: Vec<[u8; 4]>,
     pub indices: Vec<u32>,
     /// How many leaf tiles it covers.
     pub tiles: usize,
@@ -251,12 +336,16 @@ pub struct Ground {
     pub failed: Vec<(usize, String)>,
 }
 
-/// The tile whose heights the walk draws from: its index, square and heights.
-type Source = (usize, [f32; 2], f32, std::rc::Rc<Heightfield>);
+/// The tile whose heights or colour the walk draws from: its square and its data.
+type Source<T> = ([f32; 2], f32, std::rc::Rc<T>);
+
+/// The grey a vertex takes when no tile on its way down has a colour.
+const NO_COLOUR: [u8; 3] = [128; 3];
 
 /// The ground over `lo`..`hi` (x and z): every leaf tile overlapping it, drawn from
 /// its own heightfield or its nearest ancestor's with one, at a vertex every
-/// `spacing` metres or the heightfield's own spacing if coarser. Holes are left out.
+/// `spacing` metres or the heightfield's own spacing if coarser, and coloured by its
+/// own colour or its nearest ancestor's. Holes are left out.
 pub fn ground(
     tree: &Tree,
     lo: [f32; 2],
@@ -266,7 +355,16 @@ pub fn ground(
 ) -> Ground {
     let mut ground = Ground::default();
     if !tree.tiles.is_empty() {
-        walk(tree, 0, None, lo, hi, spacing, &mut load, &mut ground);
+        walk(
+            tree,
+            0,
+            (None, None),
+            lo,
+            hi,
+            spacing,
+            &mut load,
+            &mut ground,
+        );
     }
     ground
 }
@@ -275,7 +373,7 @@ pub fn ground(
 fn walk(
     tree: &Tree,
     index: usize,
-    source: Option<Source>,
+    sources: (Option<Source<Heightfield>>, Option<Source<Colour>>),
     lo: [f32; 2],
     hi: [f32; 2],
     spacing: f32,
@@ -288,10 +386,22 @@ fn walk(
     if !tile.overlaps(lo, hi) {
         return;
     }
-    let mut source = source;
-    if let Some((id, _)) = tile.chunk.filter(|_| tile.has_heights()) {
-        match load(&id).and_then(|c| Heightfield::parse(&c)) {
-            Ok(h) => source = Some((index, tile.min, tile.size, h.into())),
+    let (mut heights, mut colour) = sources;
+    if let Some((id, _)) = tile.chunk.filter(|_| tile.has_colour()) {
+        let read = load(&id).and_then(|c| {
+            let h = tile
+                .has_heights()
+                .then(|| Heightfield::parse(&c))
+                .transpose()?;
+            Ok((h, Colour::parse(&c)?))
+        });
+        match read {
+            Ok((h, c)) => {
+                if let Some(h) = h {
+                    heights = Some((tile.min, tile.size, h.into()));
+                }
+                colour = Some((tile.min, tile.size, c.into()));
+            }
             Err(e) => ground.failed.push((index, e.0)),
         }
     }
@@ -301,7 +411,7 @@ fn walk(
                 walk(
                     tree,
                     c as usize,
-                    source.clone(),
+                    (heights.clone(), colour.clone()),
                     lo,
                     hi,
                     spacing,
@@ -311,16 +421,23 @@ fn walk(
             }
         }
         None => {
-            if let Some(s) = &source {
+            if let Some(h) = &heights {
                 ground.tiles += 1;
-                emit(tile, s, spacing, ground);
+                emit(tile, h, colour.as_ref(), spacing, ground);
             }
         }
     }
 }
 
-/// Adds `tile`'s square, drawn from the heights of `source` (itself or an ancestor).
-fn emit(tile: &Tile, (_, min, size, heights): &Source, spacing: f32, ground: &mut Ground) {
+/// Adds `tile`'s square, drawn from the heights of `source` (itself or an ancestor)
+/// and coloured by `colour`.
+fn emit(
+    tile: &Tile,
+    (min, size, heights): &Source<Heightfield>,
+    colour: Option<&Source<Colour>>,
+    spacing: f32,
+    ground: &mut Ground,
+) {
     let cell = size / CELLS as f32;
     // Samples per vertex: a power of two, so it divides the tile's cells.
     let mut step = 1;
@@ -337,11 +454,14 @@ fn emit(tile: &Tile, (_, min, size, heights): &Source, spacing: f32, ground: &mu
             let (row, column) = (first[1] + i * step, first[0] + j * step);
             if let Some(y) = heights.at(row, column) {
                 index_of.insert((i, j), base + index_of.len() as u32);
-                ground.positions.push([
+                let (x, z) = (
                     min[0] + (column - BORDER) as f32 * cell,
-                    y,
                     min[1] + (row - BORDER) as f32 * cell,
-                ]);
+                );
+                ground.positions.push([x, y, z]);
+                let [r, g, b] =
+                    colour.map_or(NO_COLOUR, |(at, side, c)| c.sample(*at, *side, [x, z]));
+                ground.colours.push([r, g, b, 255]);
             }
         }
     }
@@ -424,6 +544,11 @@ mod tests {
     /// none (2,312 bytes), and the third and fourth heightfields, the fourth with an
     /// extra chunk.
     fn sample() -> Vec<u8> {
+        sample_with_root(0)
+    }
+
+    /// [`sample`], its root's chunk `root` bytes (a heightfield's, or none).
+    fn sample_with_root(root: u32) -> Vec<u8> {
         let mut d = vec![0; HEADER];
         d[TILE_COUNT_AT..TILE_COUNT_AT + 4].copy_from_slice(&5u32.to_le_bytes());
         d[NODE_COUNT_AT..NODE_COUNT_AT + 4].copy_from_slice(&5u32.to_le_bytes());
@@ -433,7 +558,7 @@ mod tests {
         node(&mut d, [0.0, 0.0], 128.0, true, false, false);
         node(&mut d, [-128.0, 0.0], 128.0, false, false, false);
         d.extend_from_slice(&[1, 3, 0, 0, 0, 9, 9, 9, LAST_BLOCK]);
-        tile(&mut d, 0, 0, false, true);
+        tile(&mut d, root, 0, false, true);
         tile(&mut d, HEIGHTFIELD, 1, false, false);
         tile(&mut d, 2312, 2, false, false);
         tile(&mut d, HEIGHTFIELD + PAGES, 3, false, false);
@@ -497,6 +622,68 @@ mod tests {
         d
     }
 
+    /// A BC1 block of the two 5:6:5 colours `a` and `b`, each texel picking `pick`.
+    fn block(a: u16, b: u16, pick: u32) -> [u8; 8] {
+        let mut d = [0; 8];
+        d[..2].copy_from_slice(&a.to_le_bytes());
+        d[2..4].copy_from_slice(&b.to_le_bytes());
+        d[4..].copy_from_slice(&(pick * 0x5555_5555).to_le_bytes());
+        d
+    }
+
+    /// `before` bytes, then a colour whose blocks are all `b`, except block 0 (the
+    /// top-left 4 × 4 texels) is `first`.
+    fn coloured(before: Vec<u8>, first: [u8; 8], b: [u8; 8]) -> Vec<u8> {
+        let mut d = before;
+        d.extend_from_slice(&first);
+        for _ in 1..COLOUR_BYTES / 8 {
+            d.extend_from_slice(&b);
+        }
+        d
+    }
+
+    #[test]
+    fn a_colour_is_the_chunks_last_bc1_blocks() {
+        // Red and blue: the first, the second, and the two thirds between.
+        let (red, blue) = (0xF800, 0x001F);
+        let picks: Vec<_> = (0..4)
+            .map(|p| {
+                Colour::parse(&coloured(
+                    vec![9; 5],
+                    block(red, blue, p),
+                    block(red, blue, 0),
+                ))
+                .unwrap()
+                .texels[0]
+            })
+            .collect();
+        assert_eq!(
+            picks,
+            [[255, 0, 0], [0, 0, 255], [170, 0, 85], [85, 0, 170]]
+        );
+        // The first not greater: the middle, and black.
+        let c = Colour::parse(&coloured(vec![], block(blue, red, 2), block(blue, red, 3))).unwrap();
+        assert_eq!((c.texels[0], c.texels[4]), ([127, 0, 127], [0, 0, 0]));
+        assert!(Colour::parse(&[0; COLOUR_BYTES - 1]).is_err());
+    }
+
+    #[test]
+    fn a_colour_is_sampled_between_its_texels_middles() {
+        // Texels 0-3 of rows 0-3 white, the rest black; a 64 m tile, a texel a
+        // metre, its first texel's middle 1.5 m before the tile.
+        let (white, black) = (block(0xFFFF, 0xFFFF, 0), block(0, 0, 0));
+        let c = Colour::parse(&coloured(vec![], white, black)).unwrap();
+        let at = |x: f32, z: f32| c.sample([0.0, 0.0], 64.0, [x, z]);
+        // Texel 3's middle (1.5 m into the tile) is white, texel 4's black.
+        assert_eq!(at(1.5, 1.5), [255; 3]);
+        assert_eq!(at(2.5, 1.5), [0; 3]);
+        assert_eq!(at(2.0, 1.5), [128; 3]);
+        assert_eq!(at(2.0, 2.0), [64; 3]);
+        // Beyond the border it takes the edge texel.
+        assert_eq!(at(-100.0, -100.0), [255; 3]);
+        assert_eq!(at(100.0, 100.0), [0; 3]);
+    }
+
     #[test]
     fn heights_are_thirty_seconds_of_a_metre_and_zero_is_a_hole() {
         let h = Heightfield::parse(&rows()).unwrap();
@@ -518,9 +705,10 @@ mod tests {
                 _ => Ok(rows()),
             }
         };
-        // Only the first two quadrants (z < 0), a vertex every 16 m (8 cells).
+        // Only the first two quadrants (z < 0), a vertex every 16 m (8 cells); the
+        // second is read for its colour alone.
         let g = ground(&tree, [-128.0, -128.0], [128.0, -1.0], 16.0, load);
-        assert_eq!(asked, [1]);
+        assert_eq!(asked, [1, 2]);
         // The second quadrant has no heights and the root none to fall back on.
         assert_eq!(g.tiles, 1);
         assert_eq!(g.positions.len(), 81);
@@ -530,11 +718,41 @@ mod tests {
         // The fourth quadrant, at full spacing, misses the hole's four cells.
         let g = ground(&tree, [-128.0, 0.0], [0.0, 128.0], 0.5, |_| Ok(rows()));
         assert_eq!(g.positions.len(), 129 * 129 - 1);
+        assert_eq!(g.colours.len(), g.positions.len());
         assert_eq!(g.indices.len(), (128 * 128 - 4) * 6);
         let g = ground(&tree, [0.0, 0.0], [128.0, 128.0], 1.0, |_| {
             Err(Error("no".into()))
         });
         assert_eq!((g.tiles, g.failed.len()), (0, 1));
+    }
+
+    #[test]
+    fn each_leaf_is_coloured_by_its_own_colour_or_an_ancestors() {
+        // The root and the first tile have grey heights; the second has no heights
+        // and is green, so it takes its heights from the root and its own colour.
+        let tree = Tree::parse(&sample_with_root(HEIGHTFIELD)).unwrap();
+        let grey = coloured(rows(), block(0x8410, 0x8410, 0), block(0x8410, 0x8410, 0));
+        let green = coloured(vec![], block(0x07E0, 0x07E0, 0), block(0x07E0, 0x07E0, 0));
+        let g = ground(&tree, [-128.0, -128.0], [128.0, -1.0], 16.0, |id| {
+            Ok(if id[0] == 2 {
+                green.clone()
+            } else {
+                grey.clone()
+            })
+        });
+        assert_eq!((g.tiles, g.colours.len()), (2, 2 * 81));
+        assert!(g.colours[..81].iter().all(|&c| c == [131, 129, 131, 255]));
+        assert!(g.colours[81..].iter().all(|&c| c == [0, 255, 0, 255]));
+        // The second's chunk unreadable: it is drawn in the root's colour.
+        let g = ground(&tree, [0.0, -128.0], [128.0, -1.0], 16.0, |id| {
+            if id[0] == 2 {
+                Err(Error("no".into()))
+            } else {
+                Ok(grey.clone())
+            }
+        });
+        assert_eq!((g.tiles, g.failed.len()), (1, 1));
+        assert!(g.colours.iter().all(|&c| c == [131, 129, 131, 255]));
     }
 
     /// Reads Palm City's streaming tree and every heightfield in the store
@@ -558,12 +776,20 @@ mod tests {
             .map(|t| t.size)
             .collect();
         assert_eq!(without, [16_384.0, 8_192.0, 8_192.0, 8_192.0, 8_192.0]);
+        // Every other tile's chunk has one of the two sizes, so ends in its colour.
+        assert!(
+            tree.tiles
+                .iter()
+                .all(|t| t.chunk.is_none() || t.has_colour())
+        );
         let heights: Vec<Option<Heightfield>> = tree
             .tiles
             .iter()
             .map(|t| {
-                let (id, _) = t.chunk.filter(|_| t.has_heights())?;
-                Some(Heightfield::parse(&chunks.read(&id).unwrap()).unwrap())
+                let (id, _) = t.chunk?;
+                let chunk = chunks.read(&id).unwrap();
+                Colour::parse(&chunk).unwrap();
+                t.has_heights().then(|| Heightfield::parse(&chunk).unwrap())
             })
             .collect();
         assert_eq!(heights.iter().flatten().count(), 7_618);
