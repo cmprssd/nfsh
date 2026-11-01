@@ -54,7 +54,7 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
-3 crates in one Cargo workspace, 17,314 lines of Rust (sources and tests), 145 tests.
+3 crates in one Cargo workspace, 17,315 lines of Rust (sources and tests), 145 tests.
 <!-- /progress -->
 
 ```mermaid
@@ -74,7 +74,7 @@ flowchart BT
 |------|------:|------:|------|
 | `frostbite` | 10,539 | 94 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store, with every ebx's partition GUID; reads ebx partitions (types, instances, fields, arrays, references); walks a level's sub-levels and what each zone places (meshes in world space); reads mesh sets and decodes their geometry (LODs, sections, positions, texture coordinates, tangent frames, triangles); reads texture headers and their pixels (block-compressed mips, layers), and what each material names (its shader, textures and vector parameters); reads a time of day's sun, sky and exposure from its visual environment; reads the terrain's quadtree of tiles, their heightfields, colours and pages, and builds the ground's mesh under an area, coloured and weighted by its layers, with a map of the same colour and weights for what lies over it; reads the terrain's layer tree (which layers each tile's pages are for), the level's shader database (each shader permutation's parameter block, the textures it binds and its program) and so each terrain layer's own diffuse maps; reads a shader program's instructions far enough to find the scale each terrain layer's diffuse is drawn at; averages a BC1 texture's colour |
 | `nfsh` | 2,254 | 15 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store, `reindex` lists its partition GUIDs, `ebx` prints a partition as text, `level` prints Palm City's bundles or one zone's placements, `mesh` prints a mesh's LODs and writes one as an .obj, `texture` prints a texture and writes it as a .dds, `view` flies through one zone in a window, textured and lit at midday or tealnight (or writes a screenshot) |
-| `render` | 4,521 | 36 | the Vulkan renderer (`nfsh-render`, Vulkan 1.3 through `ash`): device bring-up, a window's swapchain and frame loop with GPU timing, an offscreen target read back for screenshots and tests; packs a zone's placed meshes (first LOD) into one vertex, index and instance buffer and draws them with one instanced draw per section, each with its colour texture uploaded block-compressed as stored (grey when one can't be read), road asphalt as its clean and damaged layers blended by the road's mask with its detail colours over them, giving way to the ground at its edges as its shoulder texture says (up to eight textures a draw, and the ground's map of its colour and detail weights) and road lines, cracks and tyre marks blended over it as decals, lit by the time of day's sun and sky, exposed and tonemapped, with each mesh's own normals bent by its normal map, and asphalt's by its layers' (the triangle's where it has none); the ground under the zone as one more draw, in its tiles' colours with up to eight of its layers' diffuse maps (one texture array) laid over them as detail, weighted by each layer's share of the tiles' pages |
+| `render` | 4,522 | 36 | the Vulkan renderer (`nfsh-render`, Vulkan 1.3 through `ash`): device bring-up, a window's swapchain and frame loop with GPU timing, an offscreen target read back for screenshots and tests; packs a zone's placed meshes (first LOD) into one vertex, index and instance buffer and draws them with one instanced draw per section, each with its colour texture uploaded block-compressed as stored (grey when one can't be read), road asphalt as its clean and damaged layers blended by the road's mask with its detail colours over them, giving way to the ground at its edges as its shoulder texture says (up to eight textures a draw, and the ground's map of its colour and detail weights) and road lines, cracks and tyre marks blended over it as decals, lit by the time of day's sun and sky, exposed and tonemapped, with each mesh's own normals bent by its normal map, and asphalt's by its layers' (the triangle's where it has none); the ground under the zone as one more draw, in its tiles' colours with up to eight of its layers' diffuse maps (one texture array) laid over them as detail, weighted by each layer's share of the tiles' pages |
 <!-- /progress -->
 
 Every reader checks bounds and returns an error on malformed input, so a damaged or
@@ -134,7 +134,7 @@ Rules that shape it:
 
 <!-- progress:history -->
 28 commits, 27 merged PRs from 2026-10-30 to 2026-11-01, on 3 working days: 22 feat, 4
-docs, 1 ci. About 24,798 lines added and 1,288 removed; 61 tracked files.
+docs, 1 ci. About 24,803 lines added and 1,292 removed; 61 tracked files.
 
 ```mermaid
 xychart-beta

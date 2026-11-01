@@ -1121,10 +1121,11 @@ mod tests {
         let noise = texture_partition(&store, ASPHALT_NOISE);
         let scene = build(&zone, |m| first_lod(&mut meshes, m, noise));
         assert_eq!(scene.failed, []);
-        // Counted on the owner's store, 2026-10-31.
+        // Counted on the owner's store, 2026-10-31; the textures again on 2026-11-01,
+        // with the normal maps (109 of them).
         assert_eq!(zone.placements.len(), 2171);
         assert_eq!(scene.draws.len(), 780);
-        assert_eq!(scene.textures.len(), 129);
+        assert_eq!(scene.textures.len(), 238);
         assert_eq!(scene.instances.len(), 2171);
         assert_eq!(scene.positions.len(), 1_356_354);
         assert_eq!(scene.triangles(), 3_988_832);
@@ -1171,10 +1172,10 @@ mod tests {
         // their layers (the 36 with positions only are plain grey), 58 of them giving
         // way to the ground at their edges (the 30 others are the wet road's shader);
         // 130 decals, 53 of them lines coloured by their vertices; the asphalt's
-        // layers add 22 textures.
+        // layers add 22 textures, and the normal maps 132.
         assert_eq!(count, [1047, 20, 0, 88, 130]);
         assert_eq!(edged, 58);
         assert_eq!(painted, 53);
-        assert_eq!(scene.textures.len(), 178);
+        assert_eq!(scene.textures.len(), 310);
     }
 }
