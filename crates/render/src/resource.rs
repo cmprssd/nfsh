@@ -162,16 +162,19 @@ impl Image {
         usage: vk::ImageUsageFlags,
         aspect: vk::ImageAspectFlags,
     ) -> Result<Self> {
-        Self::with_mips(gpu, extent, format, usage, aspect, 1)
+        Self::made(gpu, extent, format, usage, aspect, (1, 1), false)
     }
 
-    fn with_mips(
+    /// An image of `mips` mips and `layers` layers, seen through an array view when
+    /// `array`.
+    fn made(
         gpu: &Arc<Gpu>,
         extent: vk::Extent2D,
         format: vk::Format,
         usage: vk::ImageUsageFlags,
         aspect: vk::ImageAspectFlags,
-        mips: u32,
+        (mips, layers): (u32, u32),
+        array: bool,
     ) -> Result<Self> {
         let d = &gpu.device;
         let image = unsafe {
@@ -185,7 +188,7 @@ impl Image {
                         depth: 1,
                     })
                     .mip_levels(mips)
-                    .array_layers(1)
+                    .array_layers(layers)
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .tiling(vk::ImageTiling::OPTIMAL)
                     .usage(usage),
@@ -206,10 +209,15 @@ impl Image {
                     d.create_image_view(
                         &vk::ImageViewCreateInfo::default()
                             .image(image)
-                            .view_type(vk::ImageViewType::TYPE_2D)
+                            .view_type(if array {
+                                vk::ImageViewType::TYPE_2D_ARRAY
+                            } else {
+                                vk::ImageViewType::TYPE_2D
+                            })
                             .format(format)
                             .subresource_range(vk::ImageSubresourceRange {
                                 level_count: mips,
+                                layer_count: layers,
                                 ..subresource(aspect)
                             }),
                         None,
@@ -237,16 +245,44 @@ impl Image {
     /// are, so a block-compressed format's blocks go up unchanged; left ready for
     /// fragment shaders to read.
     pub fn sampled(gpu: &Arc<Gpu>, format: vk::Format, mips: &[Mip], data: &[u8]) -> Result<Self> {
+        Self::sampled_layers(gpu, format, mips, (1, 0), data, false)
+    }
+
+    /// A texture array of `layers` textures alike, each `layer_bytes` after the last
+    /// in `data`, with `mips` the first's; sampled through an array view even with one
+    /// layer.
+    pub fn sampled_array(
+        gpu: &Arc<Gpu>,
+        format: vk::Format,
+        mips: &[Mip],
+        (layers, layer_bytes): (u32, u64),
+        data: &[u8],
+    ) -> Result<Self> {
+        Self::sampled_layers(gpu, format, mips, (layers, layer_bytes), data, true)
+    }
+
+    fn sampled_layers(
+        gpu: &Arc<Gpu>,
+        format: vk::Format,
+        mips: &[Mip],
+        (layers, layer_bytes): (u32, u64),
+        data: &[u8],
+        array: bool,
+    ) -> Result<Self> {
         let Some(first) = mips.first() else {
             return Err(Error("a texture with no mips".into()));
         };
+        if layers == 0 {
+            return Err(Error("a texture with no layers".into()));
+        }
         let extent = vk::Extent2D {
             width: first.width,
             height: first.height,
         };
         let usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST;
         let color = vk::ImageAspectFlags::COLOR;
-        let image = Self::with_mips(gpu, extent, format, usage, color, mips.len() as u32)?;
+        let counts = (mips.len() as u32, layers);
+        let image = Self::made(gpu, extent, format, usage, color, counts, array)?;
         let mut staging = Buffer::new(
             gpu,
             vk::BufferUsageFlags::TRANSFER_SRC,
@@ -254,15 +290,15 @@ impl Image {
             MemoryLocation::CpuToGpu,
         )?;
         staging.mapped_mut()?.copy_from_slice(data);
-        let regions: Vec<_> = (0u32..)
-            .zip(mips)
-            .map(|(level, m)| {
+        let regions: Vec<_> = (0..layers)
+            .flat_map(|layer| (0u32..).zip(mips).map(move |(level, m)| (layer, level, m)))
+            .map(|(layer, level, m)| {
                 vk::BufferImageCopy::default()
-                    .buffer_offset(m.offset)
+                    .buffer_offset(m.offset + u64::from(layer) * layer_bytes)
                     .image_subresource(vk::ImageSubresourceLayers {
                         aspect_mask: color,
                         mip_level: level,
-                        base_array_layer: 0,
+                        base_array_layer: layer,
                         layer_count: 1,
                     })
                     .image_extent(vk::Extent3D {
@@ -274,6 +310,7 @@ impl Image {
             .collect();
         let all = vk::ImageSubresourceRange {
             level_count: mips.len() as u32,
+            layer_count: layers,
             ..subresource(color)
         };
         gpu.submit_and_wait(|cmd| unsafe {

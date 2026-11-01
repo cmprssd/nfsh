@@ -95,7 +95,7 @@ fn middle_of(
     let gpu = Gpu::new_headless().unwrap();
     let (zone, square) = square_zone(&[5.0]);
     let scene = scene::build(&zone, |_| Ok(sections(&square)));
-    let renderer = ZoneRenderer::new(&gpu, &scene, Target::COLOR_FORMAT, load).unwrap();
+    let renderer = ZoneRenderer::new(&gpu, &scene, Target::COLOR_FORMAT, load, Vec::new()).unwrap();
     let mut target = Target::new(&gpu, W, H).unwrap();
     let extent = target.color.extent;
     let camera = Camera::new([0.0; 3], 0.0, 0.0, W, H);
@@ -130,8 +130,14 @@ fn draws_a_placed_mesh_where_the_camera_sees_it() {
         ..Section::default()
     };
     let scene = scene::build(&zone, |_| Ok(vec![section.clone()]));
-    let renderer =
-        ZoneRenderer::new(&gpu, &scene, Target::COLOR_FORMAT, |_| unreachable!()).unwrap();
+    let renderer = ZoneRenderer::new(
+        &gpu,
+        &scene,
+        Target::COLOR_FORMAT,
+        |_| unreachable!(),
+        Vec::new(),
+    )
+    .unwrap();
     let mut target = Target::new(&gpu, W, H).unwrap();
     let extent = target.color.extent;
 
@@ -254,8 +260,14 @@ fn textures_that_fail_are_drawn_grey_and_listed() {
 fn an_empty_scene_draws_nothing() {
     let gpu = Gpu::new_headless().unwrap();
     let scene = scene::build(&Zone::default(), |_| unreachable!());
-    let renderer =
-        ZoneRenderer::new(&gpu, &scene, Target::COLOR_FORMAT, |_| unreachable!()).unwrap();
+    let renderer = ZoneRenderer::new(
+        &gpu,
+        &scene,
+        Target::COLOR_FORMAT,
+        |_| unreachable!(),
+        Vec::new(),
+    )
+    .unwrap();
     let mut target = Target::new(&gpu, W, H).unwrap();
     let extent = target.color.extent;
     let camera = Camera::new([0.0; 3], 0.0, 0.0, W, H);
@@ -265,27 +277,96 @@ fn an_empty_scene_draws_nothing() {
     assert!(rgba.chunks(4).all(|p| p == [0, 0, 0, 255]));
 }
 
-#[test]
-fn the_ground_is_drawn_in_its_vertex_colours() {
+/// The 2 m square, 5 m ahead, as ground in the sRGB-encoded `colour`, its vertices
+/// all weighted for one detail layer, drawn with `detail`; the middle row of pixels
+/// and what was reported missing.
+fn ground_row(
+    colour: [u8; 4],
+    detail: Vec<scene::Detail>,
+    loaded: Vec<frostbite::Result<Loaded>>,
+) -> (Vec<[u8; 4]>, Vec<(String, String)>) {
     let gpu = Gpu::new_headless().unwrap();
-    // The 2 m square, 5 m ahead, as ground: in world space, sRGB-encoded red.
     let (_, square) = square_zone(&[]);
     let ground = frostbite::terrain::Ground {
         positions: square.positions.iter().map(|p| [p[0], p[1], 5.0]).collect(),
-        colours: vec![[255, 0, 0, 255]; 4],
+        colours: vec![colour; 4],
         indices: square.indices.clone(),
+        detail: vec![1],
+        weights: vec![[255, 0, 0, 0, 0, 0, 0, 0]; 4],
         ..Default::default()
     };
     let mut scene = scene::Scene::default();
-    scene::add_ground(&mut scene, &ground);
-    let renderer =
-        ZoneRenderer::new(&gpu, &scene, Target::COLOR_FORMAT, |_| unreachable!()).unwrap();
+    scene::add_ground(&mut scene, &ground, detail);
+    let renderer = ZoneRenderer::new(
+        &gpu,
+        &scene,
+        Target::COLOR_FORMAT,
+        |_| unreachable!(),
+        loaded,
+    )
+    .unwrap();
     let mut target = Target::new(&gpu, W, H).unwrap();
     let extent = target.color.extent;
     let camera = Camera::new([0.0; 3], 0.0, 0.0, W, H);
     let rgba = target
         .render(|cmd| renderer.record(cmd, &camera, extent, &LIGHT))
         .unwrap();
-    let m = pixel(&rgba, W / 2, H / 2);
+    let row = (0..W).map(|x| pixel(&rgba, x, H / 2)).collect();
+    (row, renderer.missing.clone())
+}
+
+#[test]
+fn the_ground_is_drawn_in_its_vertex_colours() {
+    let (row, missing) = ground_row([255, 0, 0, 255], Vec::new(), Vec::new());
+    let m = row[W as usize / 2];
     assert!(m[0] > 100 && m[1] < 20 && m[2] < 20, "middle {m:?}");
+    assert!(missing.is_empty());
+}
+
+#[test]
+fn a_ground_layer_adds_its_diffuse_as_detail() {
+    // 8 × 4 texels: white on the left half, black on the right, so its average is
+    // half; at 0.5 a metre the square's 2 m cross one of each.
+    let white = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+    let black = [0; 8];
+    let texture = Texture {
+        kind: Kind::Flat,
+        format: 0x37,
+        flags: 0,
+        width: 8,
+        height: 4,
+        layers: 1,
+        mip_sizes: vec![16, 8, 8, 8],
+        streamed: 0,
+        chunk: [0; 16],
+        group: "Props".into(),
+    };
+    let data = [white, black, white, white, white].concat();
+    let detail = || {
+        vec![scene::Detail {
+            texture: "stripes".into(),
+            scale: 0.5,
+        }]
+    };
+    let dark = [120, 0, 0, 255];
+    let (plain, _) = ground_row(dark, Vec::new(), Vec::new());
+    let loaded = vec![Ok(("stripes".to_string(), texture, data))];
+    let (row, missing) = ground_row(dark, detail(), loaded);
+    assert!(missing.is_empty(), "{missing:?}");
+    // Across the square, brighter where the detail is white, darker where black.
+    let change: Vec<i16> = plain
+        .iter()
+        .zip(&row)
+        .filter(|(p, _)| p[0] > 0)
+        .map(|(p, r)| i16::from(r[0]) - i16::from(p[0]))
+        .collect();
+    assert!(change.len() > 4, "the square is on screen");
+    assert!(change.iter().any(|&c| c > 15), "brighter: {change:?}");
+    assert!(change.iter().any(|&c| c < -15), "darker: {change:?}");
+
+    // A layer whose texture can't be read is left out and listed.
+    let gone = vec![Err(frostbite::Error("gone".into()))];
+    let (row, missing) = ground_row(dark, detail(), gone);
+    assert_eq!(missing, [("stripes".to_string(), "gone".to_string())]);
+    assert_eq!(row, plain);
 }

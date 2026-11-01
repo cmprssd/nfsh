@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use frostbite::layers;
 use frostbite::level::Level;
 use frostbite::level::xz_bounds;
 use frostbite::lighting::{self, Lighting};
@@ -147,6 +148,14 @@ fn renderer(
 ) -> Result<ZoneRenderer, String> {
     let start = Instant::now();
     let mut textures = Textures::new(store).map_err(|e| e.to_string())?;
+    let mut detail = Vec::new();
+    for d in &scene.detail {
+        let read = textures.by_name(&d.texture).and_then(|texture| {
+            let pixels = textures.pixels(&texture)?;
+            Ok((d.texture.clone(), texture, pixels))
+        });
+        detail.push(read);
+    }
     let load = |guid: &[u8; 16]| -> frostbite::Result<Loaded> {
         let (name, texture) = textures.by_partition(guid)?;
         let pixels = textures
@@ -154,10 +163,13 @@ fn renderer(
             .map_err(|e| frostbite::Error(format!("{name}: {e}")))?;
         Ok((name, texture, pixels))
     };
-    let renderer = ZoneRenderer::new(gpu, scene, format, load).map_err(|e| e.to_string())?;
+    let renderer =
+        ZoneRenderer::new(gpu, scene, format, load, detail).map_err(|e| e.to_string())?;
+    let wanted = scene.textures.len() + scene.detail.len();
     eprintln!(
-        "{} textures, {:.1} MiB uploaded in {:.1} s",
-        scene.textures.len() - renderer.missing.len(),
+        "{} textures ({} of them ground detail), {:.1} MiB uploaded in {:.1} s",
+        wanted.saturating_sub(renderer.missing.len()),
+        scene.detail.len(),
         renderer.texture_bytes as f64 / f64::from(1 << 20),
         start.elapsed().as_secs_f64()
     );
@@ -176,27 +188,43 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
     let roads = level.add_drivable_surfaces(&mut zone, ROAD_MARGIN)?;
     let mut meshes = Meshes::new(store)?;
     let mut scene = scene::build(&zone, |m| scene::first_lod(&mut meshes, m));
-    // The ground under the zone; without it the zone is still drawn.
+    // The ground under the zone; without it the zone is still drawn, and without its
+    // layers' detail the ground is.
+    let detail = match layers::diffuse(store) {
+        Ok(diffuse) => scene::ground_detail(&diffuse),
+        Err(e) => {
+            eprintln!("  ground drawn without detail: {e}");
+            Default::default()
+        }
+    };
     let ground = xz_bounds(&zone).map(|(lo, hi)| -> frostbite::Result<Ground> {
         let tree = Tree::read(store)?;
         let mut chunks = Chunks::new(store)?;
         let lo = lo.map(|v| v - GROUND_MARGIN);
         let hi = hi.map(|v| v + GROUND_MARGIN);
-        Ok(terrain::ground(&tree, lo, hi, GROUND_SPACING, |id| {
-            chunks.read(id)
-        }))
+        let layers: Vec<u16> = detail.keys().copied().collect();
+        Ok(terrain::ground(
+            &tree,
+            lo,
+            hi,
+            GROUND_SPACING,
+            &layers,
+            |id| chunks.read(id),
+        ))
     });
     match ground {
         Some(Ok(g)) => {
             eprintln!(
-                "  ground: {} tiles, {} triangles",
+                "  ground: {} tiles, {} triangles, detail layers {:?}",
                 g.tiles,
-                g.indices.len() / 3
+                g.indices.len() / 3,
+                g.detail
             );
             for (tile, why) in &g.failed {
                 eprintln!("  ground tile {tile}: {why}");
             }
-            scene::add_ground(&mut scene, &g);
+            let slots = g.detail.iter().map(|l| detail[l].clone()).collect();
+            scene::add_ground(&mut scene, &g, slots);
         }
         Some(Err(e)) => eprintln!("  ground not drawn: {e}"),
         None => {}

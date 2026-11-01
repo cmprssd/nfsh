@@ -443,10 +443,14 @@ The further chunk, when there is one, is another `2,312 + 18,496·k` chunk or, o
 of the 128 m leaves, 168,924 = 4 × 42,231 bytes: likely four 64 m heightfields.
 Neither is read yet.
 
-**The pages** (18,496 = 136 × 136 bytes each) look like one layer's weight each,
-0 to 255, in rows along z and columns along x with a 4-texel border like the
-heights; on the speedway tile their means are 211, 88, 92, 9 and 118, so they don't
-sum to 255 per texel. Which layer each is for: the layer tree, above. Not read yet.
+**The pages** (18,496 = 136 × 136 bytes each) are one layer's weight each, 0 to 255,
+just before the colour, in rows along z and columns along x with a 4-texel border:
+read like the colour, texel (r, c) of a tile at (x0, z0) of size S covers from
+(x0 + (c − 4)·S/128, z0 + (r − 4)·S/128) (texel middles are assumed, as for the
+colour; the heights' sample points would put them half a texel over, not
+checked). On the speedway tile their means are 211, 88, 92, 9 and 118, so they
+don't sum to 255 per texel; nfsh takes a layer's weight as its share of the sum
+(2026-11-01, `terrain::Pages`). Which layer each is for: the layer tree, above.
 
 **How it was checked**: a child's even samples are its parent's, at the child's
 quadrant. Of the 7,602 parent and child pairs that both have heights, 7,477 agree on

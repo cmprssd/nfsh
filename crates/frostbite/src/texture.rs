@@ -289,6 +289,57 @@ impl Texture {
     }
 }
 
+/// A BC1 block's four colours: its two end points (RGB 5:6:5) and the two between
+/// them, or their middle and black when the first is not the greater.
+pub fn bc1_palette(block: &[u8; 8]) -> [[u8; 3]; 4] {
+    let end = |at: usize| {
+        let c = u16::from_le_bytes([block[at], block[at + 1]]);
+        let (r, g, b) = (c >> 11, (c >> 5) & 63, c & 31);
+        [r * 255 / 31, g * 255 / 63, b * 255 / 31].map(|v| v as u8)
+    };
+    let (a, b) = (end(0), end(2));
+    let mix = |wa: u16, wb: u16| {
+        [0, 1, 2].map(|k| ((u16::from(a[k]) * wa + u16::from(b[k]) * wb) / (wa + wb)) as u8)
+    };
+    if u16::from_le_bytes([block[0], block[1]]) > u16::from_le_bytes([block[2], block[3]]) {
+        [a, b, mix(2, 1), mix(1, 2)]
+    } else {
+        [a, b, mix(1, 1), [0; 3]]
+    }
+}
+
+/// The average colour of a BC1 texture `t` whose chunk is `data`, as linear values
+/// (0 to 1): of its first mip of at most 64 × 64 texels, each texel's colour taken as
+/// sRGB-encoded. `None` for another format, or a mip not in `data`.
+pub fn bc1_mean(t: &Texture, data: &[u8]) -> Option<[f32; 3]> {
+    if !t.format().is_some_and(|f| f.name.starts_with("BC1")) {
+        return None;
+    }
+    let level = (0..t.mips()).find(|&l| t.mip_extent(l).0.max(t.mip_extent(l).1) <= 64)?;
+    let blocks = data.get(t.mip(level, 0)?)?;
+    let linear = |v: u8| {
+        let c = f32::from(v) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let (mut sum, mut n) = ([0.0f64; 3], 0u32);
+    for block in blocks.as_chunks::<8>().0 {
+        let palette = bc1_palette(block);
+        let bits = u32::from_le_bytes(block[4..].try_into().expect("4 bytes"));
+        for i in 0..16 {
+            let c = palette[(bits >> (2 * i)) as usize & 3];
+            for k in 0..3 {
+                sum[k] += f64::from(linear(c[k]));
+            }
+            n += 1;
+        }
+    }
+    (n > 0).then(|| sum.map(|s| (s / f64::from(n)) as f32))
+}
+
 /// One texture a material names: the shader parameter and the texture's partition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextureParameter {
@@ -524,6 +575,24 @@ mod tests {
         assert_eq!(t.mip(1, 0), Some(64..80));
         assert_eq!(t.mip(4, 0), None);
         assert_eq!(t.mip(0, 1), None);
+    }
+
+    #[test]
+    fn a_bc1_textures_mean_is_of_its_first_mip_of_64_texels_at_most() {
+        // 128 × 128: mip 0 black; mip 1 (64 × 64, 256 blocks) half white, half black.
+        let t = Texture::parse(&header(0, 0x37, (128, 128), 1, &[8192, 2048, 512])).unwrap();
+        let mut data = vec![0; 8192];
+        for b in 0..256 {
+            let end = if b % 2 == 0 { 0xFFFF_u16 } else { 0 };
+            data.extend(end.to_le_bytes());
+            data.extend(end.to_le_bytes());
+            data.extend([0; 4]);
+        }
+        data.extend([0; 512]);
+        assert_eq!(bc1_mean(&t, &data), Some([0.5; 3]));
+        assert_eq!(bc1_mean(&t, &data[..9000]), None, "mip 1 cut short");
+        let bc7 = Texture::parse(&header(0, 0x42, (8, 8), 1, &[64])).unwrap();
+        assert_eq!(bc1_mean(&bc7, &[0; 64]), None);
     }
 
     #[test]

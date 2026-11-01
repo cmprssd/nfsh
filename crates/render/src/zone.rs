@@ -1,20 +1,33 @@
 //! Draws a [`Scene`] on the GPU: its buffers and textures uploaded once, one instanced
 //! draw per mesh section, lit by a time of day's [`Light`]; opaque draws first, then
-//! cut out, then decals blended over them.
+//! the ground, cut out, then decals blended over them.
 
 use std::ffi::CStr;
 use std::sync::Arc;
 
 use ash::vk;
 use frostbite::lighting::Lighting;
-use frostbite::texture::{Kind, Texture};
+use frostbite::texture::{Kind, Texture, bc1_mean};
 
 use crate::Camera;
 use crate::gpu::{Error, Gpu, Result};
 use crate::resource::{Buffer, DEPTH_FORMAT, Image, Mip};
 use crate::scene::{Draw, Instance, Scene, Shading};
 
-const VERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/zone.vs_main.spv"));
+const VERT: (&[u8], &CStr) = (
+    include_bytes!(concat!(env!("OUT_DIR"), "/zone.vs_main.spv")),
+    c"vs_main",
+);
+/// The ground's shaders: its vertices carry weights where others have texture
+/// coordinates.
+const GROUND_VERT: (&[u8], &CStr) = (
+    include_bytes!(concat!(env!("OUT_DIR"), "/zone.vs_ground.spv")),
+    c"vs_ground",
+);
+const GROUND: (&[u8], &CStr) = (
+    include_bytes!(concat!(env!("OUT_DIR"), "/zone.fs_ground.spv")),
+    c"fs_ground",
+);
 /// The fragment shaders, opaque, cut out and decal, with their entry points.
 const FRAG: (&[u8], &CStr) = (
     include_bytes!(concat!(env!("OUT_DIR"), "/zone.fs_main.spv")),
@@ -33,6 +46,7 @@ const DECAL: (&[u8], &CStr) = (
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Pass {
     Opaque,
+    Ground,
     Cutout,
     Decal,
 }
@@ -40,7 +54,8 @@ enum Pass {
 impl Pass {
     fn of(shading: &Shading) -> Self {
         match shading {
-            Shading::Colour | Shading::Grey { .. } | Shading::Vertex => Self::Opaque,
+            Shading::Colour | Shading::Grey { .. } => Self::Opaque,
+            Shading::Ground => Self::Ground,
             Shading::Cutout => Self::Cutout,
             Shading::Decal { .. } => Self::Decal,
         }
@@ -51,8 +66,7 @@ impl Pass {
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 struct Look {
-    /// Multiplies the colour; `w` is 1 when the colour is the texture's red as grey,
-    /// 2 when it is the vertex colour.
+    /// Multiplies the colour; `w` is 1 when the colour is the texture's red as grey.
     tint: [f32; 4],
     /// A decal's opacity: the texture's channels weighted by this…
     select: [f32; 4],
@@ -61,6 +75,10 @@ struct Look {
     /// A decal's colour; `w` is 1 when it is set, else the texture's red times the
     /// vertex colour.
     colour: [f32; 4],
+    /// The ground's: each detail layer's scale (0 for none)…
+    scale: [[f32; 4]; 2],
+    /// …and the inverse of its average colour.
+    inverse_mean: [[f32; 4]; 8],
 }
 
 /// Where each look starts in the looks buffer: 256 bytes is the most any device may
@@ -74,11 +92,12 @@ impl Look {
             select: [0.0; 4],
             opacity: [1.0, 0.0, 0.0, 0.0],
             colour: [0.0; 4],
+            scale: [[0.0; 4]; 2],
+            inverse_mean: [[0.0; 4]; 8],
         };
         match *shading {
-            Shading::Colour | Shading::Cutout => {}
+            Shading::Colour | Shading::Cutout | Shading::Ground => {}
             Shading::Grey { tint } => look.tint = [tint[0], tint[1], tint[2], 1.0],
-            Shading::Vertex => look.tint[3] = 2.0,
             Shading::Decal {
                 select,
                 opacity,
@@ -181,10 +200,14 @@ pub fn mips(t: &Texture, data_len: usize) -> std::result::Result<Vec<Mip>, Strin
 /// A texture's name, its header and its chunk's bytes.
 pub type Loaded = (String, Texture, Vec<u8>);
 
+/// The ground's detail as the shader takes it: each slot's scale, and its average
+/// colour's inverse.
+type DetailLook = ([[f32; 4]; 2], [[f32; 4]; 8]);
+
 pub struct ZoneRenderer {
     gpu: Arc<Gpu>,
     /// One per [`Pass`], in its order.
-    pipelines: [vk::Pipeline; 3],
+    pipelines: [vk::Pipeline; 4],
     layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,
     /// The looks' set: one dynamic uniform buffer.
@@ -197,6 +220,8 @@ pub struct ZoneRenderer {
     images: Vec<Image>,
     /// Each of the scene's textures' set; the grey one's for those that failed.
     texture_sets: Vec<usize>,
+    /// The set of the ground's detail layers, a texture array.
+    ground_set: usize,
     /// `None` when the scene draws nothing (Vulkan has no empty buffers to bind).
     buffers: Option<[Buffer; 5]>,
     /// The looks, each at a multiple of [`LOOK_STRIDE`].
@@ -222,20 +247,23 @@ fn shader_module(gpu: &Gpu, spirv: &[u8]) -> Result<vk::ShaderModule> {
 
 impl ZoneRenderer {
     /// Uploads `scene` and its textures, each from `load` (by `TextureAsset`
-    /// partition), and makes the pipelines for drawing into `color_format`. A texture
-    /// that can't be loaded or sampled is drawn grey and listed in `missing`.
+    /// partition), and the ground's detail layers' textures `detail` (one per
+    /// [`Scene::detail`]), and makes the pipelines for drawing into `color_format`. A
+    /// texture that can't be loaded or sampled is drawn grey, a detail layer's left
+    /// out, and listed in `missing`.
     pub fn new(
         gpu: &Arc<Gpu>,
         scene: &Scene,
         color_format: vk::Format,
         mut load: impl FnMut(&[u8; 16]) -> frostbite::Result<Loaded>,
+        detail: Vec<frostbite::Result<Loaded>>,
     ) -> Result<Self> {
         let d = &gpu.device;
         // Everything is made into `r`, so whatever was made is destroyed by its Drop
         // if a later step fails.
         let mut r = Self {
             gpu: gpu.clone(),
-            pipelines: [vk::Pipeline::null(); 3],
+            pipelines: [vk::Pipeline::null(); 4],
             layout: vk::PipelineLayout::null(),
             set_layout: vk::DescriptorSetLayout::null(),
             look_layout: vk::DescriptorSetLayout::null(),
@@ -245,6 +273,7 @@ impl ZoneRenderer {
             sets: Vec::new(),
             images: Vec::new(),
             texture_sets: Vec::new(),
+            ground_set: 0,
             buffers: None,
             looks: None,
             draws: Vec::new(),
@@ -323,11 +352,17 @@ impl ZoneRenderer {
                 None,
             )?
         };
-        r.pipelines = [
-            pipeline(gpu, r.layout, color_format, FRAG, Pass::Opaque)?,
-            pipeline(gpu, r.layout, color_format, CUTOUT, Pass::Cutout)?,
-            pipeline(gpu, r.layout, color_format, DECAL, Pass::Decal)?,
-        ];
+        for (at, (fragment, pass)) in [
+            (FRAG, Pass::Opaque),
+            (GROUND, Pass::Ground),
+            (CUTOUT, Pass::Cutout),
+            (DECAL, Pass::Decal),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            r.pipelines[at] = pipeline(gpu, r.layout, color_format, fragment, pass)?;
+        }
 
         // Grey (0.5, as linear values) for what has no texture.
         let grey = Mip {
@@ -355,6 +390,9 @@ impl ZoneRenderer {
                 }
             }
         }
+        let (ground, detail_look) = r.upload_detail(scene, detail)?;
+        r.ground_set = r.images.len();
+        r.images.push(ground);
 
         let count = r.images.len() as u32;
         let sizes = [
@@ -405,7 +443,10 @@ impl ZoneRenderer {
             .draws
             .iter()
             .map(|draw| {
-                let look = Look::new(&draw.shading);
+                let mut look = Look::new(&draw.shading);
+                if draw.shading == Shading::Ground {
+                    (look.scale, look.inverse_mean) = detail_look;
+                }
                 let index = looks.iter().position(|l| *l == look).unwrap_or_else(|| {
                     looks.push(look);
                     looks.len() - 1
@@ -446,18 +487,10 @@ impl ZoneRenderer {
         Ok(r)
     }
 
-    /// Uploads one loaded texture; on failure, its name if known and why.
-    fn upload(
-        &mut self,
-        loaded: frostbite::Result<Loaded>,
-    ) -> std::result::Result<Image, (Option<String>, String)> {
-        let (name, texture, data) = loaded.map_err(|e| (None, e.0))?;
-        let fail = |why: String| (Some(name.clone()), why);
+    /// The Vulkan format `texture` is sampled in, if this device can filter it.
+    fn sampled_format(&self, texture: &Texture) -> std::result::Result<vk::Format, String> {
         let Some(format) = vk_format(texture.format) else {
-            return Err(fail(format!(
-                "format {:#04x} not worked out",
-                texture.format
-            )));
+            return Err(format!("format {:#04x} not worked out", texture.format));
         };
         let wanted = vk::FormatFeatureFlags::SAMPLED_IMAGE
             | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR;
@@ -467,8 +500,86 @@ impl ZoneRenderer {
                 .get_physical_device_format_properties(self.gpu.physical, format)
         };
         if !props.optimal_tiling_features.contains(wanted) {
-            return Err(fail(format!("{format:?} can't be sampled on this device")));
+            return Err(format!("{format:?} can't be sampled on this device"));
         }
+        Ok(format)
+    }
+
+    /// Uploads the ground's detail layers' textures as one array, a layer per slot,
+    /// with each slot's look: its scale and its average colour's inverse. A texture
+    /// that can't be read, or is not like the first that can (BC1, the same format,
+    /// size and mips), leaves its slot without detail (scale 0, its layer zeros) and
+    /// is listed in `missing`. With none, a grey array of one layer.
+    fn upload_detail(
+        &mut self,
+        scene: &Scene,
+        detail: Vec<frostbite::Result<Loaded>>,
+    ) -> Result<(Image, DetailLook)> {
+        let mut look: DetailLook = ([[0.0; 4]; 2], [[0.0; 4]; 8]);
+        // The first usable layer's format, mips and size; then every slot's bytes.
+        let mut like: Option<(vk::Format, Vec<Mip>, usize)> = None;
+        let mut layers: Vec<Option<Vec<u8>>> = Vec::new();
+        for (slot, (d, loaded)) in scene.detail.iter().zip(detail).take(8).enumerate() {
+            let read = loaded.map_err(|e| e.0).and_then(|(_, texture, data)| {
+                let format = self.sampled_format(&texture)?;
+                let mips = mips(&texture, data.len())?;
+                let mean = bc1_mean(&texture, &data).ok_or("not BC1: no average colour")?;
+                if let Some((f, m, size)) = &like
+                    && (*f, m, *size) != (format, &mips, data.len())
+                {
+                    return Err(format!(
+                        "{format:?} {mips:?}, unlike the first detail layer"
+                    ));
+                }
+                like.get_or_insert((format, mips, data.len()));
+                Ok((mean, data))
+            });
+            match read {
+                Ok((mean, data)) => {
+                    look.0[slot / 4][slot % 4] = d.scale;
+                    let [r, g, b] = mean.map(|m| 1.0 / m.max(1e-3));
+                    look.1[slot] = [r, g, b, 0.0];
+                    layers.push(Some(data));
+                }
+                Err(why) => {
+                    self.missing.push((d.texture.clone(), why));
+                    layers.push(None);
+                }
+            }
+        }
+        let gpu = self.gpu.clone();
+        let Some((format, mips, size)) = like else {
+            let grey = [Mip {
+                offset: 0,
+                width: 1,
+                height: 1,
+            }];
+            let data = [128, 128, 128, 255];
+            let image =
+                Image::sampled_array(&gpu, vk::Format::R8G8B8A8_UNORM, &grey, (1, 4), &data)?;
+            return Ok((image, ([[0.0; 4]; 2], [[0.0; 4]; 8])));
+        };
+        let mut data = Vec::with_capacity(size * layers.len());
+        for layer in layers {
+            match layer {
+                Some(bytes) => data.extend(bytes),
+                None => data.resize(data.len() + size, 0),
+            }
+        }
+        let count = (data.len() / size) as u32;
+        let image = Image::sampled_array(&gpu, format, &mips, (count, size as u64), &data)?;
+        self.texture_bytes += data.len() as u64;
+        Ok((image, look))
+    }
+
+    /// Uploads one loaded texture; on failure, its name if known and why.
+    fn upload(
+        &mut self,
+        loaded: frostbite::Result<Loaded>,
+    ) -> std::result::Result<Image, (Option<String>, String)> {
+        let (name, texture, data) = loaded.map_err(|e| (None, e.0))?;
+        let fail = |why: String| (Some(name.clone()), why);
+        let format = self.sampled_format(&texture).map_err(fail)?;
         let mips = mips(&texture, data.len()).map_err(fail)?;
         let image = Image::sampled(&self.gpu, format, &mips, &data).map_err(|e| fail(e.0))?;
         self.texture_bytes += data.len() as u64;
@@ -554,10 +665,13 @@ impl ZoneRenderer {
                     );
                     look = Some(offset);
                 }
-                let wanted = draw
-                    .texture
-                    .and_then(|t| self.texture_sets.get(t as usize).copied())
-                    .unwrap_or(0);
+                let wanted = if pass == Pass::Ground {
+                    self.ground_set
+                } else {
+                    draw.texture
+                        .and_then(|t| self.texture_sets.get(t as usize).copied())
+                        .unwrap_or(0)
+                };
                 if set != Some(wanted) {
                     d.cmd_bind_descriptor_sets(
                         cmd,
@@ -606,6 +720,8 @@ impl Drop for ZoneRenderer {
 /// Triangle lists: positions, texture coordinates and colours per vertex, the
 /// transform per instance; depth test (reversed depth) and write; no culling, since
 /// transforms may mirror. `fragment` is the fragment shader's SPIR-V and entry point.
+/// The ground has its own vertex shader, in world space, which reads the texture
+/// coordinates' 8 bytes as two sets of four weights.
 /// A decal blends by its alpha, doesn't write depth, and is pulled a little towards
 /// the eye so it stays over the road it lies on.
 fn pipeline(
@@ -616,7 +732,12 @@ fn pipeline(
     pass: Pass,
 ) -> Result<vk::Pipeline> {
     let d = &gpu.device;
-    let vs = shader_module(gpu, VERT)?;
+    let (vertex, vertex_entry) = if pass == Pass::Ground {
+        GROUND_VERT
+    } else {
+        VERT
+    };
+    let vs = shader_module(gpu, vertex)?;
     let fs = match shader_module(gpu, fragment) {
         Ok(fs) => fs,
         Err(e) => {
@@ -628,7 +749,7 @@ fn pipeline(
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::VERTEX)
             .module(vs)
-            .name(c"vs_main"),
+            .name(vertex_entry),
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::FRAGMENT)
             .module(fs)
@@ -663,17 +784,25 @@ fn pipeline(
         offset,
     };
     let row = vk::Format::R32G32B32A32_SFLOAT;
-    let attributes = [
+    let bytes = vk::Format::R8G8B8A8_UNORM;
+    let mesh = [
         attribute(0, 0, vk::Format::R32G32B32_SFLOAT, 0),
         attribute(1, 1, row, 0),
         attribute(2, 1, row, 16),
         attribute(3, 1, row, 32),
         attribute(4, 2, vk::Format::R32G32_SFLOAT, 0),
-        attribute(5, 3, vk::Format::R8G8B8A8_UNORM, 0),
+        attribute(5, 3, bytes, 0),
     ];
+    let ground = [
+        attribute(0, 0, vk::Format::R32G32B32_SFLOAT, 0),
+        attribute(4, 2, bytes, 0),
+        attribute(5, 3, bytes, 0),
+        attribute(6, 2, bytes, 4),
+    ];
+    let attributes: &[_] = if pass == Pass::Ground { &ground } else { &mesh };
     let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
         .vertex_binding_descriptions(&bindings)
-        .vertex_attribute_descriptions(&attributes);
+        .vertex_attribute_descriptions(attributes);
     let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
     let viewport = vk::PipelineViewportStateCreateInfo::default()

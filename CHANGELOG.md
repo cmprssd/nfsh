@@ -4,6 +4,22 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-11-01
+
+### Changed
+
+- `nfsh view` draws the ground sharp up close: each terrain layer's own texture
+  (dry grass, earth, gravel, sand) is laid over the ground's colours as detail,
+  weighted by the layer's masks and repeated at the scale the game's own terrain
+  shaders use (field grass every 10 m, mega grass every 5 m). From afar the colours
+  stay the same as before.
+
+### Not yet
+
+- The roads' terrain layers (their own maps hold something other than plain colour),
+  the layers' normal maps, and the ground's scattered grass and bushes are not drawn
+  yet; at most eight layers get detail in one view.
+
 ## [0.14.0] - 2026-11-01
 
 ### Changed
