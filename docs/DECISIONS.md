@@ -405,3 +405,18 @@ The plan, one PR each (decided by Claude, pending review):
   X,Y,Z,YAW,PITCH` starts somewhere other than the overview.** Why: the toggle is one
   key, and a fixed camera lets a screenshot look closely (it showed the textures'
   orientation) and will be the baseline's camera positions.
+
+## 2026-11-01: The ground under a zone (decided by Claude, pending review)
+
+- **The viewer adds the drivable surfaces near the zone: from all 66 drivable-surface
+  zones, the placements whose origin lies within 150 m of the zone's own placements.**
+  Why: roads are on their own coarser grid, and nothing found says which art zones a
+  drivable zone covers; walking all 66 takes 1.5 s. A piece's origin is its middle
+  (road meshes span up to ~300 m), so 150 m reaches the pieces that overlap the zone.
+- **Road materials are drawn with the first colour texture, like every other mesh**,
+  which draws them pale: their shaders blend layers by masks over several texture
+  coordinate sets, which wait for a road shader.
+- **This release draws the roads, not the terrain.** Why: the terrain's tree, tiles and
+  heights are worked out (docs/FORMATS.md, "Terrain"), but not which nodes own a tile
+  record; matching tiles by their samples places only part of the city, and the viewer
+  must not depend on a guess. The terrain is the next task.

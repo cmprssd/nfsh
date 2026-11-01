@@ -4,6 +4,19 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] - 2026-11-01
+
+### Added
+
+- `nfsh view` draws the roads under and around the zone: the speedway's track, the
+  streets, car parks and bridges come from Palm City's drivable-surface zones (zone
+  495 gains 341 pieces). Their asphalt is drawn paler than in the game for now.
+
+### Not yet
+
+- The terrain (the grass and earth between the roads) is still black: its format is
+  partly worked out (docs/FORMATS.md, "Terrain").
+
 ## [0.10.0] - 2026-10-31
 
 ### Added

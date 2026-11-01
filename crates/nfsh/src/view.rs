@@ -28,6 +28,9 @@ use crate::level::{SUPERBUNDLE, zone_bundle};
 
 /// The window's first size, and the screenshot's.
 const SIZE: (u32, u32) = (1280, 720);
+/// How far beyond the zone's own placements its drivable surfaces are taken from,
+/// in metres: a road piece's origin can sit this far from the art over it.
+const ROAD_MARGIN: f32 = 150.0;
 /// How often the title's frame rate is updated.
 const TITLE_EVERY: Duration = Duration::from_millis(500);
 
@@ -161,11 +164,13 @@ fn renderer(
 /// it could not.
 fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
     let start = Instant::now();
-    let zone = Level::new(store, SUPERBUNDLE)?.zone(name)?;
+    let mut level = Level::new(store, SUPERBUNDLE)?;
+    let mut zone = level.zone(name)?;
+    let roads = level.add_drivable_surfaces(&mut zone, ROAD_MARGIN)?;
     let mut meshes = Meshes::new(store)?;
     let scene = scene::build(&zone, |m| scene::first_lod(&mut meshes, m));
     eprintln!(
-        "{name}: {} placements of {} meshes; {} vertices, {} triangles, {} draws; read in {:.1} s",
+        "{name}: {} placements ({roads} of them drivable surfaces) of {} meshes; {} vertices, {} triangles, {} draws; read in {:.1} s",
         zone.placements.len(),
         zone.meshes.len(),
         scene.positions.len(),
