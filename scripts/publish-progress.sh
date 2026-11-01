@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Builds the progress page and publishes it to GitHub Pages: the page is
-# scripts/progress_page.html plus scripts/progress.py's numbers (data.json). The
-# gh-pages branch holds the page alone, as one commit replaced on every publish, so main
-# stays free of generated files and the repository doesn't grow with each refresh. Run
-# it from the updated main after each merge.
+# Builds the progress page (scripts/progress_page.py) and publishes it to GitHub Pages:
+# the gh-pages branch holds the page alone, as one commit replaced on every publish, so
+# main stays free of the game's imagery and the repository doesn't grow with each
+# refresh. Run it from the updated main after each merge, once bench/history.sh has
+# rendered any new release.
 # Usage: scripts/publish-progress.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 git fetch -q origin main
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] ||
 	{ echo "publish from main as merged (HEAD is not origin/main)" >&2; exit 1; }
+work=$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')")/.nfsh
+out="$work/progress-page"  # kept between runs: images already converted are reused
+rm -f "$out/data.json" "$out/index.html"
+uv run -q --with numpy --with pillow python scripts/progress_page.py "$out" --work "$work"
 site=$(mktemp -d)
 trap 'rm -rf "$site"' EXIT
-python3 scripts/progress.py --json "$site/data.json"
-cp scripts/progress_page.html "$site/index.html"
+cp -r "$out"/. "$site"
 touch "$site/.nojekyll"
 remote=$(git remote get-url origin)
 source=$(git rev-parse --short HEAD)

@@ -6,20 +6,24 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: one reading column; the install first (what nfsh has to shrink), then how the work went. */
+/* Layout: one reading column; the renders first (what the work looks like), then the
+   install (what nfsh has to shrink), the milestones and how the work went.
+   Monochrome (the cmprssd rule): greys only, from --ink (strongest) to --ink4; series are
+   told apart by lightness, dashes, markers and labels. Only the renders keep colour. */
 :root {
-  --bg: #f1efec; --panel: #ffffff; --fg: #17161a; --muted: #5f5b63; --rule: #dcd8d2;
-  --accent: #d2491f; --accent-soft: #f8e3da; --second: #2b6cb0; --good: #1f8a5b; --dead: #a8a29a;
+  --bg: #f2f2f2; --panel: #ffffff; --fg: #141414; --muted: #5e5e5e; --rule: #d8d8d8;
+  --ink: #141414; --ink2: #5e5e5e; --ink3: #9a9a9a; --ink4: #c8c8c8;
   --display: "Archivo", "Arial Narrow", system-ui, sans-serif;
   --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --bg: #121115; --panel: #1b1a1f; --fg: #ebe8e4; --muted: #a29da6; --rule: #2e2c33;
-  --accent: #ff7a4d; --accent-soft: #3a2119; --second: #79a8e8; --good: #4cc38a; --dead: #5d5862; color-scheme: dark } }
+  --bg: #111111; --panel: #1a1a1a; --fg: #ececec; --muted: #a2a2a2; --rule: #2f2f2f;
+  --ink: #ececec; --ink2: #a8a8a8; --ink3: #6c6c6c; --ink4: #3e3e3e; color-scheme: dark } }
 :root[data-theme="dark"] {
-  --bg: #121115; --panel: #1b1a1f; --fg: #ebe8e4; --muted: #a29da6; --rule: #2e2c33;
-  --accent: #ff7a4d; --accent-soft: #3a2119; --second: #79a8e8; --good: #4cc38a; --dead: #5d5862; color-scheme: dark }
+  --bg: #111111; --panel: #1a1a1a; --fg: #ececec; --muted: #a2a2a2; --rule: #2f2f2f;
+  --ink: #ececec; --ink2: #a8a8a8; --ink3: #6c6c6c; --ink4: #3e3e3e; color-scheme: dark }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 var(--body); }
 .wrap { max-width: 1120px; margin: 0 auto; padding-block: 28px 64px;
   padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
@@ -29,7 +33,7 @@ h1 { font-size: clamp(40px, 7vw, 72px); font-weight: 800; letter-spacing: -0.01e
 h2 { font-size: 30px; font-weight: 700; }
 h3 { font-size: 18px; font-weight: 700; font-stretch: 90%; margin-bottom: 10px; }
 p { margin: 0; max-width: 68ch; }
-a { color: var(--accent); }
+a { color: var(--fg); text-decoration-thickness: 1px; text-underline-offset: 2px; }
 .muted { color: var(--muted); }
 .eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 section { display: grid; gap: 18px; min-width: 0; }
@@ -39,19 +43,41 @@ header { display: grid; gap: 18px; }
 .tile b { font: 700 30px/1 var(--display); font-stretch: 80%; font-variant-numeric: tabular-nums; }
 .tile span { font-size: 13px; color: var(--muted); }
 
-/* One horizontal bar split into parts, with a legend under it. */
-.stack { display: flex; height: 34px; border: 1px solid var(--rule); background: var(--panel); overflow: hidden; }
+/* Before and after: two renders of one view stacked, the later one clipped at the handle. */
+.pick { display: flex; flex-wrap: wrap; gap: 6px; }
+.pick button { font: 500 13px var(--mono); padding: 6px 10px; border: 1px solid var(--rule); background: var(--panel); color: var(--fg); cursor: pointer; }
+.pick button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.compare { position: relative; aspect-ratio: 16 / 9; background: var(--panel); border: 1px solid var(--rule); overflow: hidden; touch-action: none; cursor: ew-resize; user-select: none; }
+.compare img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.compare .missing { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font: 13px var(--mono); }
+.compare .handle { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #fff; box-shadow: 0 0 0 1px #000; pointer-events: none; }
+.compare .tag { position: absolute; top: 10px; font: 500 12px var(--mono); padding: 3px 7px; background: rgba(0, 0, 0, .72); color: #fff; pointer-events: none; }
+.compare .tag.l { left: 10px; } .compare .tag.r { right: 10px; }
+.caption { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; align-items: baseline; }
+.caption label { font: 13px var(--mono); color: var(--muted); }
+.caption select { font: 13px var(--mono); background: var(--panel); color: var(--fg); border: 1px solid var(--rule); padding: 3px 6px; }
+.timeline { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+.timeline button { all: unset; box-sizing: border-box; background: var(--panel); padding: 8px 10px; cursor: pointer; display: grid; gap: 2px; font-size: 13px; }
+.timeline button:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+.timeline button b { font: 500 12px var(--mono); }
+.timeline button span { color: var(--muted); line-height: 1.3; }
+.timeline button i { font: normal 11px var(--mono); color: var(--muted); }
+.timeline button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.timeline button[aria-pressed="true"] span, .timeline button[aria-pressed="true"] i { color: var(--bg); opacity: .8; }
+
+/* One horizontal bar split into parts, with a legend under it: greys and hatching. */
+.stack { display: flex; height: 34px; border: 1px solid var(--rule); background: var(--panel); overflow: hidden; gap: 2px; }
 .stack i { display: block; height: 100%; min-width: 2px; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; }
 .legend span { display: inline-flex; gap: 6px; align-items: center; }
-.legend i { width: 11px; height: 11px; display: inline-block; border-radius: 2px; }
+.legend i { width: 11px; height: 11px; display: inline-block; border: 1px solid var(--ink3); }
 .legend b { font: 500 13px var(--mono); }
 
 .bars { display: grid; gap: 6px; }
 .bars .row { display: grid; grid-template-columns: minmax(0, 15em) 1fr 6.5em; gap: 10px; align-items: center; font-size: 13px; }
 .bars .row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bars .row .track { height: 14px; background: var(--rule); }
-.bars .row .track i { display: block; height: 100%; background: var(--accent); }
+.bars .row .track i { display: block; height: 100%; background: var(--ink); }
 .bars .row .v { text-align: right; font: 13px var(--mono); font-variant-numeric: tabular-nums; }
 @media (max-width: 560px) { .bars .row { grid-template-columns: minmax(0, 1fr) 6em; } .bars .row .track { grid-column: 1 / -1; grid-row: 2; } }
 
@@ -67,10 +93,10 @@ td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space:
 .tablewrap { overflow-x: auto; }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; }
 .two > * { min-width: 0; }
-.state { font: 500 12px var(--mono); padding: 3px 7px; border-radius: 3px; white-space: nowrap; }
-.done { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
-.next { background: var(--accent-soft); color: var(--accent); }
-.later { color: var(--muted); border: 1px solid var(--rule); }
+.state { font: 500 12px var(--mono); padding: 3px 7px; border-radius: 3px; display: inline-block; }
+.done { background: var(--ink); color: var(--bg); }
+.next { border: 1px solid var(--ink); }
+.later { color: var(--muted); border: 1px dashed var(--ink3); }
 footer { font-size: 13px; color: var(--muted); display: grid; gap: 6px; border-top: 1px solid var(--rule); padding-top: 18px; }
 code { font: 13px var(--mono); }
 </style>
@@ -82,6 +108,26 @@ code { font: 13px var(--mono); }
     <p id="lede" class="muted"></p>
     <div class="tiles" id="tiles"></div>
   </header>
+
+  <section aria-labelledby="h-before" id="before">
+    <div class="eyebrow">What it looks like</div>
+    <h2 id="h-before">The same view, release by release</h2>
+    <p class="muted">Every release since 0.10.0 is rebuilt and draws the same cameras over the speedway (zone 495),
+      headless on the same PC. Pick a release: it is on the right, the release before it on the left. Drag across the picture to compare.</p>
+    <div class="pick" id="views" role="group" aria-label="View"></div>
+    <div class="compare" id="compare" aria-label="Before and after: drag to compare">
+      <img id="imgBefore" alt="" draggable="false">
+      <img id="imgAfter" alt="" draggable="false">
+      <div class="missing" id="missing" hidden></div>
+      <span class="tag l" id="tagBefore"></span><span class="tag r" id="tagAfter"></span>
+      <div class="handle" id="handle"></div>
+    </div>
+    <div class="caption">
+      <span id="what"></span>
+      <label>before <select id="beforeSel"></select></label>
+    </div>
+    <div class="timeline" id="timeline" role="group" aria-label="Release"></div>
+  </section>
 
   <section aria-labelledby="h-install">
     <div class="eyebrow">What has to shrink</div>
@@ -119,7 +165,8 @@ code { font: 13px var(--mono); }
   <footer>
     <div id="foot"></div>
     <div>Built by <code>scripts/publish-progress.sh</code> from <code>scripts/progress.py</code>'s counts
-      (git, the tree and <code>docs/INVENTORY.md</code>). Served from the <code>gh-pages</code> branch.
+      (git, the tree and <code>docs/INVENTORY.md</code>), the milestones of <code>docs/OVERVIEW.md</code> and
+      <code>bench/history.sh</code>'s renders. Served from the <code>gh-pages</code> branch.
       How it all works: <a href="https://github.com/cmprssd/nfsh/blob/main/docs/OVERVIEW.md">docs/OVERVIEW.md</a>.</div>
   </footer>
 </div>
@@ -140,15 +187,10 @@ const SVG = "http://www.w3.org/2000/svg";
 const svg = (tag, attrs) => { const e = document.createElementNS(SVG, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
 const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const day = (d) => `${months[+d.slice(5, 7) - 1]} ${+d.slice(8)}`;
-// Milestones as docs/OVERVIEW.md lists them; edit both together.
-const ROAD = [
-  ["Data inventory: read the install's tables", "done", "done (0.1.0)"],
-  ["Read entry contents: decompress the cas blocks", "done", "done (0.2.0)"],
-  ["Import step: nfsh's own compact copy of the data", "next", "in progress (0.3.0: dead data dropped)"],
-  ["Palm City viewer: fly-through, frame time, day/night", "later", "not started"],
-  ["Baseline against the original: same camera path, same PC, screenshots", "later", "not started"],
-  ["One drivable car, then races, police, campaign", "later", "later"],
-];
+// Fills for parts of a bar, darkest first, then hatched: no hue anywhere.
+const FILLS = ["var(--ink)", "var(--ink2)", "var(--ink3)", "var(--ink4)",
+  "repeating-linear-gradient(45deg, var(--ink2) 0 2px, transparent 2px 6px)",
+  "repeating-linear-gradient(-45deg, var(--ink3) 0 1px, transparent 1px 5px)"];
 
 fetch("data.json").then((r) => r.json()).then(render);
 
@@ -165,8 +207,9 @@ function render(d) {
     [fmt(d.tests), "tests"],
   ];
   for (const [b, s] of tiles) $("#tiles").append(el("div", { class: "tile" }, [el("b", { text: b }), el("span", { text: s })]));
+  before(d.views || [], d.releases || []);
   install(i);
-  road();
+  road(d.road || []);
   perDay(d.prs_per_day);
   growth(d.growth);
   crates(d.crates);
@@ -174,6 +217,54 @@ function render(d) {
   $("#foot").textContent = `${fmt(d.commits)} commits, ${fmt(d.prs)} PRs: ` +
     Object.entries(d.pr_types).map(([t, n]) => `${n} ${t}`).join(", ") +
     `. ${d.decisions.entries} decisions recorded, ${d.decisions.owner} chosen by the owner, ${d.decisions.claude} by Claude pending review.`;
+}
+
+function before(views, releases) {
+  if (!views.length || !releases.some((r) => Object.keys(r.shots).length)) { $("#before").hidden = true; return; }
+  const src = (r, v) => r && r.shots[v] ? `img/h/${r.tag}/${v}.webp` : null;
+  let view = views[0].name, after = releases.length - 1, prev = null, split = 50;
+  const viewButtons = views.map((v) => el("button", { type: "button", text: v.name, title: v.what, onclick: () => { view = v.name; prev = null; show(); } }));
+  $("#views").append(...viewButtons);
+  const relButtons = releases.map((r, j) => el("button", { type: "button", onclick: () => { after = j; prev = null; show(); } },
+    [el("b", { text: r.tag }), el("span", { text: r.label }), el("i", {})]));
+  $("#timeline").append(...relButtons);
+  $("#beforeSel").addEventListener("change", (e) => { prev = +e.target.value; show(); });
+
+  function show() {
+    // The release before the chosen one that drew this view, unless one was picked.
+    let b = prev;
+    if (b === null || b >= after) { b = after - 1; while (b >= 0 && !src(releases[b], view)) b--; }
+    const A = releases[after], B = b >= 0 ? releases[b] : null, v = views.find((x) => x.name === view);
+    viewButtons.forEach((x) => x.setAttribute("aria-pressed", x.textContent === view));
+    relButtons.forEach((x, j) => {
+      x.setAttribute("aria-pressed", j === after);
+      const s = releases[j].shots[view];
+      x.querySelector("i").textContent = !s ? "not drawn" : s.changed === null ? releases[j].date : `${releases[j].date} · ${s.changed}% changed`;
+    });
+    $("#beforeSel").replaceChildren(...releases.slice(0, after).map((r, j) =>
+      el("option", { value: j, text: r.tag + (src(r, view) ? "" : " (not drawn)") })));
+    if (B) $("#beforeSel").value = b;
+    const sa = src(A, view), sb = src(B, view);
+    $("#imgAfter").hidden = !sa; if (sa) { $("#imgAfter").src = sa; $("#imgAfter").alt = `${view}, drawn by ${A.tag}`; }
+    $("#imgBefore").hidden = !sb; if (sb) { $("#imgBefore").src = sb; $("#imgBefore").alt = `${view}, drawn by ${B.tag}`; }
+    $("#missing").hidden = !!(sa || sb); $("#missing").textContent = "not drawn by these releases";
+    $("#tagAfter").textContent = A.tag; $("#tagBefore").textContent = B ? B.tag : "—";
+    $("#what").textContent = `${v.what} (${v.time}). ${A.tag}: ${A.label}, ${A.date}.`;
+    place();
+  }
+  function place() {
+    $("#imgAfter").style.clipPath = `inset(0 0 0 ${split}%)`;
+    $("#handle").style.left = `${split}%`;
+  }
+  const box = $("#compare");
+  const drag = (e) => { const r = box.getBoundingClientRect(); split = Math.min(100, Math.max(0, 100 * (e.clientX - r.left) / r.width)); place(); };
+  box.addEventListener("pointerdown", (e) => { box.setPointerCapture(e.pointerId); drag(e); });
+  box.addEventListener("pointermove", (e) => { if (box.hasPointerCapture(e.pointerId)) drag(e); });
+  box.tabIndex = 0;
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") { split = Math.min(100, Math.max(0, split + (e.key === "ArrowLeft" ? -5 : 5))); place(); e.preventDefault(); }
+  });
+  show();
 }
 
 function stack(bar, key, parts) {
@@ -188,11 +279,10 @@ function install(i) {
   $("#installNote").textContent = `Measured by nfsh inventory on ${i.measured}, with the patch applied. ` +
     `${fmt(i.refs.ebx)} ebx, ${fmt(i.refs.res)} res and ${fmt(i.refs.chunks)} chunk references name ` +
     `${fmt(i.distinct.ebx)}, ${fmt(i.distinct.res)} and ${fmt(i.distinct.chunks)} distinct entries.`;
-  const hues = ["var(--accent)", "var(--second)", "var(--good)", "var(--dead)", "var(--muted)", "var(--rule)"];
-  stack($("#kinds"), $("#kindsKey"), i.kinds.map((k, j) => ({ label: `${k.what} (${fmt(k.files)})`, v: k.gib, c: hues[j % hues.length] })));
+  stack($("#kinds"), $("#kindsKey"), i.kinds.map((k, j) => ({ label: `${k.what} (${fmt(k.files)})`, v: k.gib, c: FILLS[j % FILLS.length] })));
   stack($("#live"), $("#liveKey"), [
-    { label: "still read", v: i.live_gib, c: "var(--accent)" },
-    { label: "replaced by the patch, dead", v: i.dead_gib, c: "var(--dead)" },
+    { label: "still read", v: i.live_gib, c: FILLS[0] },
+    { label: "replaced by the patch, dead", v: i.dead_gib, c: FILLS[3] },
   ]);
   const top = Math.max(...i.superbundle_sizes.map((s) => s.gib));
   for (const s of i.superbundle_sizes.filter((s) => s.gib >= 0.01))
@@ -200,9 +290,12 @@ function install(i) {
       el("div", { class: "track" }, [el("i", { style: `width:${100 * s.gib / top}%` })]), el("span", { class: "v", text: size(s.gib) })]));
 }
 
-function road() {
-  ROAD.forEach(([what, cls, state], j) => $("#road").append(el("tr", {}, [el("td", { class: "n", text: j + 1 }), el("td", { text: what }),
-    el("td", {}, [el("span", { class: `state ${cls}`, text: state })])])));
+function road(rows) {
+  for (const r of rows) {
+    const cls = r.state.startsWith("done") ? "done" : /^(started|partly|in progress)/.test(r.state) ? "next" : "later";
+    $("#road").append(el("tr", {}, [el("td", { class: "n", text: r.n }), el("td", { text: r.what }),
+      el("td", {}, [el("span", { class: `state ${cls}`, text: r.state })])]));
+  }
 }
 
 function perDay(pd) {
@@ -214,7 +307,7 @@ function perDay(pd) {
   for (let v = 0; v <= top; v += step) { s.append(svg("line", { x1: L, x2: W, y1: y(v), y2: y(v), class: "grid" })); const t = svg("text", { x: L - 6, y: y(v) + 4, "text-anchor": "end" }); t.textContent = v; s.append(t); }
   days.forEach(([d, n], j) => {
     const cx = L + 3 + j * bw + (bw - 4) / 2;
-    const r = svg("rect", { x: L + 3 + j * bw, y: y(n), width: bw - 4, height: y(0) - y(n), rx: 1 }); r.style.fill = "var(--accent)"; s.append(r);
+    const r = svg("rect", { x: L + 3 + j * bw, y: y(n), width: bw - 4, height: y(0) - y(n), rx: 1 }); r.style.fill = "var(--ink)"; s.append(r);
     const t = svg("text", { x: cx, y: H - B + 14, "text-anchor": "middle" }); t.textContent = day(d); s.append(t);
     const c = svg("text", { x: cx, y: y(n) - 4, "text-anchor": "middle" }); c.textContent = n; s.append(c);
   });
@@ -233,17 +326,21 @@ function growth(g) {
     const v = topL * k / 4, t = svg("text", { x: L - 6, y: y(v, topL) + 4, "text-anchor": "end" });
     s.append(svg("line", { x1: L, x2: W - R, y1: y(v, topL), y2: y(v, topL), class: "grid" }));
     t.textContent = v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v; s.append(t);
-    const u = svg("text", { x: W - R + 6, y: y(topT * k / 4, topT) + 4 }); u.textContent = Math.round(topT * k / 4); u.style.fill = "var(--good)"; s.append(u);
+    const u = svg("text", { x: W - R + 6, y: y(topT * k / 4, topT) + 4 }); u.textContent = Math.round(topT * k / 4); s.append(u);
   }
-  const line = (key, top, color) => {
+  // Rust lines: a solid dark line with dots; tests: a dashed grey line with squares.
+  const line = (key, top, color, dash, square) => {
     const p = svg("path", { d: g.map((pt, j) => `${j ? "L" : "M"}${x(j).toFixed(1)},${y(pt[key], top).toFixed(1)}`).join(""), fill: "none", "stroke-width": 2 });
-    p.style.stroke = color; s.append(p);
-    g.forEach((pt, j) => { const c = svg("circle", { cx: x(j), cy: y(pt[key], top), r: 3 }); c.style.fill = color; s.append(c); });
+    p.style.stroke = color; if (dash) p.setAttribute("stroke-dasharray", dash); s.append(p);
+    g.forEach((pt, j) => {
+      const m = square ? svg("rect", { x: x(j) - 3, y: y(pt[key], top) - 3, width: 6, height: 6 }) : svg("circle", { cx: x(j), cy: y(pt[key], top), r: 3 });
+      m.style.fill = color; s.append(m);
+    });
   };
-  line("rust_lines", topL, "var(--accent)"); line("tests", topT, "var(--good)");
+  line("rust_lines", topL, "var(--ink)", null, false); line("tests", topT, "var(--ink3)", "5 4", true);
   g.forEach((p, j) => { const t = svg("text", { x: x(j), y: H - B + 16, "text-anchor": "middle" }); t.textContent = `#${p.pr}`; s.append(t); });
-  const k1 = svg("text", { x: L, y: H - 6 }); k1.textContent = "Rust lines (left)"; k1.style.fill = "var(--accent)"; s.append(k1);
-  const k2 = svg("text", { x: L + 150, y: H - 6 }); k2.textContent = "tests (right)"; k2.style.fill = "var(--good)"; s.append(k2);
+  const k1 = svg("text", { x: L, y: H - 6 }); k1.textContent = "● Rust lines, solid (left)"; s.append(k1);
+  const k2 = svg("text", { x: L + 190, y: H - 6 }); k2.textContent = "■ tests, dashed (right)"; s.append(k2);
   $("#growth").append(s);
 }
 

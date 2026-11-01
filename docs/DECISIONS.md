@@ -638,3 +638,23 @@ the meshes' alone), the ground's layers to follow.
   through at its edges. The shoulder's red and green (also a normal) are left out.
   Why: the same split as the colour and the heights; how the original mixes them was
   not read from its programs.
+
+## 2026-11-01: The progress page's before and after
+
+The owner asked for the before-and-after comparisons on the progress page, and for the
+page to be monochrome, as a rule for every cmprssd project (`~/projects/cmprssd/CLAUDE.md`).
+
+- **Monochrome**: greys only, in light and dark; bars are told apart by lightness and
+  hatching, the growth chart's two lines by dashes and markers, the milestones' states
+  by fill, outline and dashed outline. Only the renders keep their colour.
+- **Every release since 0.10.0, at five fixed views of zone 495** (`bench/history-views.txt`),
+  each release rebuilt from its tag. Why: 0.10.0 is the first with `--camera`; tags
+  name every visible step already, so there is no milestones list to keep up, and a
+  release's label comes from this repo's milestone table. (decided by Claude, pending
+  review: which views)
+- **Rendered on Windows, headless, on the real GPU** with the Windows toolchain. Why:
+  lavapipe takes about 6.5 minutes a shot from WSL; no window opens either way. Old
+  releases read today's store: its format has only gained readers since 0.10.0.
+- **A release is compared with the one before it**, any earlier one on request, and
+  each shows the share of pixels it changed (more than 8 in a channel). There is no
+  original to compare against until milestone 5's baseline.

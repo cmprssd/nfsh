@@ -19,6 +19,9 @@ work="$win_home/.nfsh"
 places=(
 	"Linux build|$ROOT/target|cargo output (WSL)"
 	"Windows build|$work/target-msvc|cargo output (MSVC)"
+	"History build|$work/target-history|bench/history.sh's build, removed when it ends"
+	"History renders|$work/history|each release's shots for the progress page"
+	"Progress page|$work/progress-page|the page as last built, its images reused"
 	"local-ci logs|$HOME/.cache/local-ci/cmprssd/nfsh|one log per checked commit"
 )
 

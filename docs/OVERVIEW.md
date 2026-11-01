@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-11-01 (27 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-11-01 (28 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -115,7 +115,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 30 decision entries, 10 chosen by the owner, 17 made by Claude for review.
+  So far: 31 decision entries, 10 chosen by the owner, 17 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -133,15 +133,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-28 commits, 27 merged PRs from 2026-10-30 to 2026-11-01, on 3 working days: 22 feat, 4
-docs, 1 ci. About 24,803 lines added and 1,292 removed; 61 tracked files.
+29 commits, 28 merged PRs from 2026-10-30 to 2026-11-01, on 3 working days: 23 feat, 4
+docs, 1 ci. About 25,133 lines added and 1,344 removed; 63 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
     x-axis ["Oct 30", "Oct 31", "Nov 1"]
-    y-axis "PRs" 0 --> 15
-    bar [1, 13, 13]
+    y-axis "PRs" 0 --> 16
+    bar [1, 13, 14]
 ```
 <!-- /progress -->
 
@@ -203,13 +203,23 @@ From [BRIEF.md](BRIEF.md) and [DECISIONS.md](DECISIONS.md) (2026-10-31):
 
 ## Progress page
 
-The [progress page](https://cmprssd.github.io/nfsh/) tells the same story as charts: PRs
-per day, Rust lines and tests after every PR, the crates, and what the install holds. It
-is served from the `gh-pages` branch, which holds the page alone, so main stays free of
-anything generated. `scripts/publish-progress.sh` builds it from
-`scripts/progress.py --json` and `scripts/progress_page.html` and publishes it after
-each merge (see CLAUDE.md). It shows no game imagery yet; when the viewer renders, the
-before-and-after comparisons arrive as in swjkja, still only on `gh-pages`.
+The [progress page](https://cmprssd.github.io/nfsh/) tells the same story in pictures.
+It is served from the `gh-pages` branch, which holds the page alone, so the game's
+imagery stays off main. Like every cmprssd page it is monochrome: greys only, the
+renders alone in colour.
+
+- **Before and after:** the history views (`bench/history-views.txt`: the speedway's
+  barrels, the speedway from above at midday and at night, asphalt up close, a road's
+  edge) as every release since 0.10.0 drew them, rendered by `bench/history.sh`, with a
+  slider between a release and the one before it and the share of pixels each release
+  changed.
+- **The install:** where its bytes are, and what the patch left dead.
+- **The milestones:** this document's table, below.
+- **The numbers:** PRs per day, Rust lines and tests after every PR, the crates.
+
+`scripts/progress_page.py` builds it from these and from `scripts/progress.py`'s
+counts, and `scripts/publish-progress.sh` publishes it after each merge (see
+CLAUDE.md).
 
 ## Reproducing the numbers
 
@@ -218,4 +228,5 @@ before-and-after comparisons arrive as in swjkja, still only on `gh-pages`.
         WSLENV=NFSH_INSTALL:NFSH_STORE \
         scripts/cargo-msvc.sh test --workspace                    # Windows, install and store
     cargo run --release -- inventory "<install>" > out.md         # INVENTORY.md
+    bench/history.sh                                              # each release's renders
     python3 scripts/progress.py                                   # this page's numbers
