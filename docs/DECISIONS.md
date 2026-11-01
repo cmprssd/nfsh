@@ -485,3 +485,17 @@ Supersedes "The ground is one draw in plain grey" above.
 - **The colour is read as sRGB-encoded** (decided by Claude, pending review), like
   the meshes' colour textures. Why: read that way, the speedway's grass and asphalt
   come out as in the colour mosaic and match the road meshes' own asphalt beside them.
+
+## 2026-11-01: The ground's detail up close (chosen by the owner)
+
+- **Each layer's tiling is read from the terrain shaders' bytecode**: Heat stores no
+  `Tiling` constant for the terrain's `__2d` shaders; the tiling is compiled in
+  (docs/FORMATS.md, "Terrain layers"). The owner chose reading it over one fixed
+  tiling tuned by eye. Why: it is the original's value. Only the numbers we find and
+  our own description of where they are go into the repo, never the bytecode or a
+  disassembly of it (the public-repo rule).
+- **The layer textures are detail over the colour image**: the tile's colour stays
+  the ground's base, and each layer's diffuse, divided by its own average colour and
+  weighted by its page, adds the fine detail. The owner chose this over mixing the
+  layer textures alone. Why: from afar the colours stay exactly the original's, and
+  the tints and blend that are compiled into the shaders don't have to be guessed.
