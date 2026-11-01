@@ -4,6 +4,7 @@
 
 pub mod cas;
 pub mod dbobject;
+pub mod dxbc;
 pub mod ebx;
 pub mod frames;
 pub mod install;

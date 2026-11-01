@@ -499,3 +499,16 @@ Supersedes "The ground is one draw in plain grey" above.
   weighted by its page, adds the fine detail. The owner chose this over mixing the
   layer textures alone. Why: from afar the colours stay exactly the original's, and
   the tints and blend that are compiled into the shaders don't have to be guessed.
+- **Each layer takes its primary scale** (owner, 2026-11-01): its diffuse is drawn
+  once, at the finest scale at which every shader with the layer samples it straight
+  from the world position (mega grass 0.2 per metre for layer 1), or the finest
+  turned one when it has no direct one; the shaders' far-scale and turned extra
+  samples are left out (docs/FORMATS.md, "Shader programs"). Why: one sample per
+  layer keeps the ground's shader small and fast, and the primary scale is the one
+  that sets the look up close.
+- **A shared texture's scale is the layer's, not the texture's** (decided by Claude,
+  pending review): a scale counts for a layer only when all its shaders sample the
+  diffuse at it, so mega grass is 0.2 for layer 1 and 0.25 for layer 4, and a layer
+  whose shaders bind a diffuse without sampling it (layer 28) gets none. Why: two
+  layers sharing one bound texture sample it at their own scales, and going by the
+  texture would give one of them the other's.

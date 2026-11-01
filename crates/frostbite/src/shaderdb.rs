@@ -16,8 +16,13 @@ const BLOCKS: usize = 0x1C;
 /// between the second and third.
 const BLOCK_HEADER: usize = 56;
 const TEXTURE: usize = 16;
-/// Where Palm City's file holds the permutations and their count; the section
-/// between the blocks and them is not worked out, so this is not found from the file.
+/// Where Palm City's file holds the programs and their count, then the permutations
+/// and theirs; the sections between the blocks and them are not worked out, so these
+/// are not found from the file.
+const PROGRAM_COUNT_AT: usize = 0x39_8338;
+/// A program's record: 16 bytes, its GUID, then 16 bytes.
+const PROGRAM: usize = 48;
+const PROGRAM_GUID: usize = 16;
 const PERMUTATION_COUNT_AT: usize = 0x3D_0808;
 const PERMUTATIONS: usize = 0x3D_0810;
 /// A permutation's record, and where in it its parameter block and its program
@@ -43,7 +48,7 @@ pub struct Permutation {
     pub shader: u32,
     /// Its parameter block, an index into [`ShaderDb::blocks`].
     pub block: u32,
-    /// Its program's index among the bytecode res; not read yet.
+    /// Its program, an index into [`ShaderDb::programs`].
     pub program: u32,
 }
 
@@ -51,6 +56,8 @@ pub struct Permutation {
 pub struct ShaderDb {
     /// Each parameter block's textures, in the order it lists them.
     pub blocks: Vec<Vec<Binding>>,
+    /// Each program's GUID, as stored: its bytecode is the res [`program_name`] names.
+    pub programs: Vec<[u8; 16]>,
     pub permutations: Vec<Permutation>,
 }
 
@@ -64,9 +71,21 @@ impl ShaderDb {
             blocks.push(block.1);
             at += block.0;
         }
-        if at > PERMUTATION_COUNT_AT {
-            bail!("the blocks end at {at:#x}, past the permutations");
+        if at > PROGRAM_COUNT_AT {
+            bail!("the blocks end at {at:#x}, past the programs");
         }
+        let mut r = Reader::at(data, PROGRAM_COUNT_AT)?;
+        let count = r.u32_le()? as usize;
+        if count > (PERMUTATION_COUNT_AT - r.pos()) / PROGRAM {
+            bail!("{count} programs run past the permutations");
+        }
+        let programs = (0..count)
+            .map(|_| {
+                Ok(r.bytes(PROGRAM)?[PROGRAM_GUID..][..16]
+                    .try_into()
+                    .expect("16"))
+            })
+            .collect::<Result<Vec<[u8; 16]>>>()?;
         let count = Reader::at(data, PERMUTATION_COUNT_AT)?.u32_le()? as usize;
         let names = count
             .checked_mul(PERMUTATION)
@@ -84,14 +103,19 @@ impl ShaderDb {
             if block as usize >= blocks.len() {
                 bail!("permutation {p}: block {block} of {}", blocks.len());
             }
+            let program = word(PROGRAM_AT);
+            if program as usize >= programs.len() {
+                bail!("permutation {p}: program {program} of {}", programs.len());
+            }
             permutations.push(Permutation {
                 shader,
                 block,
-                program: word(PROGRAM_AT),
+                program,
             });
         }
         Ok(Self {
             blocks,
+            programs,
             permutations,
         })
     }
@@ -105,14 +129,34 @@ impl ShaderDb {
         Self::parse(&data).map_err(|e| Error(format!("{MAINLEVEL}: {e}")))
     }
 
+    /// The permutations of the shader whose name hash is `shader`.
+    pub fn permutations_of(&self, shader: u32) -> impl Iterator<Item = &Permutation> {
+        self.permutations.iter().filter(move |p| p.shader == shader)
+    }
+
     /// The textures the shader whose name hash is `shader` binds, in every
     /// permutation of it; empty when it has none.
     pub fn textures(&self, shader: u32) -> impl Iterator<Item = &Binding> {
-        self.permutations
-            .iter()
-            .filter(move |p| p.shader == shader)
+        self.permutations_of(shader)
             .flat_map(|p| &self.blocks[p.block as usize])
     }
+}
+
+/// The res holding the bytecode of the program whose GUID is `guid`:
+/// `shaders/bytecode/` and the GUID in its usual text form (its first three fields
+/// little-endian).
+pub fn program_name(guid: &[u8; 16]) -> String {
+    let g = crate::store::guid_order(*guid);
+    let hex =
+        |r: std::ops::Range<usize>| -> String { g[r].iter().map(|b| format!("{b:02x}")).collect() };
+    format!(
+        "shaders/bytecode/{}-{}-{}-{}-{}",
+        hex(0..4),
+        hex(4..6),
+        hex(6..8),
+        hex(8..10),
+        hex(10..16)
+    )
 }
 
 /// Reads the parameter block at `at`: its size and its textures.
@@ -179,6 +223,15 @@ pub(crate) mod tests {
         for b in blocks {
             d.extend_from_slice(&block(b));
         }
+        d.resize(PROGRAM_COUNT_AT, 0);
+        let programs = 100 + permutations.len();
+        d.extend_from_slice(&(programs as u32).to_le_bytes());
+        for i in 0..programs {
+            let mut record = [0; PROGRAM];
+            record[PROGRAM_GUID] = i as u8;
+            record[PROGRAM_GUID + 15] = 0xEE;
+            d.extend_from_slice(&record);
+        }
         d.resize(PERMUTATIONS, 0);
         put(
             &mut d,
@@ -222,6 +275,21 @@ pub(crate) mod tests {
         let a: Vec<_> = db.textures(0xA).map(|b| b.texture).collect();
         assert_eq!(a, [9, 7, 8]);
         assert_eq!(db.textures(0xC).count(), 0);
+        assert_eq!(db.programs.len(), 103);
+        assert_eq!(db.programs[101][0], 101);
+        assert_eq!(db.permutations_of(0xA).count(), 2);
+    }
+
+    #[test]
+    fn names_a_program_by_its_guid() {
+        let guid = [
+            0x89, 0x3e, 0x21, 0x62, 0xca, 0x77, 0xa2, 0x0f, 0xfb, 0x1c, 0x28, 0xcb, 0xac, 0xed,
+            0xee, 0x24,
+        ];
+        assert_eq!(
+            program_name(&guid),
+            "shaders/bytecode/62213e89-77ca-0fa2-fb1c-28cbacedee24"
+        );
     }
 
     #[test]
@@ -231,6 +299,19 @@ pub(crate) mod tests {
         let mut far = d.clone();
         put(&mut far, PERMUTATIONS + BLOCK_AT, &1u32.to_le_bytes());
         assert!(ShaderDb::parse(&far).is_err(), "a block out of range");
+        let mut program = d.clone();
+        put(
+            &mut program,
+            PERMUTATIONS + PROGRAM_AT,
+            &9999u32.to_le_bytes(),
+        );
+        assert!(ShaderDb::parse(&program).is_err(), "a program out of range");
+        let mut many = d.clone();
+        put(&mut many, PROGRAM_COUNT_AT, &u32::MAX.to_le_bytes());
+        assert!(
+            ShaderDb::parse(&many).is_err(),
+            "programs past the permutations"
+        );
         let mut big = d.clone();
         put(&mut big, BLOCKS, &(1u64 << 40).to_le_bytes());
         assert!(ShaderDb::parse(&big).is_err(), "a block past the end");

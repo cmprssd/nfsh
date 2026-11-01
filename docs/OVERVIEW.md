@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-11-01 (21 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-11-01 (22 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -54,7 +54,7 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
-3 crates in one Cargo workspace, 14,799 lines of Rust (sources and tests), 123 tests.
+3 crates in one Cargo workspace, 15,561 lines of Rust (sources and tests), 127 tests.
 <!-- /progress -->
 
 ```mermaid
@@ -72,7 +72,7 @@ flowchart BT
 <!-- progress:crates -->
 | Crate | Rust lines | Tests | What it does |
 |------|------:|------:|------|
-| `frostbite` | 9,190 | 83 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store, with every ebx's partition GUID; reads ebx partitions (types, instances, fields, arrays, references); walks a level's sub-levels and what each zone places (meshes in world space); reads mesh sets and decodes their geometry (LODs, sections, positions, texture coordinates, triangles); reads texture headers and their pixels (block-compressed mips, layers), and what each material names (its shader, textures and vector parameters); reads a time of day's sun, sky and exposure from its visual environment; reads the terrain's quadtree of tiles, their heightfields and colours, and builds the ground's mesh under an area, coloured; reads the terrain's layer tree (which layers each tile's pages are for), the level's shader database (each shader permutation's parameter block and the textures it binds) and so each terrain layer's own diffuse maps |
+| `frostbite` | 9,952 | 87 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store, with every ebx's partition GUID; reads ebx partitions (types, instances, fields, arrays, references); walks a level's sub-levels and what each zone places (meshes in world space); reads mesh sets and decodes their geometry (LODs, sections, positions, texture coordinates, triangles); reads texture headers and their pixels (block-compressed mips, layers), and what each material names (its shader, textures and vector parameters); reads a time of day's sun, sky and exposure from its visual environment; reads the terrain's quadtree of tiles, their heightfields and colours, and builds the ground's mesh under an area, coloured; reads the terrain's layer tree (which layers each tile's pages are for), the level's shader database (each shader permutation's parameter block, the textures it binds and its program) and so each terrain layer's own diffuse maps; reads a shader program's instructions far enough to find the scale each terrain layer's diffuse is drawn at |
 | `nfsh` | 2,225 | 15 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store, `reindex` lists its partition GUIDs, `ebx` prints a partition as text, `level` prints Palm City's bundles or one zone's placements, `mesh` prints a mesh's LODs and writes one as an .obj, `texture` prints a texture and writes it as a .dds, `view` flies through one zone in a window, textured and lit at midday or tealnight (or writes a screenshot) |
 | `render` | 3,384 | 25 | the Vulkan renderer (`nfsh-render`, Vulkan 1.3 through `ash`): device bring-up, a window's swapchain and frame loop with GPU timing, an offscreen target read back for screenshots and tests; packs a zone's placed meshes (first LOD) into one vertex, index and instance buffer and draws them with one instanced draw per section, each with its colour texture uploaded block-compressed as stored (grey when one can't be read), road asphalt as its tinted grey layer and road lines, cracks and tyre marks blended over it as decals, lit by the time of day's sun and sky, exposed and tonemapped, normals from the triangles; the ground under the zone as one more draw, in its tiles' colours |
 <!-- /progress -->
@@ -133,15 +133,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-22 commits, 21 merged PRs from 2026-10-30 to 2026-11-01, on 3 working days: 16 feat, 4
-docs, 1 ci. About 21,313 lines added and 883 removed; 60 tracked files.
+23 commits, 22 merged PRs from 2026-10-30 to 2026-11-01, on 3 working days: 17 feat, 4
+docs, 1 ci. About 22,154 lines added and 907 removed; 61 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
     x-axis ["Oct 30", "Oct 31", "Nov 1"]
     y-axis "PRs" 0 --> 15
-    bar [1, 13, 7]
+    bar [1, 13, 8]
 ```
 <!-- /progress -->
 
