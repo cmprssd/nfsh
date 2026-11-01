@@ -183,6 +183,13 @@ const COLOUR: [(&str, bool); 4] = [
     ("foregroundBasecolor", false),
 ];
 
+/// A vertex normal as the GPU reads it: four signed bytes, 127 being 1, the fourth
+/// 1 to say it is there.
+pub fn normal(n: [f32; 3]) -> [i8; 4] {
+    let byte = |x: f32| (x.clamp(-1.0, 1.0) * 127.0).round() as i8;
+    [byte(n[0]), byte(n[1]), byte(n[2]), 127]
+}
+
 /// The texture a material's colour comes from, and how it is shaded, for the
 /// material `m` of the shader named `shader`: road decals (shaders named
 /// `…transparentdcl…`) blend their `Diffuse` by `alphaSelector`, `Opacity` and
@@ -244,6 +251,9 @@ pub struct Scene {
     pub colours2: Vec<[u8; 4]>,
     /// The third texture coordinates, likewise.
     pub uvs3: Vec<[f32; 2]>,
+    /// One per position, in the mesh's space ([`normal`]); zero where a section has
+    /// none, which draws the triangle's own.
+    pub normals: Vec<[i8; 4]>,
     pub indices: Vec<u32>,
     pub instances: Vec<Instance>,
     pub draws: Vec<Draw>,
@@ -378,6 +388,12 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
                 Some(uvs) if uvs.len() == g.positions.len() => scene.uvs3.extend_from_slice(uvs),
                 _ => scene.uvs3.resize(scene.positions.len(), [0.0; 2]),
             }
+            match &g.frames {
+                Some(f) if f.len() == g.positions.len() => {
+                    scene.normals.extend(f.iter().map(|f| normal(f.normal)));
+                }
+                _ => scene.normals.resize(scene.positions.len(), [0; 4]),
+            }
             scene.indices.extend_from_slice(&g.indices);
             if g.indices.is_empty() {
                 continue;
@@ -428,6 +444,7 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
             scene.uvs2.truncate(first_vertex);
             scene.colours2.truncate(first_vertex);
             scene.uvs3.truncate(first_vertex);
+            scene.normals.truncate(first_vertex);
             scene.indices.truncate(first_index);
             scene
                 .failed
@@ -479,6 +496,7 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
     scene.uvs2.resize(scene.positions.len(), [0.0; 2]);
     scene.colours2.resize(scene.positions.len(), [0; 4]);
     scene.uvs3.resize(scene.positions.len(), [0.0; 2]);
+    scene.normals.resize(scene.positions.len(), [0; 4]);
     scene.ground_map = Some(ground.map.clone());
     scene.indices.extend_from_slice(&ground.indices);
     scene.draws.push(Draw {
@@ -584,6 +602,49 @@ mod tests {
         s.texture = Some([texture; 16]);
         s.shading = shading;
         s
+    }
+
+    #[test]
+    fn normals_are_signed_bytes_marked_present() {
+        assert_eq!(normal([1.0, 0.0, -1.0]), [127, 0, -127, 127]);
+        assert_eq!(normal([0.6, -0.8, 0.0]), [76, -102, 0, 127]);
+    }
+
+    #[test]
+    fn sections_without_frames_take_no_normal() {
+        let mut framed = triangle();
+        framed.geometry.frames = Some(vec![
+            frostbite::mesh::Frame {
+                normal: [0.0, 0.0, 1.0],
+                tangent: [1.0, 0.0, 0.0],
+                sign: 1.0,
+            };
+            3
+        ]);
+        let zone = Zone {
+            meshes: vec![mesh("plain"), mesh("framed")],
+            placements: vec![at(0, 0.0), at(1, 0.0)],
+            ..Zone::default()
+        };
+        let scene = build(&zone, |m| {
+            Ok(vec![if m.name == "framed" {
+                framed.clone()
+            } else {
+                triangle()
+            }])
+        });
+        assert_eq!(scene.normals.len(), scene.positions.len());
+        assert_eq!(
+            scene.normals,
+            [
+                [0; 4],
+                [0; 4],
+                [0; 4],
+                [0, 0, 127, 127],
+                [0, 0, 127, 127],
+                [0, 0, 127, 127]
+            ]
+        );
     }
 
     fn draw(first_index: u32, vertex_offset: i32, first_instance: u32, instances: u32) -> Draw {

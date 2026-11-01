@@ -586,3 +586,23 @@ blend into the terrain's colour" in "The asphalt's layers" above.
 - **A road mesh without vertex colours keeps its road** (their red counts as 1).
   Why: nfsh fills a missing vertex colour with white, which decals need; no asphalt
   near zone 495 lacks them.
+
+## 2026-11-01: The meshes' own normals
+
+The owner chose the normal maps as the next task, and to decode the meshes' stored
+tangent frame first (over a tangent frame built per pixel from screen-space
+derivatives), the normal maps to follow with it.
+
+- **Meshes are lit by their own normals** (element 0x34, docs/FORMATS.md, "Meshes"),
+  smooth across a curved surface as the art made them; a section without the element
+  and the ground keep the triangle's own. Why: it is the original's shading, and the normal maps need
+  the same frame's tangents next. (decided by Claude, pending review: what follows)
+- **Decoded on the CPU when a zone loads, uploaded as four signed bytes a vertex**,
+  the fourth saying whether there is one. Why: the same four bytes a vertex as the
+  packed frame, one tested decoder in `frostbite::mesh` rather than one in Rust and
+  one in the shader; the tangent waits for the normal maps.
+- **A placement turns a normal by its transform's cofactor**, with the sign of its
+  determinant: right under any scale and under mirroring. The side a pixel is seen
+  from is still the triangle's: the mesh's normal is turned to that side. Why:
+  triangles are drawn from both sides, and a smooth normal can point away from the
+  eye on a triangle that faces it, near a silhouette.

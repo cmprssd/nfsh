@@ -2,7 +2,7 @@
 //! pixels back.
 
 use frostbite::level::{Mesh, Placement, Transform, Zone};
-use frostbite::mesh::Geometry;
+use frostbite::mesh::{Frame, Geometry};
 use frostbite::texture::{Kind, Texture};
 use nfsh_render::scene::{self, Asphalt, Edge, Section, Shading};
 use nfsh_render::zone::Loaded;
@@ -120,6 +120,34 @@ fn grey(g: &Geometry) -> Section {
         geometry: g.clone(),
         ..Section::default()
     }
+}
+
+/// Plain grey, every vertex taking `normal` as the mesh's own.
+fn grey_facing(normal: [f32; 3]) -> impl Fn(&Geometry) -> Section {
+    move |g| {
+        let mut g = g.clone();
+        let frame = Frame {
+            normal,
+            tangent: [1.0, 0.0, 0.0],
+            sign: 1.0,
+        };
+        g.frames = Some(vec![frame; g.positions.len()]);
+        grey(&g)
+    }
+}
+
+#[test]
+fn a_mesh_is_lit_by_its_own_normals() {
+    let no_texture = |_: &[u8; 16]| unreachable!();
+    let (flat, _) = middle(grey, no_texture);
+    // Facing the sun, as the square itself does: lit the same.
+    assert_eq!(middle(grey_facing([0.0, 0.0, -1.0]), no_texture).0, flat);
+    // Turned 60 degrees from it: half the sun, the same sky.
+    let s = 60f32.to_radians();
+    let (turned, _) = middle(grey_facing([s.sin(), 0.0, -s.cos()]), no_texture);
+    assert_eq!((flat, turned), ([213, 213, 215, 255], [184, 184, 188, 255]));
+    // Pointing to the side not seen: turned to the side seen.
+    assert_eq!(middle(grey_facing([0.0, 0.0, 1.0]), no_texture).0, flat);
 }
 
 #[test]
