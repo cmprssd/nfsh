@@ -1,7 +1,7 @@
 // A zone's meshes: each placement's transform from the instance, the colour from the
-// section's texture as its look says, the normal from the mesh's own (or, where it
-// has none, from the triangle itself, by its screen-space derivatives), lit by the time of day's sun and sky, exposed, then
-// tonemapped. Decals are blended over what is drawn under them. The ground is its
+// section's texture as its look says, the normal from the mesh's own bent by its
+// normal map (or, where it has none, from the triangle itself, by its screen-space
+// derivatives), lit by the time of day's sun and sky, exposed, then tonemapped. Decals are blended over what is drawn under them. The ground is its
 // tiles' colour with its layers' diffuse maps over it as detail. Asphalt blends two
 // layers by its road's mask, lays detail colours over them and gives way to the
 // ground at its edges.
@@ -63,6 +63,8 @@ struct Look {
 // upload_ground_map); and its detail layers' diffuse maps, one per layer.
 @group(0) @binding(8) var ground_map: texture_2d_array<f32>;
 @group(0) @binding(9) var layers: texture_2d_array<f32>;
+// The section's normal map (red and green the normal); grey, a flat normal, for none.
+@group(0) @binding(10) var normal_map: texture_2d<f32>;
 @group(1) @binding(0) var<uniform> look: Look;
 
 struct Out {
@@ -75,6 +77,8 @@ struct Out {
     @location(5) uv3: vec2<f32>,
     // The mesh's normal in world space; w 1 where it has one.
     @location(6) normal: vec4<f32>,
+    // Its tangent (along u) in world space; w the bitangent's sign there, 0 for none.
+    @location(7) tangent: vec4<f32>,
 }
 
 @vertex
@@ -89,6 +93,7 @@ fn vs_main(
     @location(8) vertex_colour2: vec4<f32>,
     @location(9) uv3: vec2<f32>,
     @location(10) normal: vec4<f32>,
+    @location(11) tangent: vec4<f32>,
 ) -> Out {
     let world = p.x * right.xyz + p.y * up.xyz + p.z * forward.xyz
         + vec3(right.w, up.w, forward.w);
@@ -108,7 +113,33 @@ fn vs_main(
             + normal.z * cross(right.xyz, up.xyz)),
         normal.w,
     );
+    // A tangent runs along the surface, as positions do; the bitangent, made again
+    // from the normal and tangent, turns over where the transform mirrors.
+    out.tangent = vec4(
+        tangent.x * right.xyz + tangent.y * up.xyz + tangent.z * forward.xyz,
+        tangent.w * mirror,
+    );
     return out;
+}
+
+// The mesh's normal `mesh` bent by a normal map's red and green `rg` (x along the
+// tangent, y along the bitangent, which runs along v decreasing; z made up to unit
+// length), where the mesh has a frame; else `mesh` as it is.
+fn bent(mesh: vec4<f32>, tangent: vec4<f32>, rg: vec2<f32>) -> vec4<f32> {
+    if mesh.w < 0.5 || tangent.w == 0.0 {
+        return mesh;
+    }
+    let n = normalize(mesh.xyz);
+    let t = normalize(tangent.xyz - n * dot(n, tangent.xyz));
+    let b = sign(tangent.w) * cross(n, t);
+    let xy = rg * 2.0 - 1.0;
+    let z = sqrt(saturate(1.0 - dot(xy, xy)));
+    return vec4(xy.x * t + xy.y * b + z * n, 1.0);
+}
+
+// The section's normal map at the colour's coordinates.
+fn mapped(in: Out) -> vec4<f32> {
+    return bent(in.normal, in.tangent, textureSample(normal_map, filtered, in.uv).rg);
 }
 
 // A filmic curve (Narkowicz's fit of ACES), for the tonemap's FilmicNeutral.
@@ -154,7 +185,7 @@ fn albedo(c: vec4<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: Out) -> @location(0) vec4<f32> {
-    return shade(in.world, in.normal, albedo(textureSample(colour, filtered, in.uv)), 1.0);
+    return shade(in.world, mapped(in), albedo(textureSample(colour, filtered, in.uv)), 1.0);
 }
 
 // Leaves and the like: what the texture's alpha leaves out is not drawn.
@@ -164,7 +195,7 @@ fn fs_cutout(in: Out) -> @location(0) vec4<f32> {
     if c.a < 0.5 {
         discard;
     }
-    return shade(in.world, in.normal, albedo(c), 1.0);
+    return shade(in.world, mapped(in), albedo(c), 1.0);
 }
 
 // Road lines, cracks and tyre marks over the asphalt.
@@ -173,7 +204,7 @@ fn fs_decal(in: Out) -> @location(0) vec4<f32> {
     let c = textureSample(colour, filtered, in.uv);
     let alpha = saturate(dot(c, look.select)) * look.opacity.x * in.vertex_colour.r;
     let paint = select(linear(c.r) * in.vertex_colour.rgb, look.colour.rgb, look.colour.w > 0.5);
-    return shade(in.world, in.normal, paint, alpha);
+    return shade(in.world, mapped(in), paint, alpha);
 }
 
 // How much of a layer shows where its blend's input is `x`: none under the offset
@@ -193,14 +224,17 @@ fn overlay(c: vec3<f32>, detail: vec3<f32>, amount: f32) -> vec3<f32> {
 // Asphalt: the damaged layer shows where its height (its normal map's blue) times
 // the mask's red is low; the detail colours follow the layers' blue times the vertex
 // colour's green and blue, and the noise times the second vertex colour; the wheel
-// paths (the mask's blue, dark) take their tint.
+// paths (the mask's blue, dark) take their tint. The layers' normal maps bend the
+// normal as much as each layer shows, and not where the ground shows through.
 @fragment
 fn fs_asphalt(in: Out) -> @location(0) vec4<f32> {
     let clean_uv = in.uv * look.tiling.xy;
     let damaged_uv = in.uv * look.tiling.zw;
     let clean = textureSample(colour, filtered, clean_uv);
     let damaged = textureSample(damaged_diffuse, filtered, damaged_uv);
-    let height = textureSample(damaged_normal, filtered, damaged_uv).b;
+    let damaged_n = textureSample(damaged_normal, filtered, damaged_uv);
+    let clean_n = textureSample(clean_normal, filtered, clean_uv);
+    let height = damaged_n.b;
     let mask = textureSample(road_mask, filtered, in.uv2);
     let s = blend(height * mask.r, look.blend.x, look.blend.y);
     var c = mix(linear(damaged.r) * look.tint_bg.rgb, linear(clean.r) * look.tint.rgb, s);
@@ -212,18 +246,20 @@ fn fs_asphalt(in: Out) -> @location(0) vec4<f32> {
     c = overlay(c, look.detail[4].rgb, n.b);
     let tyre = 1.0 - blend(mask.b, look.blend.z, look.blend.w);
     c *= 1.0 + tyre * (2.0 * look.tyre_tint.rgb - 1.0);
+    var rg = mix(damaged_n.rg, clean_n.rg, s);
     if look.edge.z > 0.5 {
-        c = mix(ground_under(in.world.xz), c, road_shows(in, s, height, mask.g));
+        let road = road_shows(in, s, height, clean_n.b, mask.g);
+        c = mix(ground_under(in.world.xz), c, road);
+        rg = mix(vec2(0.5), rg, road);
     }
-    return shade(in.world, in.normal, clamp(c, vec3(0.04), vec3(0.5)), 1.0);
+    return shade(in.world, bent(in.normal, in.tangent, rg), clamp(c, vec3(0.04), vec3(0.5)), 1.0);
 }
 
 // How much of the road shows over the ground: where the shoulder's blue says, in
 // the third coordinates (none outside 0 to 1 across), and the vertex colour's red;
 // taken away where the mask's green times the layers' height (as blended by `s`)
 // falls under the dirt's offset, unless the red keeps it.
-fn road_shows(in: Out, s: f32, damaged_height: f32, green: f32) -> f32 {
-    let clean_height = textureSample(clean_normal, filtered, in.uv * look.tiling.xy).b;
+fn road_shows(in: Out, s: f32, damaged_height: f32, clean_height: f32, green: f32) -> f32 {
     let height = mix(damaged_height, clean_height, s);
     let dirt = 1.0 - blend(green * (1.0 - look.dirt.z) * height, look.dirt.x, look.dirt.y);
     let across = in.uv3.x >= 0.0 && in.uv3.x <= 1.0;

@@ -26,6 +26,8 @@ pub struct Draw {
     pub texture: Option<u32>,
     /// Asphalt's other textures ([`ASPHALT_LAYERS`]), likewise.
     pub layers: [Option<u32>; 6],
+    /// The normal map, likewise; `None` draws the mesh's own normals.
+    pub normal_map: Option<u32>,
     pub shading: Shading,
 }
 
@@ -171,6 +173,9 @@ pub struct Section {
     pub texture: Option<[u8; 16]>,
     /// Asphalt's other textures ([`ASPHALT_LAYERS`]).
     pub layers: [Option<[u8; 16]>; 6],
+    /// The `TextureAsset` partition of its material's `Normal`, if it names one;
+    /// asphalt's are among its layers.
+    pub normal_map: Option<[u8; 16]>,
     pub shading: Shading,
 }
 
@@ -188,6 +193,13 @@ const COLOUR: [(&str, bool); 4] = [
 pub fn normal(n: [f32; 3]) -> [i8; 4] {
     let byte = |x: f32| (x.clamp(-1.0, 1.0) * 127.0).round() as i8;
     [byte(n[0]), byte(n[1]), byte(n[2]), 127]
+}
+
+/// A vertex's tangent as the GPU reads it, likewise, the fourth byte the bitangent's
+/// sign ([`frostbite::mesh::Frame::sign`]).
+pub fn tangent(f: &frostbite::mesh::Frame) -> [i8; 4] {
+    let [x, y, z, _] = normal(f.tangent);
+    [x, y, z, if f.sign < 0.0 { -127 } else { 127 }]
 }
 
 /// The texture a material's colour comes from, and how it is shaded, for the
@@ -254,6 +266,8 @@ pub struct Scene {
     /// One per position, in the mesh's space ([`normal`]); zero where a section has
     /// none, which draws the triangle's own.
     pub normals: Vec<[i8; 4]>,
+    /// Their tangents ([`tangent`]), likewise.
+    pub tangents: Vec<[i8; 4]>,
     pub indices: Vec<u32>,
     pub instances: Vec<Instance>,
     pub draws: Vec<Draw>,
@@ -391,8 +405,12 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
             match &g.frames {
                 Some(f) if f.len() == g.positions.len() => {
                     scene.normals.extend(f.iter().map(|f| normal(f.normal)));
+                    scene.tangents.extend(f.iter().map(tangent));
                 }
-                _ => scene.normals.resize(scene.positions.len(), [0; 4]),
+                _ => {
+                    scene.normals.resize(scene.positions.len(), [0; 4]);
+                    scene.tangents.resize(scene.positions.len(), [0; 4]);
+                }
             }
             scene.indices.extend_from_slice(&g.indices);
             if g.indices.is_empty() {
@@ -406,6 +424,11 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
             };
             // Without its own texture coordinates a section samples one texel.
             let texture = s.texture.filter(|_| g.uvs.is_some()).map(&mut index);
+            // A normal map needs the section's frame to bend.
+            let normal_map = s
+                .normal_map
+                .filter(|_| g.uvs.is_some() && g.frames.is_some())
+                .map(&mut index);
             let mut layers = [None; 6];
             let shading = match s.shading {
                 // What has no texture is drawn plain grey.
@@ -434,6 +457,7 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
                 instance_count: transforms.len() as u32,
                 texture,
                 layers,
+                normal_map,
                 shading,
             });
         }
@@ -445,6 +469,7 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
             scene.colours2.truncate(first_vertex);
             scene.uvs3.truncate(first_vertex);
             scene.normals.truncate(first_vertex);
+            scene.tangents.truncate(first_vertex);
             scene.indices.truncate(first_index);
             scene
                 .failed
@@ -497,6 +522,7 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
     scene.colours2.resize(scene.positions.len(), [0; 4]);
     scene.uvs3.resize(scene.positions.len(), [0.0; 2]);
     scene.normals.resize(scene.positions.len(), [0; 4]);
+    scene.tangents.resize(scene.positions.len(), [0; 4]);
     scene.ground_map = Some(ground.map.clone());
     scene.indices.extend_from_slice(&ground.indices);
     scene.draws.push(Draw {
@@ -507,6 +533,7 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
         instance_count: 1,
         texture: None,
         layers: [None; 6],
+        normal_map: None,
         shading: Shading::Ground,
     });
     scene.instances.push(instance(&Transform::IDENTITY));
@@ -534,14 +561,17 @@ pub fn first_lod(
                 let shader = m.shader.and_then(|g| meshes.store().partition_name(&g));
                 look(shader.unwrap_or_default(), m)
             });
-            let layers = match (look, materials.get(s.material as usize)) {
-                (Some((_, Shading::Asphalt(_))), Some(m)) => asphalt_layers(m, noise),
-                _ => [None; 6],
+            let material = materials.get(s.material as usize);
+            let (layers, normal_map) = match (look, material) {
+                (Some((_, Shading::Asphalt(_))), Some(m)) => (asphalt_layers(m, noise), None),
+                (Some((_, Shading::Grey { .. })), _) => ([None; 6], None),
+                _ => ([None; 6], material.and_then(|m| m.texture("Normal"))),
             };
             Ok(Section {
                 geometry: lod.section(s, &data)?,
                 texture: look.map(|l| l.0),
                 layers,
+                normal_map,
                 shading: look.map(|l| l.1).unwrap_or_default(),
             })
         })
@@ -611,6 +641,62 @@ mod tests {
     }
 
     #[test]
+    fn tangents_carry_the_bitangent_sign() {
+        let frame = |sign| frostbite::mesh::Frame {
+            normal: [0.0, 1.0, 0.0],
+            tangent: [0.6, 0.0, -0.8],
+            sign,
+        };
+        assert_eq!(tangent(&frame(1.0)), [76, 0, -102, 127]);
+        assert_eq!(tangent(&frame(-1.0)), [76, 0, -102, -127]);
+    }
+
+    #[test]
+    fn a_normal_map_is_drawn_only_where_a_frame_bends_it() {
+        let frames = Some(vec![
+            frostbite::mesh::Frame {
+                normal: [0.0, 0.0, 1.0],
+                tangent: [1.0, 0.0, 0.0],
+                sign: -1.0,
+            };
+            3
+        ]);
+        let mapped = |frames: Option<Vec<frostbite::mesh::Frame>>| {
+            let mut s = textured(1, Shading::Colour);
+            s.normal_map = Some([2; 16]);
+            s.geometry.frames = frames;
+            s
+        };
+        let mut no_uvs = mapped(frames.clone());
+        no_uvs.geometry.uvs = None;
+        let zone = Zone {
+            meshes: vec![mesh("framed"), mesh("plain"), mesh("no uvs")],
+            placements: vec![at(0, 0.0), at(1, 0.0), at(2, 0.0)],
+            ..Zone::default()
+        };
+        let scene = build(&zone, |m| {
+            Ok(vec![match m.name.as_str() {
+                "framed" => mapped(frames.clone()),
+                "plain" => mapped(None),
+                _ => no_uvs.clone(),
+            }])
+        });
+        let maps: Vec<_> = scene.draws.iter().map(|d| d.normal_map).collect();
+        assert_eq!(maps, [Some(1), None, None]);
+        assert_eq!(scene.textures, [[1; 16], [2; 16]]);
+        assert_eq!(scene.tangents.len(), scene.positions.len());
+        assert_eq!(
+            scene.tangents[..4],
+            [
+                [127, 0, 0, -127],
+                [127, 0, 0, -127],
+                [127, 0, 0, -127],
+                [0; 4]
+            ]
+        );
+    }
+
+    #[test]
     fn sections_without_frames_take_no_normal() {
         let mut framed = triangle();
         framed.geometry.frames = Some(vec![
@@ -656,6 +742,7 @@ mod tests {
             instance_count: instances,
             texture: None,
             layers: [None; 6],
+            normal_map: None,
             shading: Shading::Colour,
         }
     }
@@ -1034,10 +1121,11 @@ mod tests {
         let noise = texture_partition(&store, ASPHALT_NOISE);
         let scene = build(&zone, |m| first_lod(&mut meshes, m, noise));
         assert_eq!(scene.failed, []);
-        // Counted on the owner's store, 2026-10-31.
+        // Counted on the owner's store, 2026-10-31; the textures again on 2026-11-01,
+        // with the normal maps (109 of them).
         assert_eq!(zone.placements.len(), 2171);
         assert_eq!(scene.draws.len(), 780);
-        assert_eq!(scene.textures.len(), 129);
+        assert_eq!(scene.textures.len(), 238);
         assert_eq!(scene.instances.len(), 2171);
         assert_eq!(scene.positions.len(), 1_356_354);
         assert_eq!(scene.triangles(), 3_988_832);
@@ -1084,10 +1172,10 @@ mod tests {
         // their layers (the 36 with positions only are plain grey), 58 of them giving
         // way to the ground at their edges (the 30 others are the wet road's shader);
         // 130 decals, 53 of them lines coloured by their vertices; the asphalt's
-        // layers add 22 textures.
+        // layers add 22 textures, and the normal maps 132.
         assert_eq!(count, [1047, 20, 0, 88, 130]);
         assert_eq!(edged, 58);
         assert_eq!(painted, 53);
-        assert_eq!(scene.textures.len(), 178);
+        assert_eq!(scene.textures.len(), 310);
     }
 }

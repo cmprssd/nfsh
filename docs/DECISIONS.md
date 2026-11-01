@@ -606,3 +606,35 @@ derivatives), the normal maps to follow with it.
   from is still the triangle's: the mesh's normal is turned to that side. Why:
   triangles are drawn from both sides, and a smooth normal can point away from the
   eye on a triangle that faces it, near a silhouette.
+
+## 2026-11-01: Normal maps
+
+The owner chose to draw the meshes' and the asphalt's normal maps in this step (over
+the meshes' alone), the ground's layers to follow.
+
+- **A mesh's `Normal` bends its own normal**, by the frame's tangent and bitangent
+  (docs/FORMATS.md, "Normal maps": red along u, green along v decreasing, z made up),
+  at the colour's coordinates. Only where the section has a frame: without one there
+  is no tangent to bend along, and the triangle's normal is drawn as before. Why: it
+  is how the original's surfaces get their fine relief, and the frame decoded in
+  0.18.0 was for this. (decided by Claude, pending review: what follows)
+- **Green's direction was settled from the maps, not the programs**, by which way
+  their slopes have no curl. Why: it needs no bytecode, and it agrees with the frame
+  read from the meshes; a GPU test pins it.
+- **The tangent goes up as four more signed bytes a vertex**, its fourth the
+  bitangent's sign; the bitangent is made in the pixel shader from the normal and the
+  tangent, turned over under a mirroring placement. Why: the usual layout, the same
+  four bytes as the normal; one decoder (`frostbite::mesh::Frame`) for both.
+- **A draw binds its normal map at binding 10, the grey stand-in where it has none**:
+  grey's red and green are a half, a flat normal, so a missing or failed map draws the
+  mesh's own normal with no flag. Why: no new look field or shader branch.
+- **Only `Normal`**: the other normal maps (`Dirt_BG_Normal`, `ParallaxNH`, `_NT`,
+  `Normal_Tiling`, `Normal02`, `backgroundNormal`, graffiti's in its second
+  coordinates) and blue are left out. Why: they appear about a hundred times among
+  zone 495's 1,081 materials, beside a `Normal` or in place of it, and what each does
+  needs its shader read.
+- **Asphalt blends its two layers' normal maps as its colour**: as much of the clean
+  one as its colour shows, each at its layer's tiling, flat where the ground shows
+  through at its edges. The shoulder's red and green (also a normal) are left out.
+  Why: the same split as the colour and the heights; how the original mixes them was
+  not read from its programs.
