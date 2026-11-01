@@ -3,7 +3,8 @@
 // screen-space derivatives), lit by the time of day's sun and sky, exposed, then
 // tonemapped. Decals are blended over what is drawn under them. The ground is its
 // tiles' colour with its layers' diffuse maps over it as detail. Asphalt blends two
-// layers by its road's mask and lays detail colours over them.
+// layers by its road's mask, lays detail colours over them and gives way to the
+// ground at its edges.
 
 struct Push {
     view_proj: mat4x4<f32>,
@@ -41,17 +42,27 @@ struct Look {
     blend: vec4<f32>,
     tyre_tint: vec4<f32>,
     detail: array<vec4<f32>, 5>,
+    // Asphalt's edge (scene.rs, Edge): the shoulder's tiling, with 1 in z where the
+    // road gives way to the ground; the dirt's offset, contrast and paint boost; the
+    // ground map's corner (x, z) and one over its size.
+    edge: vec4<f32>,
+    dirt: vec4<f32>,
+    ground_map: vec4<f32>,
 }
 
 @group(0) @binding(0) var colour: texture_2d<f32>;
-// The ground's detail layers' diffuse maps, one per layer.
-@group(0) @binding(0) var layers: texture_2d_array<f32>;
 @group(0) @binding(1) var filtered: sampler;
 // Asphalt's other layers (scene.rs, ASPHALT_LAYERS); grey for every other draw.
 @group(0) @binding(2) var damaged_diffuse: texture_2d<f32>;
 @group(0) @binding(3) var damaged_normal: texture_2d<f32>;
 @group(0) @binding(4) var road_mask: texture_2d<f32>;
 @group(0) @binding(5) var noise: texture_2d<f32>;
+@group(0) @binding(6) var clean_normal: texture_2d<f32>;
+@group(0) @binding(7) var shoulder: texture_2d<f32>;
+// The ground's colour, then its weights (four a layer), on a grid (zone.rs,
+// upload_ground_map); and its detail layers' diffuse maps, one per layer.
+@group(0) @binding(8) var ground_map: texture_2d_array<f32>;
+@group(0) @binding(9) var layers: texture_2d_array<f32>;
 @group(1) @binding(0) var<uniform> look: Look;
 
 struct Out {
@@ -61,6 +72,7 @@ struct Out {
     @location(2) vertex_colour: vec4<f32>,
     @location(3) uv2: vec2<f32>,
     @location(4) vertex_colour2: vec4<f32>,
+    @location(5) uv3: vec2<f32>,
 }
 
 @vertex
@@ -73,6 +85,7 @@ fn vs_main(
     @location(5) vertex_colour: vec4<f32>,
     @location(7) uv2: vec2<f32>,
     @location(8) vertex_colour2: vec4<f32>,
+    @location(9) uv3: vec2<f32>,
 ) -> Out {
     let world = p.x * right.xyz + p.y * up.xyz + p.z * forward.xyz
         + vec3(right.w, up.w, forward.w);
@@ -83,6 +96,7 @@ fn vs_main(
     out.vertex_colour = vertex_colour;
     out.uv2 = uv2;
     out.vertex_colour2 = vertex_colour2;
+    out.uv3 = uv3;
     return out;
 }
 
@@ -178,7 +192,33 @@ fn fs_asphalt(in: Out) -> @location(0) vec4<f32> {
     c = overlay(c, look.detail[4].rgb, n.b);
     let tyre = 1.0 - blend(mask.b, look.blend.z, look.blend.w);
     c *= 1.0 + tyre * (2.0 * look.tyre_tint.rgb - 1.0);
+    if look.edge.z > 0.5 {
+        c = mix(ground_under(in.world.xz), c, road_shows(in, s, height, mask.g));
+    }
     return shade(in.world, clamp(c, vec3(0.04), vec3(0.5)), 1.0);
+}
+
+// How much of the road shows over the ground: where the shoulder's blue says, in
+// the third coordinates (none outside 0 to 1 across), and the vertex colour's red;
+// taken away where the mask's green times the layers' height (as blended by `s`)
+// falls under the dirt's offset, unless the red keeps it.
+fn road_shows(in: Out, s: f32, damaged_height: f32, green: f32) -> f32 {
+    let clean_height = textureSample(clean_normal, filtered, in.uv * look.tiling.xy).b;
+    let height = mix(damaged_height, clean_height, s);
+    let dirt = 1.0 - blend(green * (1.0 - look.dirt.z) * height, look.dirt.x, look.dirt.y);
+    let across = in.uv3.x >= 0.0 && in.uv3.x <= 1.0;
+    let edge = select(0.0, saturate(textureSample(shoulder, filtered, in.uv3 * look.edge.xy).b), across);
+    let red = in.vertex_colour.r;
+    return max(edge, red) * (1.0 - dirt * (1.0 - red));
+}
+
+// The ground as it is drawn at `xz`, from its map.
+fn ground_under(xz: vec2<f32>) -> vec3<f32> {
+    let uv = clamp((xz - look.ground_map.xy) * look.ground_map.zw, vec2(0.0), vec2(1.0));
+    let c = textureSampleLevel(ground_map, filtered, uv, 0, 0.0);
+    let low = textureSampleLevel(ground_map, filtered, uv, 1, 0.0);
+    let high = textureSampleLevel(ground_map, filtered, uv, 2, 0.0);
+    return ground(xz, c, low, high);
 }
 
 struct GroundOut {
@@ -207,17 +247,19 @@ fn vs_ground(
     return out;
 }
 
-// The tile's colour (sRGB-encoded), times its layers' diffuse maps each divided by
-// its own average, weighted: from afar the colour stays the tile's.
 @fragment
 fn fs_ground(in: GroundOut) -> @location(0) vec4<f32> {
-    let v = in.colour;
+    return shade(in.world, ground(in.world.xz, in.colour, in.weights_low, in.weights_high), 1.0);
+}
+
+// The tile's colour `v` (sRGB-encoded), times its layers' diffuse maps each divided
+// by its own average, weighted: from afar the colour stays the tile's.
+fn ground(xz: vec2<f32>, v: vec4<f32>, weights_low: vec4<f32>, weights_high: vec4<f32>) -> vec3<f32> {
     let base = vec3(linear(v.r), linear(v.g), linear(v.b));
     // Derivatives taken here, where every pixel runs, for the samples in the branch.
-    let xz = in.world.xz;
     let dx = dpdx(xz);
     let dy = dpdy(xz);
-    var weights = array<vec4<f32>, 2>(in.weights_low, in.weights_high);
+    var weights = array<vec4<f32>, 2>(weights_low, weights_high);
     var detail = vec3(1.0);
     for (var i = 0u; i < 8u; i++) {
         let w = weights[i / 4u][i % 4u];
@@ -227,5 +269,5 @@ fn fs_ground(in: GroundOut) -> @location(0) vec4<f32> {
             detail += w * (c * look.inverse_mean[i].rgb - 1.0);
         }
     }
-    return shade(in.world, base * max(detail, vec3(0.0)), 1.0);
+    return base * max(detail, vec3(0.0));
 }

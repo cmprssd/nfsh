@@ -359,6 +359,7 @@ of the asphalt near zone 495 leaves it out). The textures:
 | layer normal (`drv_set…_n`, BC7) | red, green: the normal; blue: a height (mean 0.55); alpha not worked out |
 | `detailMask`, one per road set (`…/mask/rd_…_mask`, 1024², BC7) | an atlas of the roads' strips in the second texture coordinates (0x22): red, light with dark patches, where the clean layer shows; green, white on the road and grey off it; blue, white with dark lines along the wheel paths; alpha a noise |
 | `Noise` (`drv_road_detail_d`, 4096², BC7) | red, green, blue: where `detailColor3`, `4` and `5` show, in the first texture coordinates as they are |
+| `Shoulder_NH` (`roadside/drv_shoulder_n`, 2048 × 4096, BC7) | red, green: a normal; blue: where the road shows, an atlas of edge profiles across x, white with three black bands (0.375-0.5, 0.69-0.75, 0.94-1.0) with ragged edges; alpha white |
 
 The vertices carry two colours: the first (0x1E) scales the layers' blue (green for
 `detailColor1`, blue for `2`; its red is 0 on the road pieces checked), the second
@@ -375,20 +376,36 @@ The vertices carry two colours: the first (0x1E) scales the layers' blue (green 
    (1 − 2(1 − a)(1 − b)), so a colour of 0.5 leaves it as it is.
 4. The wheel paths: the same blend of the mask's blue with `RoadTire_Blend_Offset` and
    `…_Contrast`, taken from 1, scales the colour by 1 + w(2 `RoadTire_Tint_Color` − 1).
-5. Clamped to 0.04 to 0.5.
+5. `rd_drv_blendwithterrain` only (`rd_drv_basesurface_wetness` has no such step):
+   blended into the terrain's colour where the road gives way to it. The shoulder is
+   `Shoulder_NH`'s blue at the third texture coordinates (0x23) times
+   `Shoulder_Tiling`, and 0 where the coordinates' x is outside 0 to 1; a permutation
+   for vertices without them samples it at (0, 0). The dirt is the same blend as in
+   step 2 of the mask's green times 1 − `Dirt_Height_Paint_Boost` times the layers'
+   height (the two normal maps' blue, mixed as much as step 2's clean layer shows),
+   with `Dirt_Height_Offset` and `…_Contrast`, taken from 1. With the first vertex
+   colour's red r, the road shows max(shoulder, r) × (1 − dirt × (1 − r)), and the
+   terrain the rest. The road pieces checked near zone 495 have r = 0 and the third
+   coordinates' x between 0.03 and 0.97, so the shoulder's atlas sets the edge.
+   The terrain's colour is sampled from its virtual texture at the pixel's world
+   position (squared, as if it were stored with a gamma of 2); nfsh takes its own
+   ground's colour there instead.
+6. Clamped to 0.04 to 0.5, the terrain's share too.
 
-After that the shader blends the road into the terrain's own colour where the
-mask's green and the shoulder texture (`Shoulder_NH`, in the third coordinates) say,
-darkens it when wet (`WaterCycle`) and for occlusion (`OccShadow_*`), and adds the
-normal maps; nfsh does none of these yet, nor `Dirt_Height_*`.
+Besides these, the shader darkens it when wet (`WaterCycle`) and for occlusion
+(`OccShadow_*`, which leaves it as it is at the defaults), and adds the normal maps;
+nfsh does none of these yet.
 
-A parameter block's constants (between its third and fourth offsets) give each
-constant a slot word of 0x10000 plus one more than its register in the program's
-second constant buffer: the asphalt's `Tarmac_Tiling_BG` is 0x10001, register 0. A
+A parameter block's constants (between its third and fourth offsets) are records of
+60 bytes: the constant's name (32 bytes, zero-padded), its name hash, a slot word,
+its component count (u32) and its default (four f32). The slot word is 0x10000 plus
+one more than the constant's register in the program's second constant buffer: the
+asphalt's `Tarmac_Tiling_BG` is 0x10001, register 0. A
 material that leaves a constant out gets the block's default: for the asphalt,
 `Tarmac_Blend_Offset` 0.171, `…_Contrast` 0.880, `RoadTire_Blend_Offset` 0.502,
-`…_Contrast` 0.880, `VertexColor_Blend_Offset` 0.214, the detail colours and
-`RoadTire_Tint_Color` 0.5, the tints and tilings 1.
+`…_Contrast` 0.880, `VertexColor_Blend_Offset` 0.214, `Dirt_Height_Offset` 0.216,
+`…_Contrast` 0.815, `…_Paint_Boost` 0, the detail colours and `RoadTire_Tint_Color`
+0.5, the tints and tilings (`Shoulder_Tiling` among them) 1.
 
 ## Terrain
 
@@ -678,7 +695,7 @@ Vertex elements seen (usage/format, bytes):
 |------:|---------|------------|
 | 0x01 | 0x03 (3 floats, 12), 0x08 (4 halves, 8; the fourth not used) | position, in the mesh's space |
 | 0x21 | 0x06 (2 halves, 4), 0x02 (2 floats, 8) | texture coordinates, the first set: the colour texture's, and on roads the tiling layers' |
-| 0x22-0x26 | the same | further texture coordinate sets: on roads, 0x22 maps the road's mask (`detailMask`, 0 to 1 across the mask) |
+| 0x22-0x26 | the same | further texture coordinate sets: on roads, 0x22 maps the road's mask (`detailMask`, 0 to 1 across the mask) and 0x23 the shoulder (`Shoulder_NH`) |
 | 0x1E | 0x0D (4 bytes) | a vertex colour, RGBA, a byte each: road lines are white (219 to 255) or yellow (255, 146, 19); on cracks and tyre marks only red varies, 0 to 255 (taken as their fade) |
 | 0x02-0x08, 0x1F, 0x2A, 0x33, 0x34, 0xBC, 0xD0 | 0x0C, 0x0D (4 bytes), 0x13 (4), 0x17, 0x19 (8), 0x03, 0x08 | not worked out: the tangent frame is among them (0x34 is a likely candidate), as are a second set of lightmap coordinates; 0x1F is a second four-byte colour on roads; 0x2A (3 floats, the third 0) runs 0 to 1 across a road piece |
 
