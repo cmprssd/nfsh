@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.18.0] - 2026-11-01
+
+### Changed
+
+- `nfsh view` lights the meshes by their own normals, read from the game's meshes,
+  instead of each triangle's: barrels, tyres, poles, tanks and every other curved
+  shape are now smooth, as in the game, rather than faceted, and edges the art
+  rounded off catch the light as it meant them to.
+
+### Not yet
+
+- The normal maps (the fine bumps and grooves in the asphalt, the ground and the
+  meshes) come next. The ground is still lit by its triangles, a vertex every 2 m.
+
 ## [0.17.0] - 2026-11-01
 
 ### Changed

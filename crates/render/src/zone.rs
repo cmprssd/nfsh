@@ -272,7 +272,7 @@ pub struct ZoneRenderer {
     /// earlier. Each with its look's offset in the looks buffer and its set.
     draws: Vec<(Draw, u32, usize)>,
     /// `None` when the scene draws nothing (Vulkan has no empty buffers to bind).
-    buffers: Option<[Buffer; 8]>,
+    buffers: Option<[Buffer; 9]>,
     /// The looks, each at a multiple of [`LOOK_STRIDE`].
     looks: Option<Buffer>,
     /// Textures drawn grey, with why.
@@ -342,6 +342,7 @@ impl ZoneRenderer {
                 upload(vertex, bytemuck::cast_slice(&scene.uvs2))?,
                 upload(vertex, bytemuck::cast_slice(&scene.colours2))?,
                 upload(vertex, bytemuck::cast_slice(&scene.uvs3))?,
+                upload(vertex, bytemuck::cast_slice(&scene.normals))?,
                 upload(
                     vk::BufferUsageFlags::INDEX_BUFFER,
                     bytemuck::cast_slice(&scene.indices),
@@ -777,6 +778,7 @@ impl ZoneRenderer {
                     uvs2,
                     colours2,
                     uvs3,
+                    normals,
                     indices,
                 ],
             ) = &self.buffers
@@ -801,8 +803,9 @@ impl ZoneRenderer {
                     uvs2.buffer,
                     colours2.buffer,
                     uvs3.buffer,
+                    normals.buffer,
                 ],
-                &[0; 7],
+                &[0; 8],
             );
             d.cmd_bind_index_buffer(cmd, indices.buffer, 0, vk::IndexType::UINT32);
             let (mut pipeline, mut set, mut look) = (None, None, None);
@@ -943,6 +946,11 @@ fn pipeline(
             stride: 8,
             input_rate: vk::VertexInputRate::VERTEX,
         },
+        vk::VertexInputBindingDescription {
+            binding: 7,
+            stride: 4,
+            input_rate: vk::VertexInputRate::VERTEX,
+        },
     ];
     let attribute = |location, binding, format, offset| vk::VertexInputAttributeDescription {
         location,
@@ -962,6 +970,7 @@ fn pipeline(
         attribute(7, 4, vk::Format::R32G32_SFLOAT, 0),
         attribute(8, 5, bytes, 0),
         attribute(9, 6, vk::Format::R32G32_SFLOAT, 0),
+        attribute(10, 7, vk::Format::R8G8B8A8_SNORM, 0),
     ];
     let ground = [
         attribute(0, 0, vk::Format::R32G32B32_SFLOAT, 0),

@@ -1,6 +1,6 @@
 // A zone's meshes: each placement's transform from the instance, the colour from the
-// section's texture as its look says, the normal from the triangle itself (its
-// screen-space derivatives), lit by the time of day's sun and sky, exposed, then
+// section's texture as its look says, the normal from the mesh's own (or, where it
+// has none, from the triangle itself, by its screen-space derivatives), lit by the time of day's sun and sky, exposed, then
 // tonemapped. Decals are blended over what is drawn under them. The ground is its
 // tiles' colour with its layers' diffuse maps over it as detail. Asphalt blends two
 // layers by its road's mask, lays detail colours over them and gives way to the
@@ -73,6 +73,8 @@ struct Out {
     @location(3) uv2: vec2<f32>,
     @location(4) vertex_colour2: vec4<f32>,
     @location(5) uv3: vec2<f32>,
+    // The mesh's normal in world space; w 1 where it has one.
+    @location(6) normal: vec4<f32>,
 }
 
 @vertex
@@ -86,6 +88,7 @@ fn vs_main(
     @location(7) uv2: vec2<f32>,
     @location(8) vertex_colour2: vec4<f32>,
     @location(9) uv3: vec2<f32>,
+    @location(10) normal: vec4<f32>,
 ) -> Out {
     let world = p.x * right.xyz + p.y * up.xyz + p.z * forward.xyz
         + vec3(right.w, up.w, forward.w);
@@ -97,6 +100,14 @@ fn vs_main(
     out.uv2 = uv2;
     out.vertex_colour2 = vertex_colour2;
     out.uv3 = uv3;
+    // Normals go through the transform's cofactor, which keeps them across the
+    // surface under any scale, its sign turned back where the transform mirrors.
+    let mirror = sign(dot(right.xyz, cross(up.xyz, forward.xyz)));
+    out.normal = vec4(
+        mirror * (normal.x * cross(up.xyz, forward.xyz) + normal.y * cross(forward.xyz, right.xyz)
+            + normal.z * cross(right.xyz, up.xyz)),
+        normal.w,
+    );
     return out;
 }
 
@@ -105,12 +116,21 @@ fn filmic(x: vec3<f32>) -> vec3<f32> {
     return clamp(x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14), vec3(0.0), vec3(1.0));
 }
 
-fn shade(world: vec3<f32>, albedo: vec3<f32>, alpha: f32) -> vec4<f32> {
-    var n = normalize(cross(dpdx(world), dpdy(world)));
-    // Transforms may mirror and triangles are drawn from both sides: face the eye.
+// Lit by the mesh's normal `mesh` where its w is 1, else by the triangle's.
+fn shade(world: vec3<f32>, mesh: vec4<f32>, albedo: vec3<f32>, alpha: f32) -> vec4<f32> {
+    var face = normalize(cross(dpdx(world), dpdy(world)));
+    // Triangles are drawn from both sides: the side seen faces the eye, and the
+    // mesh's normal is turned to that side with it.
     let to_eye = push.eye.xyz - world;
-    if dot(n, to_eye) < 0.0 {
-        n = -n;
+    if dot(face, to_eye) < 0.0 {
+        face = -face;
+    }
+    var n = face;
+    if mesh.w > 0.5 {
+        n = normalize(mesh.xyz);
+        if dot(n, face) < 0.0 {
+            n = -n;
+        }
     }
     let sun = max(dot(n, push.sun.xyz), 0.0);
     let ambient = mix(vec3(push.sun_light.w), push.sky.rgb, n.y * 0.5 + 0.5);
@@ -134,7 +154,7 @@ fn albedo(c: vec4<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: Out) -> @location(0) vec4<f32> {
-    return shade(in.world, albedo(textureSample(colour, filtered, in.uv)), 1.0);
+    return shade(in.world, in.normal, albedo(textureSample(colour, filtered, in.uv)), 1.0);
 }
 
 // Leaves and the like: what the texture's alpha leaves out is not drawn.
@@ -144,7 +164,7 @@ fn fs_cutout(in: Out) -> @location(0) vec4<f32> {
     if c.a < 0.5 {
         discard;
     }
-    return shade(in.world, albedo(c), 1.0);
+    return shade(in.world, in.normal, albedo(c), 1.0);
 }
 
 // Road lines, cracks and tyre marks over the asphalt.
@@ -153,7 +173,7 @@ fn fs_decal(in: Out) -> @location(0) vec4<f32> {
     let c = textureSample(colour, filtered, in.uv);
     let alpha = saturate(dot(c, look.select)) * look.opacity.x * in.vertex_colour.r;
     let paint = select(linear(c.r) * in.vertex_colour.rgb, look.colour.rgb, look.colour.w > 0.5);
-    return shade(in.world, paint, alpha);
+    return shade(in.world, in.normal, paint, alpha);
 }
 
 // How much of a layer shows where its blend's input is `x`: none under the offset
@@ -195,7 +215,7 @@ fn fs_asphalt(in: Out) -> @location(0) vec4<f32> {
     if look.edge.z > 0.5 {
         c = mix(ground_under(in.world.xz), c, road_shows(in, s, height, mask.g));
     }
-    return shade(in.world, clamp(c, vec3(0.04), vec3(0.5)), 1.0);
+    return shade(in.world, in.normal, clamp(c, vec3(0.04), vec3(0.5)), 1.0);
 }
 
 // How much of the road shows over the ground: where the shoulder's blue says, in
@@ -249,7 +269,8 @@ fn vs_ground(
 
 @fragment
 fn fs_ground(in: GroundOut) -> @location(0) vec4<f32> {
-    return shade(in.world, ground(in.world.xz, in.colour, in.weights_low, in.weights_high), 1.0);
+    let colour = ground(in.world.xz, in.colour, in.weights_low, in.weights_high);
+    return shade(in.world, vec4(0.0), colour, 1.0);
 }
 
 // The tile's colour `v` (sRGB-encoded), times its layers' diffuse maps each divided

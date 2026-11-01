@@ -9,6 +9,7 @@
 //! [`Meshes`] finds a mesh's res and chunks in nfsh's store.
 
 use std::collections::HashMap;
+use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2};
 
 use crate::ebx::Partition;
 use crate::reader::{Reader, cstr_at};
@@ -41,6 +42,8 @@ pub const COLOUR0: u8 = 0x1E;
 /// On roads, a second vertex colour: how much of three detail colours the asphalt
 /// takes.
 pub const COLOUR1: u8 = 0x1F;
+/// The normal and tangent, packed in four bytes ([`Frame::unpack`]).
+pub const TANGENT_FRAME: u8 = 0x34;
 
 /// Vertex element formats read so far, with their sizes.
 pub const FLOAT2: u8 = 0x02;
@@ -142,8 +145,76 @@ pub struct Geometry {
     pub colours2: Option<Vec<[u8; 4]>>,
     /// The third texture coordinates, likewise.
     pub uvs3: Option<Vec<[f32; 2]>>,
+    /// Each vertex's normal and tangent, if the section has them.
+    pub frames: Option<Vec<Frame>>,
     /// Three a triangle, counting from the section's first vertex.
     pub indices: Vec<u32>,
+}
+
+/// A vertex's tangent frame, in the mesh's space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Frame {
+    pub normal: [f32; 3],
+    /// Along the first texture coordinates' u.
+    pub tangent: [f32; 3],
+    /// The bitangent is `sign` × normal × tangent, along their v decreasing.
+    pub sign: f32,
+}
+
+impl Frame {
+    /// Unpacks a [`TANGENT_FRAME`] element (see `docs/FORMATS.md`, "Meshes"): the
+    /// normal by its largest component's axis and sign, with the other two in 9 bits
+    /// each; the tangent as an angle around it from a vector the normal's axis picks.
+    pub fn unpack(b: [u8; 4]) -> Self {
+        let flags = b[3];
+        let bit = |n: u8| f32::from((flags >> n) & 1);
+        let small = |byte: u8, high: u8| {
+            (f32::from(byte) / 255.0 + bit(high)) * FRAC_1_SQRT_2 - FRAC_1_SQRT_2
+        };
+        let (a, c) = (small(b[0], 4), small(b[1], 5));
+        let large = (1.0 - a * a - c * c).abs().sqrt();
+        let large = if flags & 1 != 0 { -large } else { large };
+        let n = match (flags >> 1) & 3 {
+            0 => [large, c, a],
+            1 => [a, large, c],
+            2 => [a, c, large],
+            _ => [large, a, c],
+        };
+        let reference = if flags & 2 != 0 {
+            [-n[1], n[0], 0.0]
+        } else {
+            [n[2], 0.0, -n[0]]
+        };
+        let r = normalize(reference);
+        let angle = (f32::from(b[2]) / 255.0 + f32::from(flags >> 6)) * FRAC_PI_2;
+        let (sin, cos) = angle.sin_cos();
+        let nr = cross(n, r);
+        // The vector turned by the angle points along u decreasing.
+        let tangent = std::array::from_fn(|i| -(r[i] * cos + nr[i] * sin));
+        let sign = if flags & 8 != 0 { 1.0 } else { -1.0 };
+        Frame {
+            normal: n,
+            tangent,
+            sign,
+        }
+    }
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if length > 0.0 {
+        v.map(|x| x / length)
+    } else {
+        v
+    }
 }
 
 impl Lod {
@@ -196,6 +267,7 @@ impl Lod {
             _ => Ok(None),
         };
         let (uvs2, colours2, uvs3) = (uvs(TEXCOORD1)?, colours(COLOUR1)?, uvs(TEXCOORD2)?);
+        let frames = colours(TANGENT_FRAME)?.map(|f| f.into_iter().map(Frame::unpack).collect());
         let (uvs, colours) = (uvs(TEXCOORD0)?, colours(COLOUR0)?);
 
         let width = usize::from(self.index_width);
@@ -240,6 +312,7 @@ impl Lod {
             uvs2,
             colours2,
             uvs3,
+            frames,
             indices,
         })
     }
@@ -694,6 +767,61 @@ mod tests {
         assert_eq!(lod.section(&s, &chunk).unwrap().colours, None);
     }
 
+    fn assert_near(a: [f32; 3], b: [f32; 3]) {
+        assert!(
+            a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3),
+            "{a:?} != {b:?}"
+        );
+    }
+
+    /// Frames as stored on Heat's meshes, with the faces they lie on.
+    #[test]
+    fn unpacks_tangent_frames() {
+        // An electric box's side facing +x, its texture's u running down.
+        let f = Frame::unpack([0x00, 0x00, 0x00, 0x78]);
+        assert_near(f.normal, [1.0, 0.0, 0.0]);
+        assert_near(f.tangent, [0.0, -1.0, 0.0]);
+        assert_eq!(f.sign, 1.0);
+        // Its top, u along +x.
+        let f = Frame::unpack([0x00, 0x00, 0x00, 0x3A]);
+        assert_near(f.normal, [0.0, 1.0, 0.0]);
+        assert_near(f.tangent, [1.0, 0.0, 0.0]);
+        // Facing -x, the bitangent the other way.
+        let f = Frame::unpack([0x00, 0x00, 0x00, 0xB9]);
+        assert_near(f.normal, [-1.0, 0.0, 0.0]);
+        assert_eq!(f.sign, 1.0);
+        let f = Frame::unpack([0x00, 0x00, 0x00, 0x31]);
+        assert_eq!(f.sign, -1.0);
+        // A flagpole's hexagonal foot: a face 30 degrees from +z towards +x, the
+        // smaller component 180/255 of the way from 0 to 1/sqrt 2.
+        let f = Frame::unpack([0xB4, 0x00, 0x00, 0xBC]);
+        let x = 180.0 / 255.0 * FRAC_1_SQRT_2;
+        assert_near(f.normal, [x, 0.0, (1.0 - x * x).sqrt()]);
+        // The tangent is always across the normal.
+        let t = f.tangent;
+        assert!((t[0] * f.normal[0] + t[1] * f.normal[1] + t[2] * f.normal[2]).abs() < 1e-5);
+    }
+
+    #[test]
+    fn reads_tangent_frames() {
+        let (res, chunk) = sample();
+        let set = MeshSet::parse(&res).unwrap();
+        let lod = &set.lods[0];
+        let mut s = lod.sections[0].clone();
+        assert_eq!(lod.section(&s, &chunk).unwrap().frames, None);
+        // Over the coordinates' bytes: the first vertex's are 00 00 00 38, a normal
+        // along +x.
+        s.elements.push(Element {
+            usage: TANGENT_FRAME,
+            format: UNORM4,
+            offset: 0,
+            stream: 1,
+        });
+        let frames = lod.section(&s, &chunk).unwrap().frames.unwrap();
+        assert_eq!(frames.len(), 3);
+        assert_near(frames[0].normal, [1.0, 0.0, 0.0]);
+    }
+
     #[test]
     fn reads_the_second_and_third_coordinates_and_colours() {
         let (res, chunk) = sample();
@@ -770,6 +898,33 @@ mod tests {
     /// Reads every mesh the 232 zones of Palm City place, in the store `NFSH_STORE`
     /// points at (local-ci sets it on the Windows side): every LOD's chunk, every
     /// section decoded, and the rules FORMATS.md gives checked on each.
+    /// How many of the vertices that have triangles take a normal within 30 degrees
+    /// of their triangles' (weighted by area), and of how many.
+    fn frames_agreeing(g: &Geometry, frames: &[Frame]) -> (u64, u64) {
+        let mut sum = vec![[0f32; 3]; g.positions.len()];
+        for t in g.indices.as_chunks::<3>().0 {
+            let [a, b, c] = t.map(|i| g.positions[i as usize]);
+            let n = cross(
+                std::array::from_fn(|i| b[i] - a[i]),
+                std::array::from_fn(|i| c[i] - a[i]),
+            );
+            for &i in t {
+                (0..3).for_each(|k| sum[i as usize][k] += n[k]);
+            }
+        }
+        let mut agree = 0;
+        let mut of = 0;
+        for (n, f) in sum.iter().zip(frames) {
+            if n.iter().all(|&x| x == 0.0) {
+                continue;
+            }
+            of += 1;
+            let cos: f32 = (0..3).map(|k| normalize(*n)[k] * f.normal[k]).sum();
+            agree += u64::from(cos > 30f32.to_radians().cos());
+        }
+        (agree, of)
+    }
+
     #[test]
     fn reads_every_mesh_palm_city_places() {
         let Some(dir) = std::env::var_os("NFSH_STORE") else {
@@ -798,6 +953,7 @@ mod tests {
         let mut formats: BTreeMap<(u8, u8), u64> = BTreeMap::new();
         let mut broken: Vec<String> = Vec::new();
         let mut outliers: Vec<String> = Vec::new();
+        let (mut frames_agree, mut frames_of) = (0u64, 0u64);
         for m in &placed {
             let set = meshes.by_partition(&m.partition).unwrap();
             *count.entry("meshes").or_default() += 1;
@@ -822,6 +978,29 @@ mod tests {
                     if g.uvs.is_some() {
                         *count.entry("sections with uvs").or_default() += 1;
                     }
+                    if let Some(frames) = &g.frames {
+                        let (agree, of) = frames_agreeing(&g, frames);
+                        frames_agree += agree;
+                        frames_of += of;
+                        let unit =
+                            |v: [f32; 3]| (v.iter().map(|x| x * x).sum::<f32>() - 1.0).abs() < 1e-3;
+                        let across = |f: &Frame| {
+                            (0..3)
+                                .map(|i| f.normal[i] * f.tangent[i])
+                                .sum::<f32>()
+                                .abs()
+                                < 1e-3
+                        };
+                        if !frames
+                            .iter()
+                            .all(|f| unit(f.normal) && unit(f.tangent) && across(f))
+                        {
+                            broken.push(format!(
+                                "{}: {}: a frame is not orthonormal",
+                                lod.name, s.name
+                            ));
+                        }
+                    }
                     // The bounds are the positions' before they were stored: floats
                     // keep them exactly, halves round by up to |x| / 2048.
                     let slack = match s.element(POSITION).map(|e| e.format) {
@@ -845,6 +1024,7 @@ mod tests {
         }
         eprintln!("{count:?}");
         eprintln!("elements (usage, format) {formats:x?}");
+        eprintln!("normals within 30 degrees of their triangles': {frames_agree} of {frames_of}");
         for b in broken.iter().take(20) {
             eprintln!("{b}");
         }
@@ -858,6 +1038,13 @@ mod tests {
                 .iter()
                 .all(|o| o.contains("/prop_brk_abandoned_15_front_01_mesh_lod")),
             "{outliers:#?}"
+        );
+        // 2026-11-01: 28,463,755 of 30,542,539. The rest are mostly where a vertex
+        // joins faces at an angle, its normal one the art chose rather than their
+        // average.
+        assert!(
+            frames_agree as f64 >= 0.93 * frames_of as f64,
+            "{frames_agree} of {frames_of}"
         );
         // Counted on the whole install, 2026-10-31: each mesh once, every LOD.
         let count: Vec<(&str, u64)> = count.into_iter().collect();
