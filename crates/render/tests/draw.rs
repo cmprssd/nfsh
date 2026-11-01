@@ -264,3 +264,28 @@ fn an_empty_scene_draws_nothing() {
         .unwrap();
     assert!(rgba.chunks(4).all(|p| p == [0, 0, 0, 255]));
 }
+
+#[test]
+fn the_ground_is_drawn_in_its_vertex_colours() {
+    let gpu = Gpu::new_headless().unwrap();
+    // The 2 m square, 5 m ahead, as ground: in world space, sRGB-encoded red.
+    let (_, square) = square_zone(&[]);
+    let ground = frostbite::terrain::Ground {
+        positions: square.positions.iter().map(|p| [p[0], p[1], 5.0]).collect(),
+        colours: vec![[255, 0, 0, 255]; 4],
+        indices: square.indices.clone(),
+        ..Default::default()
+    };
+    let mut scene = scene::Scene::default();
+    scene::add_ground(&mut scene, &ground);
+    let renderer =
+        ZoneRenderer::new(&gpu, &scene, Target::COLOR_FORMAT, |_| unreachable!()).unwrap();
+    let mut target = Target::new(&gpu, W, H).unwrap();
+    let extent = target.color.extent;
+    let camera = Camera::new([0.0; 3], 0.0, 0.0, W, H);
+    let rgba = target
+        .render(|cmd| renderer.record(cmd, &camera, extent, &LIGHT))
+        .unwrap();
+    let m = pixel(&rgba, W / 2, H / 2);
+    assert!(m[0] > 100 && m[1] < 20 && m[2] < 20, "middle {m:?}");
+}

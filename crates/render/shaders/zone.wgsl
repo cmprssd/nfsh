@@ -18,7 +18,8 @@ var<immediate> push: Push;
 
 // How a draw's colour comes from its texture (zone.rs, Look).
 struct Look {
-    // Multiplies the colour; w = 1: the texture's red as grey (sRGB-encoded).
+    // Multiplies the colour; w = 1: the texture's red as grey (sRGB-encoded); w = 2:
+    // the vertex colour (sRGB-encoded), the ground's.
     tint: vec4<f32>,
     // A decal's opacity: the texture's channels weighted by this, times opacity.x.
     select: vec4<f32>,
@@ -92,7 +93,10 @@ fn albedo(c: vec4<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: Out) -> @location(0) vec4<f32> {
-    return shade(in, albedo(textureSample(colour, filtered, in.uv)), 1.0);
+    let v = in.vertex_colour;
+    let ground = vec3(linear(v.r), linear(v.g), linear(v.b));
+    let c = albedo(textureSample(colour, filtered, in.uv));
+    return shade(in, select(c, ground, look.tint.w > 1.5), 1.0);
 }
 
 // Leaves and the like: what the texture's alpha leaves out is not drawn.

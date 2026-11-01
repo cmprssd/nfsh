@@ -39,6 +39,8 @@ pub enum Shading {
     Cutout,
     /// The texture's red channel as a grey, times `tint`: a road's asphalt.
     Grey { tint: [f32; 3] },
+    /// The vertex colour (sRGB-encoded), no texture: the ground's.
+    Vertex,
     /// Blended over what is drawn under it, after everything opaque: the opacity is
     /// the texture's channels weighted by `select`, times `opacity` and the vertex
     /// colour's red; the colour is `colour`, or else the texture's red times the
@@ -232,8 +234,8 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
     scene
 }
 
-/// Adds `ground`, already in world space, as one draw in plain grey; it leaves the
-/// bounds, which are of the placements, as they are.
+/// Adds `ground`, already in world space, as one draw in its vertices' colours; it
+/// leaves the bounds, which are of the placements, as they are.
 pub fn add_ground(scene: &mut Scene, ground: &Ground) {
     if ground.indices.is_empty() {
         return;
@@ -242,7 +244,13 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground) {
     let first_index = scene.indices.len() as u32;
     scene.positions.extend_from_slice(&ground.positions);
     scene.uvs.resize(scene.positions.len(), [0.0; 2]);
-    scene.colours.resize(scene.positions.len(), [255; 4]);
+    // Ground::colours has one per position; a short list is made up in grey.
+    scene
+        .colours
+        .extend(ground.colours.iter().take(ground.positions.len()));
+    scene
+        .colours
+        .resize(scene.positions.len(), [128, 128, 128, 255]);
     scene.indices.extend_from_slice(&ground.indices);
     scene.draws.push(Draw {
         first_index,
@@ -251,7 +259,7 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground) {
         first_instance: scene.instances.len() as u32,
         instance_count: 1,
         texture: None,
-        shading: Shading::Colour,
+        shading: Shading::Vertex,
     });
     scene.instances.push(instance(&Transform::IDENTITY));
 }
@@ -386,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ground_is_one_grey_draw_after_the_meshes() {
+    fn the_ground_is_one_draw_in_its_vertex_colours_after_the_meshes() {
         let zone = Zone {
             meshes: vec![mesh("a")],
             placements: vec![at(0, 5.0)],
@@ -396,15 +404,19 @@ mod tests {
         let ground = Ground {
             positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
             indices: vec![0, 2, 1, 0, 3, 2],
+            // One short: the last is grey.
+            colours: vec![[10, 20, 30, 255]; 3],
             ..Ground::default()
         };
         add_ground(&mut scene, &ground);
         assert_eq!(scene.positions.len(), 7);
         assert_eq!(scene.uvs.len(), 7);
-        assert_eq!(scene.colours.len(), 7);
+        assert_eq!(scene.colours[3..6], [[10, 20, 30, 255]; 3]);
+        assert_eq!(scene.colours[6], [128, 128, 128, 255]);
         assert_eq!(scene.indices[3..], [0, 2, 1, 0, 3, 2]);
         let ground_draw = Draw {
             index_count: 6,
+            shading: Shading::Vertex,
             ..draw(3, 3, 1, 1)
         };
         assert_eq!(scene.draws[1], ground_draw);
@@ -669,7 +681,7 @@ mod tests {
         let mut count = [0; 4];
         for d in &scene.draws {
             count[match d.shading {
-                Shading::Colour => 0,
+                Shading::Colour | Shading::Vertex => 0,
                 Shading::Cutout => 1,
                 Shading::Grey { .. } => 2,
                 Shading::Decal { .. } => 3,

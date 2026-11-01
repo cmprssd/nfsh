@@ -40,7 +40,7 @@ enum Pass {
 impl Pass {
     fn of(shading: &Shading) -> Self {
         match shading {
-            Shading::Colour | Shading::Grey { .. } => Self::Opaque,
+            Shading::Colour | Shading::Grey { .. } | Shading::Vertex => Self::Opaque,
             Shading::Cutout => Self::Cutout,
             Shading::Decal { .. } => Self::Decal,
         }
@@ -51,7 +51,8 @@ impl Pass {
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 struct Look {
-    /// Multiplies the colour; `w` is 1 when the colour is the texture's red as grey.
+    /// Multiplies the colour; `w` is 1 when the colour is the texture's red as grey,
+    /// 2 when it is the vertex colour.
     tint: [f32; 4],
     /// A decal's opacity: the texture's channels weighted by this…
     select: [f32; 4],
@@ -77,6 +78,7 @@ impl Look {
         match *shading {
             Shading::Colour | Shading::Cutout => {}
             Shading::Grey { tint } => look.tint = [tint[0], tint[1], tint[2], 1.0],
+            Shading::Vertex => look.tint[3] = 2.0,
             Shading::Decal {
                 select,
                 opacity,

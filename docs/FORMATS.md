@@ -385,21 +385,32 @@ and id (16 bytes, an in-memory GUID: `store::guid_order` gives the id a bundle's
 list uses), a count (0 or 1) of further chunks with their size and id (20 bytes each),
 a byte (always 0), and a byte that is 1 when the tile's four children follow. The root
 and the four 8,192 m tiles have no chunk (size and id zero). The chunks are superbundle
-chunks of `mainlevel`. A tile's first chunk is one of two kinds, told by its size:
+chunks of `mainlevel`. A tile's first chunk is one of two kinds, told by its size
+(k runs 0 to 16; 18,496 = 136 × 136, and the pages look like one-byte masks of that
+size, likely a layer's weight each, not read yet):
 
 - `42,231 + 18,496·k` bytes (7,618 tiles): a **heightfield**, 137 × 137 u16 first
-  (37,538 bytes; the rest holds 68 × 68 pages not read yet). Height is the u16 ÷ 32 m
+  (37,538 bytes; then 2,381 bytes not read, then the pages and the colour below).
+  Height is the u16 ÷ 32 m
   (the sea floor's 5 is the root's minimum, 0.156 m; the maximum 30,292 is 946.6 m);
   0 is a **hole** (the ground is left out: 64 tiles cut holes their parents don't
   have). Rows run along z and columns along x, with a 4-sample border: sample (r, c)
   of a tile at (x0, z0) of size S lies at (x0 + (c − 4)·S/128, z0 + (r − 4)·S/128), so
   a 128 m tile has a sample every metre.
-- multiples of 2,312 bytes (630 tiles): no heights (block-compressed data). A tile
-  like this is drawn from its nearest ancestor's heights.
+- `2,312 + 18,496·k` bytes (630 tiles): no heights, only the pages and the colour.
+  A tile like this is drawn from its nearest ancestor's heights.
 
-The further chunk, when there is one, is block-compressed data (multiples of 2,312
-bytes) or, on 300 of the 128 m leaves, 168,924 = 4 × 42,231 bytes: likely four 64 m
-heightfields. Neither is read yet.
+Both kinds end in the tile's **colour**: its last 2,312 bytes are BC1 blocks of a
+68 × 68 image (sRGB-encoded), rows along z and columns along x like the heights, with
+a 2-texel border: texel (r, c) of a tile at (x0, z0) of size S covers from
+(x0 + (c − 2)·S/64, z0 + (r − 2)·S/64), so a 128 m tile has a texel every 2 m. It is
+the ground's colour already blended from its layers: grass, earth, sand, the old road
+beds and the sea floor's tint. Laid side by side, the leaves around the speedway meet
+with no seams. A store test reads every tile's colour (2026-11-01).
+
+The further chunk, when there is one, is another `2,312 + 18,496·k` chunk or, on 300
+of the 128 m leaves, 168,924 = 4 × 42,231 bytes: likely four 64 m heightfields.
+Neither is read yet.
 
 **How it was checked**: a child's even samples are its parent's, at the child's
 quadrant. Of the 7,602 parent and child pairs that both have heights, 7,477 agree on

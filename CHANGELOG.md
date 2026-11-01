@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] - 2026-11-01
+
+### Changed
+
+- `nfsh view` draws the ground in its own colours instead of plain grey: the dry
+  grass and earth around the speedway, its worn infield, sand and the sea's edge, from
+  the colour each terrain tile carries (one texel every 2 m on the finest tiles).
+
+### Not yet
+
+- Up close the ground is soft: the sharp detail of its layers (grass, gravel, sand
+  textures blended by their masks) and the ground's scattered grass and bushes are not
+  drawn yet.
+
 ## [0.13.0] - 2026-11-01
 
 ### Changed
