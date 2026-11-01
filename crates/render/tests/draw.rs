@@ -4,7 +4,7 @@
 use frostbite::level::{Mesh, Placement, Transform, Zone};
 use frostbite::mesh::Geometry;
 use frostbite::texture::{Kind, Texture};
-use nfsh_render::scene::{self, Section, Shading};
+use nfsh_render::scene::{self, Asphalt, Section, Shading};
 use nfsh_render::zone::Loaded;
 use nfsh_render::{Camera, Gpu, Light, Target, ZoneRenderer};
 
@@ -50,8 +50,8 @@ fn square_zone(placed: &[f32]) -> (Zone, Geometry) {
             [-1.0, 1.0, 0.0],
         ],
         uvs: Some(vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]),
-        colours: None,
         indices: vec![0, 1, 2, 0, 2, 3],
+        ..Geometry::default()
     };
     (zone, square)
 }
@@ -110,6 +110,7 @@ fn textured(texture: u8, shading: Shading) -> impl Fn(&Geometry) -> Section {
         geometry: g.clone(),
         texture: Some([texture; 16]),
         shading,
+        ..Section::default()
     }
 }
 
@@ -184,6 +185,54 @@ fn asphalt_is_its_textures_red_as_grey_times_its_tint() {
     assert_eq!(missing, []);
     // Red's 1 in every channel, the blue halved (the sky adds a little blue back).
     assert!(m[0] > 100 && m[0] == m[1] && m[2] < m[1], "middle {m:?}");
+}
+
+#[test]
+fn asphalt_shows_its_damaged_layer_where_the_mask_is_dark() {
+    const WHITE: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+    const BLACK: [u8; 8] = [0; 8];
+    let asphalt = Shading::Asphalt(Asphalt {
+        tint: [[0.4; 3]; 2],
+        tiling: [[1.0; 2]; 2],
+        blend: [0.17, 0.88],
+        tyre: [0.5, 0.88],
+        tyre_tint: [0.5; 3],
+        bias: 0.21,
+        detail: [[0.5; 3]; 5],
+    });
+    let section = |g: &Geometry| Section {
+        geometry: Geometry {
+            uvs2: g.uvs.clone(),
+            ..g.clone()
+        },
+        texture: Some([1; 16]),
+        layers: [2, 3, 4, 5].map(|t| Some([t; 16])),
+        shading: asphalt,
+    };
+    // A white clean layer, a black damaged one, a full height, no noise; the mask's
+    // red is `mask`.
+    let draw = |mask| {
+        middle(section, move |guid| {
+            Ok(bc1(
+                0x36,
+                match guid[0] {
+                    1 | 3 => WHITE,
+                    4 => mask,
+                    _ => BLACK,
+                },
+            ))
+        })
+    };
+    let (clean, missing) = draw(RED);
+    assert_eq!(missing, []);
+    let (damaged, _) = draw(BLACK);
+    // White tinted 0.4 (203 here), against black lifted to the darkest asphalt, 0.04
+    // (57: lit and tonemapped, a grey of 0.04 is far from black).
+    assert!(clean[0] > 180 && clean[0] == clean[1], "clean {clean:?}");
+    assert!(
+        damaged[0] < 80 && damaged[0] == damaged[1],
+        "damaged {damaged:?}"
+    );
 }
 
 #[test]

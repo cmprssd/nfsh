@@ -465,7 +465,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "frostbite"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "zstd",
 ]
@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "nfsh"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "frostbite",
  "nfsh-render",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "nfsh-render"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "ash",
  "ash-window",

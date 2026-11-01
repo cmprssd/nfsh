@@ -41,11 +41,16 @@ const DECAL: (&[u8], &CStr) = (
     include_bytes!(concat!(env!("OUT_DIR"), "/zone.fs_decal.spv")),
     c"fs_decal",
 );
+const ASPHALT: (&[u8], &CStr) = (
+    include_bytes!(concat!(env!("OUT_DIR"), "/zone.fs_asphalt.spv")),
+    c"fs_asphalt",
+);
 
 /// The pipelines, in the order they draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Pass {
     Opaque,
+    Asphalt,
     Ground,
     Cutout,
     Decal,
@@ -55,6 +60,7 @@ impl Pass {
     fn of(shading: &Shading) -> Self {
         match shading {
             Shading::Colour | Shading::Grey { .. } => Self::Opaque,
+            Shading::Asphalt(_) => Self::Asphalt,
             Shading::Ground => Self::Ground,
             Shading::Cutout => Self::Cutout,
             Shading::Decal { .. } => Self::Decal,
@@ -79,11 +85,22 @@ struct Look {
     scale: [[f32; 4]; 2],
     /// …and the inverse of its average colour.
     inverse_mean: [[f32; 4]; 8],
+    /// Asphalt's ([`crate::scene::Asphalt`]; its clean layer's tint is `tint`): the damaged
+    /// layer's tint…
+    tint_bg: [f32; 4],
+    /// …both layers' tiling (clean, damaged)…
+    tiling: [f32; 4],
+    /// …the layers' blend and the wheel paths' (offset, contrast each)…
+    blend: [f32; 4],
+    /// …the wheel paths' tint, with the bias both blends add in `w`…
+    tyre_tint: [f32; 4],
+    /// …and the detail colours.
+    detail: [[f32; 4]; 5],
 }
 
-/// Where each look starts in the looks buffer: 256 bytes is the most any device may
-/// need a dynamic uniform offset aligned to.
-const LOOK_STRIDE: usize = 256;
+/// Where each look starts in the looks buffer: a multiple of 256 bytes, the most any
+/// device may need a dynamic uniform offset aligned to.
+const LOOK_STRIDE: usize = size_of::<Look>().next_multiple_of(256);
 
 impl Look {
     fn new(shading: &Shading) -> Self {
@@ -94,10 +111,25 @@ impl Look {
             colour: [0.0; 4],
             scale: [[0.0; 4]; 2],
             inverse_mean: [[0.0; 4]; 8],
+            tint_bg: [0.0; 4],
+            tiling: [0.0; 4],
+            blend: [0.0; 4],
+            tyre_tint: [0.0; 4],
+            detail: [[0.0; 4]; 5],
         };
+        let rgb = |c: [f32; 3], w| [c[0], c[1], c[2], w];
         match *shading {
             Shading::Colour | Shading::Cutout | Shading::Ground => {}
-            Shading::Grey { tint } => look.tint = [tint[0], tint[1], tint[2], 1.0],
+            Shading::Grey { tint } => look.tint = rgb(tint, 1.0),
+            Shading::Asphalt(a) => {
+                look.tint = rgb(a.tint[0], 1.0);
+                look.tint_bg = rgb(a.tint[1], 0.0);
+                let [[fu, fv], [bu, bv]] = a.tiling;
+                look.tiling = [fu, fv, bu, bv];
+                look.blend = [a.blend[0], a.blend[1], a.tyre[0], a.tyre[1]];
+                look.tyre_tint = rgb(a.tyre_tint, a.bias);
+                look.detail = a.detail.map(|c| rgb(c, 0.0));
+            }
             Shading::Decal {
                 select,
                 opacity,
@@ -207,7 +239,7 @@ type DetailLook = ([[f32; 4]; 2], [[f32; 4]; 8]);
 pub struct ZoneRenderer {
     gpu: Arc<Gpu>,
     /// One per [`Pass`], in its order.
-    pipelines: [vk::Pipeline; 4],
+    pipelines: [vk::Pipeline; 5],
     layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,
     /// The looks' set: one dynamic uniform buffer.
@@ -215,26 +247,28 @@ pub struct ZoneRenderer {
     look_set: vk::DescriptorSet,
     sampler: vk::Sampler,
     pool: vk::DescriptorPool,
-    /// One per image: the grey one first, then each texture that uploaded.
+    /// One per combination of images the draws use ([`ImageSet`]).
     sets: Vec<vk::DescriptorSet>,
+    /// The grey one first, then each texture that uploaded, then the ground's detail
+    /// layers (a texture array).
     images: Vec<Image>,
-    /// Each of the scene's textures' set; the grey one's for those that failed.
-    texture_sets: Vec<usize>,
-    /// The set of the ground's detail layers, a texture array.
-    ground_set: usize,
+    /// By pass; opaque and cut out draws sorted by their images, decals in the
+    /// scene's order, so the later of two overlapping decals is drawn over the
+    /// earlier. Each with its look's offset in the looks buffer and its set.
+    draws: Vec<(Draw, u32, usize)>,
     /// `None` when the scene draws nothing (Vulkan has no empty buffers to bind).
-    buffers: Option<[Buffer; 5]>,
+    buffers: Option<[Buffer; 7]>,
     /// The looks, each at a multiple of [`LOOK_STRIDE`].
     looks: Option<Buffer>,
-    /// By pass; opaque and cut out draws sorted by texture, decals in the scene's
-    /// order, so the later of two overlapping decals is drawn over the earlier. Each
-    /// with its look's offset in the looks buffer.
-    draws: Vec<(Draw, u32)>,
     /// Textures drawn grey, with why.
     pub missing: Vec<(String, String)>,
     /// The pixels uploaded, in bytes.
     pub texture_bytes: u64,
 }
+
+/// A draw's images, as indices into [`ZoneRenderer`]'s: its colour (binding 0), then
+/// asphalt's other layers (bindings 2 to 5), grey where it has none.
+type ImageSet = [usize; 5];
 
 fn shader_module(gpu: &Gpu, spirv: &[u8]) -> Result<vk::ShaderModule> {
     let words = ash::util::read_spv(&mut std::io::Cursor::new(spirv))
@@ -263,7 +297,7 @@ impl ZoneRenderer {
         // if a later step fails.
         let mut r = Self {
             gpu: gpu.clone(),
-            pipelines: [vk::Pipeline::null(); 4],
+            pipelines: [vk::Pipeline::null(); 5],
             layout: vk::PipelineLayout::null(),
             set_layout: vk::DescriptorSetLayout::null(),
             look_layout: vk::DescriptorSetLayout::null(),
@@ -272,11 +306,9 @@ impl ZoneRenderer {
             pool: vk::DescriptorPool::null(),
             sets: Vec::new(),
             images: Vec::new(),
-            texture_sets: Vec::new(),
-            ground_set: 0,
+            draws: Vec::new(),
             buffers: None,
             looks: None,
-            draws: Vec::new(),
             missing: Vec::new(),
             texture_bytes: 0,
         };
@@ -288,6 +320,8 @@ impl ZoneRenderer {
                 upload(vertex, bytemuck::cast_slice(&scene.instances))?,
                 upload(vertex, bytemuck::cast_slice(&scene.uvs))?,
                 upload(vertex, bytemuck::cast_slice(&scene.colours))?,
+                upload(vertex, bytemuck::cast_slice(&scene.uvs2))?,
+                upload(vertex, bytemuck::cast_slice(&scene.colours2))?,
                 upload(
                     vk::BufferUsageFlags::INDEX_BUFFER,
                     bytemuck::cast_slice(&scene.indices),
@@ -308,18 +342,25 @@ impl ZoneRenderer {
         }
         r.sampler = unsafe { d.create_sampler(&sampler, None)? };
         let samplers = [r.sampler];
-        let bindings = [
+        let image = |binding| {
             vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
+                .binding(binding)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        };
+        let bindings = [
+            image(0),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT)
                 .immutable_samplers(&samplers),
+            image(2),
+            image(3),
+            image(4),
+            image(5),
         ];
         r.set_layout = unsafe {
             d.create_descriptor_set_layout(
@@ -354,6 +395,7 @@ impl ZoneRenderer {
         };
         for (at, (fragment, pass)) in [
             (FRAG, Pass::Opaque),
+            (ASPHALT, Pass::Asphalt),
             (GROUND, Pass::Ground),
             (CUTOUT, Pass::Cutout),
             (DECAL, Pass::Decal),
@@ -377,28 +419,54 @@ impl ZoneRenderer {
             &[128, 128, 128, 255],
         )?;
         r.images.push(grey);
+        // Each of the scene's textures' image; the grey one for those that failed.
+        let mut texture_images = Vec::with_capacity(scene.textures.len());
         for guid in &scene.textures {
             match r.upload(load(guid)) {
                 Ok(image) => {
-                    r.texture_sets.push(r.images.len());
+                    texture_images.push(r.images.len());
                     r.images.push(image);
                 }
                 Err((name, why)) => {
                     let name = name.unwrap_or_else(|| hex(guid));
                     r.missing.push((name, why));
-                    r.texture_sets.push(0);
+                    texture_images.push(0);
                 }
             }
         }
         let (ground, detail_look) = r.upload_detail(scene, detail)?;
-        r.ground_set = r.images.len();
+        let ground_image = r.images.len();
         r.images.push(ground);
 
-        let count = r.images.len() as u32;
+        let image_of = |t: Option<u32>| {
+            t.and_then(|t| texture_images.get(t as usize).copied())
+                .unwrap_or(0)
+        };
+        let image_sets: Vec<ImageSet> = scene
+            .draws
+            .iter()
+            .map(|draw| {
+                let mut set = [0; 5];
+                set[0] = if draw.shading == Shading::Ground {
+                    ground_image
+                } else {
+                    image_of(draw.texture)
+                };
+                for (at, layer) in set[1..].iter_mut().zip(draw.layers) {
+                    *at = image_of(layer);
+                }
+                set
+            })
+            .collect();
+        let mut distinct = image_sets.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+
+        let count = distinct.len().max(1) as u32;
         let sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
-                descriptor_count: count,
+                descriptor_count: count * 5,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLER,
@@ -417,24 +485,28 @@ impl ZoneRenderer {
                 None,
             )?
         };
-        let layouts = vec![r.set_layout; r.images.len()];
-        r.sets = unsafe {
-            d.allocate_descriptor_sets(
-                &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(r.pool)
-                    .set_layouts(&layouts),
-            )?
-        };
-        for (set, image) in r.sets.iter().zip(&r.images) {
-            let info = [vk::DescriptorImageInfo::default()
-                .image_view(image.view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let write = vk::WriteDescriptorSet::default()
-                .dst_set(*set)
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                .image_info(&info);
-            unsafe { d.update_descriptor_sets(&[write], &[]) };
+        if !distinct.is_empty() {
+            let layouts = vec![r.set_layout; distinct.len()];
+            r.sets = unsafe {
+                d.allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(r.pool)
+                        .set_layouts(&layouts),
+                )?
+            };
+        }
+        for (set, images) in r.sets.iter().zip(&distinct) {
+            for (binding, &image) in [0, 2, 3, 4, 5].iter().zip(images) {
+                let info = [vk::DescriptorImageInfo::default()
+                    .image_view(r.images[image].view)
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let write = vk::WriteDescriptorSet::default()
+                    .dst_set(*set)
+                    .dst_binding(*binding)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .image_info(&info);
+                unsafe { d.update_descriptor_sets(&[write], &[]) };
+            }
         }
 
         // Each distinct look once (a zone has a few dozen), at its offset.
@@ -442,7 +514,8 @@ impl ZoneRenderer {
         r.draws = scene
             .draws
             .iter()
-            .map(|draw| {
+            .zip(&image_sets)
+            .map(|(draw, images)| {
                 let mut look = Look::new(&draw.shading);
                 if draw.shading == Shading::Ground {
                     (look.scale, look.inverse_mean) = detail_look;
@@ -451,12 +524,13 @@ impl ZoneRenderer {
                     looks.push(look);
                     looks.len() - 1
                 });
-                (*draw, (index * LOOK_STRIDE) as u32)
+                let set = distinct.binary_search(images).unwrap_or(0);
+                (*draw, (index * LOOK_STRIDE) as u32, set)
             })
             .collect();
-        r.draws.sort_by_key(|(d, _)| {
+        r.draws.sort_by_key(|&(d, _, set)| {
             let pass = Pass::of(&d.shading);
-            (pass, if pass == Pass::Decal { None } else { d.texture })
+            (pass, if pass == Pass::Decal { None } else { Some(set) })
         });
         if !looks.is_empty() {
             let mut bytes = vec![0u8; looks.len() * LOOK_STRIDE];
@@ -624,7 +698,8 @@ impl ZoneRenderer {
                     extent,
                 }],
             );
-            let Some([positions, instances, uvs, colours, indices]) = &self.buffers else {
+            let Some([positions, instances, uvs, colours, uvs2, colours2, indices]) = &self.buffers
+            else {
                 return;
             };
             d.cmd_push_constants(
@@ -642,12 +717,14 @@ impl ZoneRenderer {
                     instances.buffer,
                     uvs.buffer,
                     colours.buffer,
+                    uvs2.buffer,
+                    colours2.buffer,
                 ],
-                &[0, 0, 0, 0],
+                &[0; 6],
             );
             d.cmd_bind_index_buffer(cmd, indices.buffer, 0, vk::IndexType::UINT32);
             let (mut pipeline, mut set, mut look) = (None, None, None);
-            for &(draw, offset) in &self.draws {
+            for &(draw, offset, wanted) in &self.draws {
                 let pass = Pass::of(&draw.shading);
                 if pipeline != Some(pass) {
                     let p = self.pipelines[pass as usize];
@@ -665,13 +742,6 @@ impl ZoneRenderer {
                     );
                     look = Some(offset);
                 }
-                let wanted = if pass == Pass::Ground {
-                    self.ground_set
-                } else {
-                    draw.texture
-                        .and_then(|t| self.texture_sets.get(t as usize).copied())
-                        .unwrap_or(0)
-                };
                 if set != Some(wanted) {
                     d.cmd_bind_descriptor_sets(
                         cmd,
@@ -717,8 +787,8 @@ impl Drop for ZoneRenderer {
     }
 }
 
-/// Triangle lists: positions, texture coordinates and colours per vertex, the
-/// transform per instance; depth test (reversed depth) and write; no culling, since
+/// Triangle lists: positions, two sets of texture coordinates and colours per
+/// vertex, the transform per instance; depth test (reversed depth) and write; no culling, since
 /// transforms may mirror. `fragment` is the fragment shader's SPIR-V and entry point.
 /// The ground has its own vertex shader, in world space, which reads the texture
 /// coordinates' 8 bytes as two sets of four weights.
@@ -776,6 +846,16 @@ fn pipeline(
             stride: 4,
             input_rate: vk::VertexInputRate::VERTEX,
         },
+        vk::VertexInputBindingDescription {
+            binding: 4,
+            stride: 8,
+            input_rate: vk::VertexInputRate::VERTEX,
+        },
+        vk::VertexInputBindingDescription {
+            binding: 5,
+            stride: 4,
+            input_rate: vk::VertexInputRate::VERTEX,
+        },
     ];
     let attribute = |location, binding, format, offset| vk::VertexInputAttributeDescription {
         location,
@@ -792,6 +872,8 @@ fn pipeline(
         attribute(3, 1, row, 32),
         attribute(4, 2, vk::Format::R32G32_SFLOAT, 0),
         attribute(5, 3, bytes, 0),
+        attribute(7, 4, vk::Format::R32G32_SFLOAT, 0),
+        attribute(8, 5, bytes, 0),
     ];
     let ground = [
         attribute(0, 0, vk::Format::R32G32B32_SFLOAT, 0),

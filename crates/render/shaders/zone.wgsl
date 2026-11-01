@@ -2,7 +2,8 @@
 // section's texture as its look says, the normal from the triangle itself (its
 // screen-space derivatives), lit by the time of day's sun and sky, exposed, then
 // tonemapped. Decals are blended over what is drawn under them. The ground is its
-// tiles' colour with its layers' diffuse maps over it as detail.
+// tiles' colour with its layers' diffuse maps over it as detail. Asphalt blends two
+// layers by its road's mask and lays detail colours over them.
 
 struct Push {
     view_proj: mat4x4<f32>,
@@ -31,12 +32,26 @@ struct Look {
     // average colour.
     scale: array<vec4<f32>, 2>,
     inverse_mean: array<vec4<f32>, 8>,
+    // Asphalt's (scene.rs, Asphalt): its clean layer's tint is `tint`, its damaged
+    // one's this; both layers' tiling (clean in xy); the layers' blend (xy) and the
+    // wheel paths' (zw), each an offset and a contrast; the wheel paths' tint, with
+    // the bias both blends add in w; the detail colours.
+    tint_bg: vec4<f32>,
+    tiling: vec4<f32>,
+    blend: vec4<f32>,
+    tyre_tint: vec4<f32>,
+    detail: array<vec4<f32>, 5>,
 }
 
 @group(0) @binding(0) var colour: texture_2d<f32>;
 // The ground's detail layers' diffuse maps, one per layer.
 @group(0) @binding(0) var layers: texture_2d_array<f32>;
 @group(0) @binding(1) var filtered: sampler;
+// Asphalt's other layers (scene.rs, ASPHALT_LAYERS); grey for every other draw.
+@group(0) @binding(2) var damaged_diffuse: texture_2d<f32>;
+@group(0) @binding(3) var damaged_normal: texture_2d<f32>;
+@group(0) @binding(4) var road_mask: texture_2d<f32>;
+@group(0) @binding(5) var noise: texture_2d<f32>;
 @group(1) @binding(0) var<uniform> look: Look;
 
 struct Out {
@@ -44,6 +59,8 @@ struct Out {
     @location(0) world: vec3<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) vertex_colour: vec4<f32>,
+    @location(3) uv2: vec2<f32>,
+    @location(4) vertex_colour2: vec4<f32>,
 }
 
 @vertex
@@ -54,6 +71,8 @@ fn vs_main(
     @location(3) forward: vec4<f32>,
     @location(4) uv: vec2<f32>,
     @location(5) vertex_colour: vec4<f32>,
+    @location(7) uv2: vec2<f32>,
+    @location(8) vertex_colour2: vec4<f32>,
 ) -> Out {
     let world = p.x * right.xyz + p.y * up.xyz + p.z * forward.xyz
         + vec3(right.w, up.w, forward.w);
@@ -62,6 +81,8 @@ fn vs_main(
     out.world = world;
     out.uv = uv;
     out.vertex_colour = vertex_colour;
+    out.uv2 = uv2;
+    out.vertex_colour2 = vertex_colour2;
     return out;
 }
 
@@ -119,6 +140,45 @@ fn fs_decal(in: Out) -> @location(0) vec4<f32> {
     let alpha = saturate(dot(c, look.select)) * look.opacity.x * in.vertex_colour.r;
     let paint = select(linear(c.r) * in.vertex_colour.rgb, look.colour.rgb, look.colour.w > 0.5);
     return shade(in.world, paint, alpha);
+}
+
+// How much of a layer shows where its blend's input is `x`: none under the offset
+// less the bias, all a little over it, sharper as the contrast rises.
+fn blend(x: f32, offset: f32, contrast: f32) -> f32 {
+    return smoothstep(0.0, 1.0, max(contrast * 10.0, 1.0) * (x - offset) + look.tyre_tint.w);
+}
+
+// `detail` laid over `c` as much as `amount`: under a half it darkens, over it
+// lightens, a half leaves `c` as it is.
+fn overlay(c: vec3<f32>, detail: vec3<f32>, amount: f32) -> vec3<f32> {
+    let dark = 2.0 * c * detail;
+    let light = 1.0 - 2.0 * (1.0 - c) * (1.0 - detail);
+    return mix(c, select(light, dark, c < vec3(0.5)), amount);
+}
+
+// Asphalt: the damaged layer shows where its height (its normal map's blue) times
+// the mask's red is low; the detail colours follow the layers' blue times the vertex
+// colour's green and blue, and the noise times the second vertex colour; the wheel
+// paths (the mask's blue, dark) take their tint.
+@fragment
+fn fs_asphalt(in: Out) -> @location(0) vec4<f32> {
+    let clean_uv = in.uv * look.tiling.xy;
+    let damaged_uv = in.uv * look.tiling.zw;
+    let clean = textureSample(colour, filtered, clean_uv);
+    let damaged = textureSample(damaged_diffuse, filtered, damaged_uv);
+    let height = textureSample(damaged_normal, filtered, damaged_uv).b;
+    let mask = textureSample(road_mask, filtered, in.uv2);
+    let s = blend(height * mask.r, look.blend.x, look.blend.y);
+    var c = mix(linear(damaged.r) * look.tint_bg.rgb, linear(clean.r) * look.tint.rgb, s);
+    c = overlay(c, look.detail[0].rgb, damaged.b * in.vertex_colour.g);
+    c = overlay(c, look.detail[1].rgb, clean.b * in.vertex_colour.b);
+    let n = textureSample(noise, filtered, in.uv).rgb * in.vertex_colour2.rgb;
+    c = overlay(c, look.detail[2].rgb, n.r);
+    c = overlay(c, look.detail[3].rgb, n.g);
+    c = overlay(c, look.detail[4].rgb, n.b);
+    let tyre = 1.0 - blend(mask.b, look.blend.z, look.blend.w);
+    c *= 1.0 + tyre * (2.0 * look.tyre_tint.rgb - 1.0);
+    return shade(in.world, clamp(c, vec3(0.04), vec3(0.5)), 1.0);
 }
 
 struct GroundOut {

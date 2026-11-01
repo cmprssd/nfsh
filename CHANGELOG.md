@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] - 2026-11-01
+
+### Changed
+
+- `nfsh view` draws the roads' asphalt as the game layers it, instead of one flat
+  grey: worn and damaged patches where each road's own mask says, cracks and lighter
+  repairs from its detail colours, and the tyre-polished wheel paths. The speedway's
+  older inner track and its new lanes now look different.
+
+### Not yet
+
+- The asphalt's blend into the grass at a road's edges, its wet look and its normal
+  maps are not drawn yet.
+
 ## [0.15.0] - 2026-11-01
 
 ### Changed
