@@ -343,8 +343,52 @@ picks: (1, 0, 0, 0) for cracks and tyre marks (red), (0, 1, 0, 0) for road lines
 (green, the stripes); `Opacity` scales it (tyre marks 0.4), and `lineColor`, where
 set, is the colour (cracks 0.214, tyre marks 0.003, arrows 0.716). Road lines set no
 `lineColor`: their texture's red is near white (214) and their vertex colour makes
-them white or yellow. How the original blends the asphalt's layers (`Tarmac_Blend_*`,
-`RoadTire_*`, `Dirt_Height_*`) is not worked out.
+them white or yellow.
+
+**Asphalt** (`rd_drv_blendwithterrain`, `rd_drv_basesurface_wetness`; worked out on
+2026-11-01 from the material parameters, the textures and the shaders' programs).
+A material names a clean (`…_FG_…`) and a damaged (`…_BG_…`) layer, each a diffuse
+and a normal map at its own tiling, a `detailMask` for the road and, in some, a
+`Noise`; a material that names no noise gets the shader's own,
+`roadsurfaces/detailtexture/drv_road_detail_d`, which its parameter block binds (most
+of the asphalt near zone 495 leaves it out). The textures:
+
+| texture | channels |
+|---------|----------|
+| layer diffuse (`drv_set…_d`, BC1 or BC7) | red: the grey; blue: where `detailColor1` (damaged layer) or `detailColor2` (clean) shows |
+| layer normal (`drv_set…_n`, BC7) | red, green: the normal; blue: a height (mean 0.55); alpha not worked out |
+| `detailMask`, one per road set (`…/mask/rd_…_mask`, 1024², BC7) | an atlas of the roads' strips in the second texture coordinates (0x22): red, light with dark patches, where the clean layer shows; green, white on the road and grey off it; blue, white with dark lines along the wheel paths; alpha a noise |
+| `Noise` (`drv_road_detail_d`, 4096², BC7) | red, green, blue: where `detailColor3`, `4` and `5` show, in the first texture coordinates as they are |
+
+The vertices carry two colours: the first (0x1E) scales the layers' blue (green for
+`detailColor1`, blue for `2`; its red is 0 on the road pieces checked), the second
+(0x1F) the noise's three channels. The colour is, in order:
+
+1. Each layer's grey times its tint (`Tarmac_Tint_FG`, `…_BG`), the coordinates
+   times its tiling (`Tarmac_Tiling_FG`, `…_BG`).
+2. The two blended: the damaged layer's height times the mask's red, less
+   `Tarmac_Blend_Offset`, times `Tarmac_Blend_Contrast` × 10 (at least 1), plus
+   `VertexColor_Blend_Offset`, clamped to 0 to 1 and smoothed (3t² − 2t³), is how much
+   of the clean layer shows.
+3. The five detail colours laid over it in turn, each as much as its amount above
+   says: an overlay, darkening under a half (2ab) and lightening over it
+   (1 − 2(1 − a)(1 − b)), so a colour of 0.5 leaves it as it is.
+4. The wheel paths: the same blend of the mask's blue with `RoadTire_Blend_Offset` and
+   `…_Contrast`, taken from 1, scales the colour by 1 + w(2 `RoadTire_Tint_Color` − 1).
+5. Clamped to 0.04 to 0.5.
+
+After that the shader blends the road into the terrain's own colour where the
+mask's green and the shoulder texture (`Shoulder_NH`, in the third coordinates) say,
+darkens it when wet (`WaterCycle`) and for occlusion (`OccShadow_*`), and adds the
+normal maps; nfsh does none of these yet, nor `Dirt_Height_*`.
+
+A parameter block's constants (between its third and fourth offsets) give each
+constant a slot word of 0x10000 plus one more than its register in the program's
+second constant buffer: the asphalt's `Tarmac_Tiling_BG` is 0x10001, register 0. A
+material that leaves a constant out gets the block's default: for the asphalt,
+`Tarmac_Blend_Offset` 0.171, `…_Contrast` 0.880, `RoadTire_Blend_Offset` 0.502,
+`…_Contrast` 0.880, `VertexColor_Blend_Offset` 0.214, the detail colours and
+`RoadTire_Tint_Color` 0.5, the tints and tilings 1.
 
 ## Terrain
 

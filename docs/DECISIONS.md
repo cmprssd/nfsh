@@ -533,3 +533,31 @@ Supersedes "The ground is one draw in plain grey" above.
 - **One diffuse per layer: its finest scaled one**, ties by name; the road sets'
   `drv_…_d` maps are left out (their channels are not plain colour). Why: the
   owner's one-sample rule, applied to the layers that have two diffuse maps.
+
+## 2026-11-01: The asphalt's layers (decided by Claude, pending review)
+
+The owner chose the road layers as the next task. Supersedes "Asphalt is its clean
+layer only" above.
+
+- **Asphalt is drawn as its shader draws it, as far as the colour goes**: the clean
+  and damaged layers blended by the road's mask, the five detail colours laid over
+  them, the wheel paths tinted (docs/FORMATS.md, "Asphalt"). Why: it is how the
+  original gets its patches, cracks and worn lanes; a road was a flat grey before.
+  Reading the programs to learn it follows the terrain's precedent: only our own
+  description and the numbers go into the repo.
+- **Left out for now**: the blend into the terrain's colour at the road's edges, the
+  wet look, occlusion, the normal maps and `Dirt_Height_*`. Why: the terrain blend
+  needs the ground's colour where the road is drawn (a texture nfsh doesn't have:
+  the ground's colour is per vertex), and nfsh draws no normal maps anywhere yet.
+- **The layers' grey stays sRGB-encoded** (as in "Road materials"), and the other
+  channels (the amounts, the height, the mask) are read as they are. Why: the grey
+  was checked against the screenshot; the textures are stored unorm, so whether the
+  game decodes any of them is not settled, and a mask is a weight, not a colour.
+- **Asphalt without all of its layers is its clean layer's grey**, as before: a
+  material missing the damaged layer or the mask, or a section without the mask's
+  coordinates. A material without a noise takes the shader's (`drv_road_detail_d`).
+  Why: a half-drawn blend with a grey stand-in would look wrong in a new way.
+- **A draw binds up to five textures**: its colour, and for asphalt its other four,
+  in one descriptor set per combination of textures used (grey where a draw has
+  none). The look's uniform slot grows to 512 bytes. Why: the fewest changes to
+  how draws are made, sorted and bound; a zone uses a few dozen combinations.

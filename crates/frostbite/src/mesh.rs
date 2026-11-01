@@ -32,8 +32,13 @@ const IN_CHUNK: u32 = u32::MAX;
 /// Vertex element usages read so far.
 pub const POSITION: u8 = 0x01;
 pub const TEXCOORD0: u8 = 0x21;
+/// On roads, the mask's coordinates (see `docs/FORMATS.md`).
+pub const TEXCOORD1: u8 = 0x22;
 /// Taken as a vertex colour: road lines' are white or yellow (see `docs/FORMATS.md`).
 pub const COLOUR0: u8 = 0x1E;
+/// On roads, a second vertex colour: how much of three detail colours the asphalt
+/// takes.
+pub const COLOUR1: u8 = 0x1F;
 
 /// Vertex element formats read so far, with their sizes.
 pub const FLOAT2: u8 = 0x02;
@@ -130,6 +135,9 @@ pub struct Geometry {
     pub uvs: Option<Vec<[f32; 2]>>,
     /// The vertex colours (RGBA, 255 is 1), if the section has them as four bytes.
     pub colours: Option<Vec<[u8; 4]>>,
+    /// The second texture coordinates and vertex colours, likewise.
+    pub uvs2: Option<Vec<[f32; 2]>>,
+    pub colours2: Option<Vec<[u8; 4]>>,
     /// Three a triangle, counting from the section's first vertex.
     pub indices: Vec<u32>,
 }
@@ -167,20 +175,24 @@ impl Lod {
             HALF4 => Some([half_at(v, 0)?, half_at(v, 2)?, half_at(v, 4)?]),
             _ => None,
         })?;
-        let uvs = match section.element(TEXCOORD0) {
-            None => None,
-            Some(uv) => Some(self.attribute(section, uv, data, |v| match uv.format {
-                FLOAT2 => Some([f32_at(v, 0)?, f32_at(v, 4)?]),
-                HALF2 => Some([half_at(v, 0)?, half_at(v, 2)?]),
-                _ => None,
-            })?),
+        let uvs = |usage| match section.element(usage) {
+            None => Ok(None),
+            Some(uv) => self
+                .attribute(section, uv, data, |v| match uv.format {
+                    FLOAT2 => Some([f32_at(v, 0)?, f32_at(v, 4)?]),
+                    HALF2 => Some([half_at(v, 0)?, half_at(v, 2)?]),
+                    _ => None,
+                })
+                .map(Some),
         };
-        let colours = match section.element(COLOUR0) {
-            Some(c) if c.format == UNORM4 => {
-                Some(self.attribute(section, c, data, |v| v.first_chunk::<4>().copied())?)
-            }
-            _ => None,
+        let colours = |usage| match section.element(usage) {
+            Some(c) if c.format == UNORM4 => self
+                .attribute(section, c, data, |v| v.first_chunk::<4>().copied())
+                .map(Some),
+            _ => Ok(None),
         };
+        let (uvs2, colours2) = (uvs(TEXCOORD1)?, colours(COLOUR1)?);
+        let (uvs, colours) = (uvs(TEXCOORD0)?, colours(COLOUR0)?);
 
         let width = usize::from(self.index_width);
         let count = u64::from(section.triangles) * 3;
@@ -221,6 +233,8 @@ impl Lod {
             positions,
             uvs,
             colours,
+            uvs2,
+            colours2,
             indices,
         })
     }
@@ -673,6 +687,31 @@ mod tests {
         // Another format is not read as a colour.
         s.elements.last_mut().unwrap().format = HALF2;
         assert_eq!(lod.section(&s, &chunk).unwrap().colours, None);
+    }
+
+    #[test]
+    fn reads_the_second_coordinates_and_colours() {
+        let (res, chunk) = sample();
+        let set = MeshSet::parse(&res).unwrap();
+        let lod = &set.lods[0];
+        let mut s = lod.sections[0].clone();
+        assert_eq!(lod.section(&s, &chunk).unwrap().uvs2, None);
+        // Both over the first coordinates' bytes.
+        for (usage, format) in [(TEXCOORD1, HALF2), (COLOUR1, UNORM4)] {
+            s.elements.push(Element {
+                usage,
+                format,
+                offset: 0,
+                stream: 1,
+            });
+        }
+        let g = lod.section(&s, &chunk).unwrap();
+        assert_eq!(g.uvs2, g.uvs);
+        assert_eq!(
+            g.colours2,
+            Some(vec![[0, 0, 0, 0x38], [0, 0x3C, 0, 0], [0, 0x40, 0, 0x3C]])
+        );
+        assert_eq!(g.colours, None);
     }
 
     #[test]
