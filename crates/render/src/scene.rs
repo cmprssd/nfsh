@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use frostbite::level::{Mesh, Transform, Zone};
 use frostbite::mesh::{Geometry, Meshes};
+use frostbite::terrain::Ground;
 use frostbite::texture::TextureParameter;
 
 /// A placement's transform as the vertex shader reads it: right, up and forward,
@@ -176,6 +177,29 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
     scene
 }
 
+/// Adds `ground`, already in world space, as one draw in plain grey; it leaves the
+/// bounds, which are of the placements, as they are.
+pub fn add_ground(scene: &mut Scene, ground: &Ground) {
+    if ground.indices.is_empty() {
+        return;
+    }
+    let vertex_offset = scene.positions.len() as i32;
+    let first_index = scene.indices.len() as u32;
+    scene.positions.extend_from_slice(&ground.positions);
+    scene.uvs.resize(scene.positions.len(), [0.0; 2]);
+    scene.indices.extend_from_slice(&ground.indices);
+    scene.draws.push(Draw {
+        first_index,
+        index_count: ground.indices.len() as u32,
+        vertex_offset,
+        first_instance: scene.instances.len() as u32,
+        instance_count: 1,
+        texture: None,
+        cutout: false,
+    });
+    scene.instances.push(instance(&Transform::IDENTITY));
+}
+
 /// Every section of the first LOD of the mesh asset `mesh`, with its material's
 /// colour texture, from the store. A section whose material is out of range is drawn
 /// grey.
@@ -300,6 +324,40 @@ mod tests {
         assert!(scene.textures.is_empty());
         assert_eq!(scene.bounds, Some(([0.0; 3], [20.0, 0.0, 0.0])));
         assert!(scene.failed.is_empty());
+    }
+
+    #[test]
+    fn the_ground_is_one_grey_draw_after_the_meshes() {
+        let zone = Zone {
+            meshes: vec![mesh("a")],
+            placements: vec![at(0, 5.0)],
+            ..Zone::default()
+        };
+        let mut scene = build(&zone, |_| Ok(vec![triangle()]));
+        let ground = Ground {
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            indices: vec![0, 2, 1, 0, 3, 2],
+            ..Ground::default()
+        };
+        add_ground(&mut scene, &ground);
+        assert_eq!(scene.positions.len(), 7);
+        assert_eq!(scene.uvs.len(), 7);
+        assert_eq!(scene.indices[3..], [0, 2, 1, 0, 3, 2]);
+        let ground_draw = Draw {
+            index_count: 6,
+            ..draw(3, 3, 1, 1)
+        };
+        assert_eq!(scene.draws[1], ground_draw);
+        assert_eq!(
+            scene.instances[1],
+            [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        );
+        assert_eq!(scene.triangles(), 3);
+        assert_eq!(scene.bounds, Some(([5.0, 0.0, 0.0], [5.0, 0.0, 0.0])));
+        // Nothing to draw adds nothing.
+        let before = scene.clone();
+        add_ground(&mut scene, &Ground::default());
+        assert_eq!(scene, before);
     }
 
     #[test]

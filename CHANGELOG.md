@@ -4,6 +4,19 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-11-01
+
+### Added
+
+- `nfsh view` draws the ground under the zone and 150 m around it: Palm City's
+  terrain heights, so the infield, the hills and the ground between the roads are no
+  longer black. It is drawn in plain grey for now, a vertex every 2 m.
+
+### Not yet
+
+- The terrain's colours (its layers and their masks), and where tiles of different
+  detail meet, small cracks can show.
+
 ## [0.11.0] - 2026-11-01
 
 ### Added
