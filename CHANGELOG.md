@@ -4,6 +4,21 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] - 2026-11-01
+
+### Changed
+
+- `nfsh view` blends the roads into the ground at their edges, as the game does: the
+  asphalt now ends in a ragged, crumbling edge where the grass and dirt take over,
+  instead of a straight line, and the ground shows through in the low spots of
+  worn asphalt. The ground seen there is the same grass and earth, with the same
+  detail, as just beside the road.
+
+### Not yet
+
+- The asphalt's wet look and its normal maps are not drawn yet. Roads drawn with the
+  game's wet-road shader keep their straight edge: that shader has no such blend.
+
 ## [0.16.0] - 2026-11-01
 
 ### Changed

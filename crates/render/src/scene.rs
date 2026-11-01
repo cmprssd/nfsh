@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use frostbite::level::{Mesh, Transform, Zone};
 use frostbite::mesh::{Geometry, Meshes};
-use frostbite::terrain::Ground;
+use frostbite::terrain::{Ground, GroundMap};
 use frostbite::texture::Material;
 
 /// A placement's transform as the vertex shader reads it: right, up and forward,
@@ -25,7 +25,7 @@ pub struct Draw {
     /// Index into [`Scene::textures`]; `None` draws plain grey.
     pub texture: Option<u32>,
     /// Asphalt's other textures ([`ASPHALT_LAYERS`]), likewise.
-    pub layers: [Option<u32>; 4],
+    pub layers: [Option<u32>; 6],
     pub shading: Shading,
 }
 
@@ -83,19 +83,40 @@ pub struct Asphalt {
     /// `detailColor1` to `5`, each laid over the colour (an overlay, 0.5 leaving it
     /// as it is) as much as the layers' diffuse blue and the noise say.
     pub detail: [[f32; 3]; 5],
+    /// Where the road gives way to the ground under it; `None` for a road drawn to
+    /// its edges.
+    pub edge: Option<Edge>,
+}
+
+/// Where a road gives way to the ground (`rd_drv_blendwithterrain`, with its
+/// `Shoulder_NH`): the shoulder texture's blue, in the third texture coordinates,
+/// says where the road shows, and the road's mask's green times its height takes it
+/// away again where it falls under the offset (see `docs/FORMATS.md`, "Asphalt").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Edge {
+    /// Times the third texture coordinates (`Shoulder_Tiling`).
+    pub tiling: [f32; 2],
+    /// `Dirt_Height_Offset`, `…_Contrast`, then `…_Paint_Boost`, which takes from the
+    /// mask's green.
+    pub dirt: [f32; 3],
 }
 
 /// The textures asphalt is drawn with besides its clean layer's diffuse, in the
 /// order [`Draw::layers`] holds them: the damaged layer's diffuse and normal map
-/// (its height in blue), the road's mask (in the second texture coordinates) and the
-/// noise its detail colours follow. Most materials leave the noise to the shader,
-/// whose own is [`ASPHALT_NOISE`].
-pub const ASPHALT_LAYERS: [&str; 4] = [
+/// (its height in blue), the road's mask (in the second texture coordinates), the
+/// noise its detail colours follow, the clean layer's normal map and the shoulder
+/// ([`Edge`]). Most materials leave the noise to the shader, whose own is
+/// [`ASPHALT_NOISE`]. The first [`ASPHALT_NEEDS`] must be there for asphalt to be
+/// drawn as such; the clean layer's height is a half without its map.
+pub const ASPHALT_LAYERS: [&str; 6] = [
     "Tarmac_BG_Diffuse",
     "Tarmac_BG_Normal",
     "detailMask",
     "Noise",
+    "Tarmac_FG_Normal",
+    "Shoulder_NH",
 ];
+pub const ASPHALT_NEEDS: usize = 4;
 
 pub const ASPHALT_NOISE: &str =
     "worldassets_roboto/common_textures/roadsurfaces/detailtexture/drv_road_detail_d";
@@ -129,6 +150,14 @@ impl Asphalt {
             tyre_tint: rgb("RoadTire_Tint_Color", 0.5),
             bias: x("VertexColor_Blend_Offset", 0.214_041),
             detail: [1, 2, 3, 4, 5].map(|i| rgb(&format!("detailColor{i}"), 0.5)),
+            edge: m.texture("Shoulder_NH").map(|_| Edge {
+                tiling: xy("Shoulder_Tiling"),
+                dirt: [
+                    x("Dirt_Height_Offset", 0.215_860),
+                    x("Dirt_Height_Contrast", 0.814_847),
+                    x("Dirt_Height_Paint_Boost", 0.0),
+                ],
+            }),
         }
     }
 }
@@ -141,7 +170,7 @@ pub struct Section {
     /// the section has no texture coordinates.
     pub texture: Option<[u8; 16]>,
     /// Asphalt's other textures ([`ASPHALT_LAYERS`]).
-    pub layers: [Option<[u8; 16]>; 4],
+    pub layers: [Option<[u8; 16]>; 6],
     pub shading: Shading,
 }
 
@@ -159,7 +188,9 @@ const COLOUR: [(&str, bool); 4] = [
 /// `…transparentdcl…`) blend their `Diffuse` by `alphaSelector`, `Opacity` and
 /// `lineColor`; asphalt (`Tarmac_FG_Diffuse`) is [`Asphalt`] when it names the rest
 /// of its layers ([`asphalt_layers`]), else that texture's grey times
-/// `Tarmac_Tint_FG`; anything else takes the first colour texture it names.
+/// `Tarmac_Tint_FG`, and gives way to the ground at its edges only with the shader
+/// that blends it (`…blendwithterrain`); anything else takes the first colour texture
+/// it names.
 pub fn look(shader: &str, m: &Material) -> Option<([u8; 16], Shading)> {
     let rgb = |v: [f32; 4]| [v[0], v[1], v[2]];
     if shader.contains("transparentdcl") {
@@ -172,7 +203,11 @@ pub fn look(shader: &str, m: &Material) -> Option<([u8; 16], Shading)> {
     }
     if let Some(t) = m.texture("Tarmac_FG_Diffuse") {
         if asphalt_layers(m, None)[..3].iter().all(Option::is_some) {
-            return Some((t, Shading::Asphalt(Asphalt::of(m))));
+            let mut asphalt = Asphalt::of(m);
+            if !shader.contains("blendwithterrain") {
+                asphalt.edge = None;
+            }
+            return Some((t, Shading::Asphalt(asphalt)));
         }
         let tint = m.vector("Tarmac_Tint_FG").map_or([1.0; 3], rgb);
         return Some((t, Shading::Grey { tint }));
@@ -189,7 +224,7 @@ pub fn look(shader: &str, m: &Material) -> Option<([u8; 16], Shading)> {
 
 /// The textures material `m` names for [`ASPHALT_LAYERS`], the noise being `noise`
 /// where it names none.
-pub fn asphalt_layers(m: &Material, noise: Option<[u8; 16]>) -> [Option<[u8; 16]>; 4] {
+pub fn asphalt_layers(m: &Material, noise: Option<[u8; 16]>) -> [Option<[u8; 16]>; 6] {
     let mut layers = ASPHALT_LAYERS.map(|name| m.texture(name));
     layers[3] = layers[3].or(noise);
     layers
@@ -207,6 +242,8 @@ pub struct Scene {
     /// section has none.
     pub uvs2: Vec<[f32; 2]>,
     pub colours2: Vec<[u8; 4]>,
+    /// The third texture coordinates, likewise.
+    pub uvs3: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
     pub instances: Vec<Instance>,
     pub draws: Vec<Draw>,
@@ -219,6 +256,9 @@ pub struct Scene {
     pub bounds: Option<([f32; 3], [f32; 3])>,
     /// The ground's detail: one per weight its vertices carry, in that order.
     pub detail: Vec<Detail>,
+    /// The ground's colour and weights on a grid, for asphalt's edges; `None` without
+    /// a ground.
+    pub ground_map: Option<GroundMap>,
     /// Meshes that could not be read, with why, and how many placements that left
     /// out.
     pub failed: Vec<(String, String)>,
@@ -333,6 +373,11 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
                 Some(c) if c.len() == g.positions.len() => scene.colours2.extend_from_slice(c),
                 _ => scene.colours2.resize(scene.positions.len(), [0; 4]),
             }
+            // Asphalt without them samples its shoulder at zero, as its shader does.
+            match &g.uvs3 {
+                Some(uvs) if uvs.len() == g.positions.len() => scene.uvs3.extend_from_slice(uvs),
+                _ => scene.uvs3.resize(scene.positions.len(), [0.0; 2]),
+            }
             scene.indices.extend_from_slice(&g.indices);
             if g.indices.is_empty() {
                 continue;
@@ -345,15 +390,19 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
             };
             // Without its own texture coordinates a section samples one texel.
             let texture = s.texture.filter(|_| g.uvs.is_some()).map(&mut index);
-            let mut layers = [None; 4];
+            let mut layers = [None; 6];
             let shading = match s.shading {
                 // What has no texture is drawn plain grey.
                 _ if texture.is_none() => Shading::Colour,
                 // Asphalt without its layers or its mask's coordinates is its clean
                 // layer's grey.
                 Shading::Asphalt(a) => {
-                    if g.uvs2.is_some() && s.layers.iter().all(Option::is_some) {
-                        layers = s.layers.map(|t| t.map(&mut index));
+                    if g.uvs2.is_some() && s.layers[..ASPHALT_NEEDS].iter().all(Option::is_some) {
+                        let mut wanted = s.layers;
+                        if a.edge.is_none() {
+                            wanted[5] = None;
+                        }
+                        layers = wanted.map(|t| t.map(&mut index));
                         Shading::Asphalt(a)
                     } else {
                         Shading::Grey { tint: a.tint[0] }
@@ -378,6 +427,7 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
             scene.colours.truncate(first_vertex);
             scene.uvs2.truncate(first_vertex);
             scene.colours2.truncate(first_vertex);
+            scene.uvs3.truncate(first_vertex);
             scene.indices.truncate(first_index);
             scene
                 .failed
@@ -402,8 +452,8 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
 }
 
 /// Adds `ground`, already in world space, as one draw in its vertices' colours with
-/// `detail` (one per layer of `ground.detail`) over them; it leaves the bounds, which
-/// are of the placements, as they are.
+/// `detail` (one per layer of `ground.detail`) over them, and its map for asphalt's
+/// edges; it leaves the bounds, which are of the placements, as they are.
 pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
     if ground.indices.is_empty() {
         return;
@@ -428,6 +478,8 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
         .resize(scene.positions.len(), [128, 128, 128, 255]);
     scene.uvs2.resize(scene.positions.len(), [0.0; 2]);
     scene.colours2.resize(scene.positions.len(), [0; 4]);
+    scene.uvs3.resize(scene.positions.len(), [0.0; 2]);
+    scene.ground_map = Some(ground.map.clone());
     scene.indices.extend_from_slice(&ground.indices);
     scene.draws.push(Draw {
         first_index,
@@ -436,7 +488,7 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
         first_instance: scene.instances.len() as u32,
         instance_count: 1,
         texture: None,
-        layers: [None; 4],
+        layers: [None; 6],
         shading: Shading::Ground,
     });
     scene.instances.push(instance(&Transform::IDENTITY));
@@ -466,7 +518,7 @@ pub fn first_lod(
             });
             let layers = match (look, materials.get(s.material as usize)) {
                 (Some((_, Shading::Asphalt(_))), Some(m)) => asphalt_layers(m, noise),
-                _ => [None; 4],
+                _ => [None; 6],
             };
             Ok(Section {
                 geometry: lod.section(s, &data)?,
@@ -542,7 +594,7 @@ mod tests {
             first_instance,
             instance_count: instances,
             texture: None,
-            layers: [None; 4],
+            layers: [None; 6],
             shading: Shading::Colour,
         }
     }
@@ -802,6 +854,47 @@ mod tests {
     }
 
     #[test]
+    fn asphalt_gives_way_to_the_ground_only_with_its_blending_shader() {
+        let layers = [
+            ("Tarmac_FG_Diffuse", Some(2)),
+            ("Tarmac_BG_Diffuse", Some(3)),
+            ("Tarmac_BG_Normal", Some(4)),
+            ("detailMask", Some(5)),
+            ("Shoulder_NH", Some(6)),
+        ];
+        let road = material(
+            &layers,
+            &[
+                ("Shoulder_Tiling", [2.0, 2.0, 0.0, 0.0]),
+                ("Dirt_Height_Offset", [0.3, 0.0, 0.0, 0.0]),
+            ],
+        );
+        let edge = |shader: &str, m: &Material| match look(shader, m) {
+            Some((_, Shading::Asphalt(a))) => a.edge,
+            other => panic!("not asphalt: {other:?}"),
+        };
+        // The material's tiling and offset, the shader's contrast and paint boost.
+        assert_eq!(
+            edge("shaders/world/roads/rd_drv_blendwithterrain", &road),
+            Some(Edge {
+                tiling: [2.0, 2.0],
+                dirt: [0.3, 0.814_847, 0.0],
+            })
+        );
+        // The wet road's shader draws it to its edges.
+        assert_eq!(
+            edge("shaders/world/roads/rd_drv_basesurface_wetness", &road),
+            None
+        );
+        // So does a material without a shoulder.
+        let road = material(&layers[..4], &[]);
+        assert_eq!(
+            edge("shaders/world/roads/rd_drv_blendwithterrain", &road),
+            None
+        );
+    }
+
+    #[test]
     fn road_decals_blend_by_their_selected_channel() {
         let shader = "wstroads/rd_dcl_transparentdcl_lerp";
         let lines = material(
@@ -921,11 +1014,19 @@ mod tests {
             .iter()
             .filter(|d| matches!(d.shading, Shading::Decal { colour: None, .. }))
             .count();
+        let edged = scene
+            .draws
+            .iter()
+            .filter(|d| matches!(d.shading, Shading::Asphalt(a) if a.edge.is_some()))
+            .count();
         // Counted on the owner's store, 2026-11-01: 88 asphalt sections, all with
-        // their layers (the 36 with positions only are plain grey), 130 decals, 53 of
-        // them lines coloured by their vertices; the asphalt's layers add 18 textures.
+        // their layers (the 36 with positions only are plain grey), 58 of them giving
+        // way to the ground at their edges (the 30 others are the wet road's shader);
+        // 130 decals, 53 of them lines coloured by their vertices; the asphalt's
+        // layers add 22 textures.
         assert_eq!(count, [1047, 20, 0, 88, 130]);
+        assert_eq!(edged, 58);
         assert_eq!(painted, 53);
-        assert_eq!(scene.textures.len(), 174);
+        assert_eq!(scene.textures.len(), 178);
     }
 }

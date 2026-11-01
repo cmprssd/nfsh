@@ -536,11 +536,64 @@ pub struct Ground {
     /// (255 is all of it), from the tile's pages or its nearest ancestor's.
     pub weights: Vec<[u8; DETAIL_SLOTS]>,
     pub indices: Vec<u32>,
+    /// The same colour and weights on a grid, for what is drawn over the ground.
+    pub map: GroundMap,
     /// How many leaf tiles it covers.
     pub tiles: usize,
     /// Tiles whose heightfield could not be read, with why; their area is drawn from
     /// a coarser tile's heights when there is one.
     pub failed: Vec<(usize, String)>,
+}
+
+/// The ground's colour and weights over the area it was asked for, a texel every
+/// `texel` metres, the first's middle half a texel from `min` (x and z): what a road
+/// blends into at its edges (see `docs/FORMATS.md`, "Asphalt"). A texel over no
+/// drawn tile (none with heights to draw from) is grey with no weights.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GroundMap {
+    pub min: [f32; 2],
+    pub texel: f32,
+    pub width: usize,
+    pub height: usize,
+    /// Row by row (z, then x): the colour (sRGB-encoded; alpha 255)…
+    pub colours: Vec<[u8; 4]>,
+    /// …and each of [`Ground::detail`]'s share of the weight, as a vertex's.
+    pub weights: Vec<[u8; DETAIL_SLOTS]>,
+}
+
+/// The most texels on a side of a [`GroundMap`]: a larger area takes larger texels.
+pub const MAP_SIDE: usize = 4096;
+
+impl GroundMap {
+    /// A map of `lo`..`hi` with a texel every `spacing` metres, or as many as
+    /// [`MAP_SIDE`] allows; every texel grey with no weights.
+    fn new(lo: [f32; 2], hi: [f32; 2], spacing: f32) -> Self {
+        let extent = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(0.0);
+        let texel = spacing.max(extent / MAP_SIDE as f32).max(f32::MIN_POSITIVE);
+        let side = |k: usize| (((hi[k] - lo[k]) / texel).ceil().max(0.0) as usize).min(MAP_SIDE);
+        let (width, height) = (side(0), side(1));
+        let [r, g, b] = NO_COLOUR;
+        Self {
+            min: lo,
+            texel,
+            width,
+            height,
+            colours: vec![[r, g, b, 255]; width * height],
+            weights: vec![[0; DETAIL_SLOTS]; width * height],
+        }
+    }
+
+    /// The texels whose middles lie in the square at `min` of side `size`: their
+    /// columns, then their rows.
+    fn texels_in(&self, min: [f32; 2], size: f32) -> [std::ops::Range<usize>; 2] {
+        let count = [self.width, self.height];
+        [0, 1].map(|k| {
+            let first = |at: f32| {
+                (((at - self.min[k]) / self.texel - 0.5).ceil().max(0.0) as usize).min(count[k])
+            };
+            first(min[k])..first(min[k] + size)
+        })
+    }
 }
 
 /// The tile whose heights or colour the walk draws from: its square and its data.
@@ -565,6 +618,7 @@ pub fn ground(
 ) -> Ground {
     let mut ground = Ground {
         detail: detail_slots(tree, lo, hi, detail),
+        map: GroundMap::new(lo, hi, spacing),
         ..Ground::default()
     };
     if !tree.tiles.is_empty() {
@@ -750,6 +804,22 @@ fn emit(
                         p.weights(*at, *side, [x, z], &ground.detail)
                     });
                 ground.weights.push(w);
+            }
+        }
+    }
+    let [columns, rows] = ground.map.texels_in(tile.min, tile.size);
+    let map = &mut ground.map;
+    for row in rows {
+        for column in columns.clone() {
+            let at = [column, row].map(|i| i as f32 + 0.5);
+            let [x, z] = [0, 1].map(|k| map.min[k] + at[k] * map.texel);
+            let i = row * map.width + column;
+            if let Some((at, side, c)) = &sources.colour {
+                let [r, g, b] = c.sample(*at, *side, [x, z]);
+                map.colours[i] = [r, g, b, 255];
+            }
+            if let Some((at, side, p)) = &sources.pages {
+                map.weights[i] = p.weights(*at, *side, [x, z], &ground.detail);
             }
         }
     }
@@ -1184,6 +1254,21 @@ mod tests {
         assert_eq!((g.tiles, g.colours.len()), (2, 2 * 81));
         assert!(g.colours[..81].iter().all(|&c| c == [131, 129, 131, 255]));
         assert!(g.colours[81..].iter().all(|&c| c == [0, 255, 0, 255]));
+        // The map likewise, a texel every 16 m: 16 across, 8 down (127 m, rounded
+        // up); the first 8 columns grey, the rest green.
+        let m = &g.map;
+        assert_eq!(
+            (m.min, m.texel, m.width, m.height),
+            ([-128.0; 2], 16.0, 16, 8)
+        );
+        for (i, &c) in m.colours.iter().enumerate() {
+            let want = if i % 16 < 8 {
+                [131, 129, 131, 255]
+            } else {
+                [0, 255, 0, 255]
+            };
+            assert_eq!(c, want, "texel {i}");
+        }
         // The second's chunk unreadable: it is drawn in the root's colour.
         let g = ground(&tree, [0.0, -128.0], [128.0, -1.0], 16.0, &[], |id| {
             if id[0] == 2 {
@@ -1194,6 +1279,19 @@ mod tests {
         });
         assert_eq!((g.tiles, g.failed.len()), (1, 1));
         assert!(g.colours.iter().all(|&c| c == [131, 129, 131, 255]));
+        assert!(g.map.colours.iter().all(|&c| c == [131, 129, 131, 255]));
+    }
+
+    #[test]
+    fn a_large_maps_texels_grow_to_fit_its_side() {
+        let m = GroundMap::new([0.0; 2], [16_384.0, 100.0], 2.0);
+        assert_eq!((m.texel, m.width, m.height), (4.0, MAP_SIDE, 25));
+        assert_eq!(m.colours.len(), MAP_SIDE * 25);
+        // The texels whose middles are in a square: those at 2, 6, … 10 m.
+        assert_eq!(m.texels_in([1.0, -50.0], 10.0), [0..3, 0..0]);
+        assert_eq!(m.texels_in([16_380.0, 98.0], 128.0), [4095..4096, 24..25]);
+        let empty = GroundMap::new([5.0; 2], [5.0; 2], 2.0);
+        assert_eq!((empty.width, empty.height, empty.colours.len()), (0, 0, 0));
     }
 
     /// Reads Palm City's streaming tree and every heightfield in the store

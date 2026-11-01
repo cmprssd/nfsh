@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use ash::vk;
 use frostbite::lighting::Lighting;
+use frostbite::terrain::GroundMap;
 use frostbite::texture::{Kind, Texture, bc1_mean};
 
 use crate::Camera;
@@ -94,8 +95,15 @@ struct Look {
     blend: [f32; 4],
     /// …the wheel paths' tint, with the bias both blends add in `w`…
     tyre_tint: [f32; 4],
-    /// …and the detail colours.
+    /// …the detail colours…
     detail: [[f32; 4]; 5],
+    /// …and its edge ([`crate::scene::Edge`]): the shoulder's tiling, with 1 in `z`
+    /// where the road gives way to the ground…
+    edge: [f32; 4],
+    /// …the dirt's offset, contrast and paint boost…
+    dirt: [f32; 4],
+    /// …and where the ground map lies: its corner (x, z) and one over its size.
+    ground_map: [f32; 4],
 }
 
 /// Where each look starts in the looks buffer: a multiple of 256 bytes, the most any
@@ -116,6 +124,9 @@ impl Look {
             blend: [0.0; 4],
             tyre_tint: [0.0; 4],
             detail: [[0.0; 4]; 5],
+            edge: [0.0; 4],
+            dirt: [0.0; 4],
+            ground_map: [0.0; 4],
         };
         let rgb = |c: [f32; 3], w| [c[0], c[1], c[2], w];
         match *shading {
@@ -129,6 +140,10 @@ impl Look {
                 look.blend = [a.blend[0], a.blend[1], a.tyre[0], a.tyre[1]];
                 look.tyre_tint = rgb(a.tyre_tint, a.bias);
                 look.detail = a.detail.map(|c| rgb(c, 0.0));
+                if let Some(e) = a.edge {
+                    look.edge = [e.tiling[0], e.tiling[1], 1.0, 0.0];
+                    look.dirt = rgb(e.dirt, 0.0);
+                }
             }
             Shading::Decal {
                 select,
@@ -257,7 +272,7 @@ pub struct ZoneRenderer {
     /// earlier. Each with its look's offset in the looks buffer and its set.
     draws: Vec<(Draw, u32, usize)>,
     /// `None` when the scene draws nothing (Vulkan has no empty buffers to bind).
-    buffers: Option<[Buffer; 7]>,
+    buffers: Option<[Buffer; 8]>,
     /// The looks, each at a multiple of [`LOOK_STRIDE`].
     looks: Option<Buffer>,
     /// Textures drawn grey, with why.
@@ -267,8 +282,12 @@ pub struct ZoneRenderer {
 }
 
 /// A draw's images, as indices into [`ZoneRenderer`]'s: its colour (binding 0), then
-/// asphalt's other layers (bindings 2 to 5), grey where it has none.
-type ImageSet = [usize; 5];
+/// asphalt's other layers (bindings 2 to 7), grey where it has none. Every set also
+/// binds the ground's map (8) and detail layers (9).
+type ImageSet = [usize; 7];
+
+/// The bindings of an [`ImageSet`]'s images.
+const SET_BINDINGS: [u32; 7] = [0, 2, 3, 4, 5, 6, 7];
 
 fn shader_module(gpu: &Gpu, spirv: &[u8]) -> Result<vk::ShaderModule> {
     let words = ash::util::read_spv(&mut std::io::Cursor::new(spirv))
@@ -322,6 +341,7 @@ impl ZoneRenderer {
                 upload(vertex, bytemuck::cast_slice(&scene.colours))?,
                 upload(vertex, bytemuck::cast_slice(&scene.uvs2))?,
                 upload(vertex, bytemuck::cast_slice(&scene.colours2))?,
+                upload(vertex, bytemuck::cast_slice(&scene.uvs3))?,
                 upload(
                     vk::BufferUsageFlags::INDEX_BUFFER,
                     bytemuck::cast_slice(&scene.indices),
@@ -361,6 +381,10 @@ impl ZoneRenderer {
             image(3),
             image(4),
             image(5),
+            image(6),
+            image(7),
+            image(8),
+            image(9),
         ];
         r.set_layout = unsafe {
             d.create_descriptor_set_layout(
@@ -437,6 +461,9 @@ impl ZoneRenderer {
         let (ground, detail_look) = r.upload_detail(scene, detail)?;
         let ground_image = r.images.len();
         r.images.push(ground);
+        let (map, map_look) = r.upload_ground_map(scene.ground_map.as_ref())?;
+        let map_image = r.images.len();
+        r.images.push(map);
 
         let image_of = |t: Option<u32>| {
             t.and_then(|t| texture_images.get(t as usize).copied())
@@ -446,12 +473,8 @@ impl ZoneRenderer {
             .draws
             .iter()
             .map(|draw| {
-                let mut set = [0; 5];
-                set[0] = if draw.shading == Shading::Ground {
-                    ground_image
-                } else {
-                    image_of(draw.texture)
-                };
+                let mut set = [0; 7];
+                set[0] = image_of(draw.texture);
                 for (at, layer) in set[1..].iter_mut().zip(draw.layers) {
                     *at = image_of(layer);
                 }
@@ -466,7 +489,7 @@ impl ZoneRenderer {
         let sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
-                descriptor_count: count * 5,
+                descriptor_count: count * 9,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLER,
@@ -496,13 +519,18 @@ impl ZoneRenderer {
             };
         }
         for (set, images) in r.sets.iter().zip(&distinct) {
-            for (binding, &image) in [0, 2, 3, 4, 5].iter().zip(images) {
+            let shared = [(8, map_image), (9, ground_image)];
+            for (binding, image) in SET_BINDINGS
+                .into_iter()
+                .zip(images.iter().copied())
+                .chain(shared)
+            {
                 let info = [vk::DescriptorImageInfo::default()
                     .image_view(r.images[image].view)
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
                 let write = vk::WriteDescriptorSet::default()
                     .dst_set(*set)
-                    .dst_binding(*binding)
+                    .dst_binding(binding)
                     .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .image_info(&info);
                 unsafe { d.update_descriptor_sets(&[write], &[]) };
@@ -517,8 +545,13 @@ impl ZoneRenderer {
             .zip(&image_sets)
             .map(|(draw, images)| {
                 let mut look = Look::new(&draw.shading);
-                if draw.shading == Shading::Ground {
+                // The ground, and asphalt where it gives way to it, draw its detail.
+                let edge = matches!(draw.shading, Shading::Asphalt(a) if a.edge.is_some());
+                if draw.shading == Shading::Ground || edge {
                     (look.scale, look.inverse_mean) = detail_look;
+                }
+                if edge {
+                    look.ground_map = map_look;
                 }
                 let index = looks.iter().position(|l| *l == look).unwrap_or_else(|| {
                     looks.push(look);
@@ -646,6 +679,43 @@ impl ZoneRenderer {
         Ok((image, look))
     }
 
+    /// Uploads the ground's map as a three-layer array: its colours, then its weights
+    /// (four in each layer); with its look: its corner and one over its size. Without
+    /// a map, one grey texel without weights.
+    fn upload_ground_map(&mut self, map: Option<&GroundMap>) -> Result<(Image, [f32; 4])> {
+        let gpu = self.gpu.clone();
+        let format = vk::Format::R8G8B8A8_UNORM;
+        let Some(m) = map.filter(|m| m.width > 0 && m.height > 0) else {
+            let one = [Mip {
+                offset: 0,
+                width: 1,
+                height: 1,
+            }];
+            let data = [128, 128, 128, 255, 0, 0, 0, 0, 0, 0, 0, 0];
+            return Ok((
+                Image::sampled_array(&gpu, format, &one, (3, 4), &data)?,
+                [0.0; 4],
+            ));
+        };
+        let texels = m.width * m.height;
+        let mut data: Vec<u8> = Vec::with_capacity(texels * 12);
+        data.extend(m.colours.iter().flatten());
+        data.resize(texels * 4, 0);
+        for half in [0, 4] {
+            data.extend(m.weights.iter().flat_map(|w| &w[half..half + 4]));
+            data.resize(data.len().next_multiple_of(texels * 4), 0);
+        }
+        let mip = [Mip {
+            offset: 0,
+            width: m.width as u32,
+            height: m.height as u32,
+        }];
+        let image = Image::sampled_array(&gpu, format, &mip, (3, texels as u64 * 4), &data)?;
+        self.texture_bytes += data.len() as u64;
+        let size = [m.width, m.height].map(|n| n as f32 * m.texel);
+        Ok((image, [m.min[0], m.min[1], 1.0 / size[0], 1.0 / size[1]]))
+    }
+
     /// Uploads one loaded texture; on failure, its name if known and why.
     fn upload(
         &mut self,
@@ -698,7 +768,18 @@ impl ZoneRenderer {
                     extent,
                 }],
             );
-            let Some([positions, instances, uvs, colours, uvs2, colours2, indices]) = &self.buffers
+            let Some(
+                [
+                    positions,
+                    instances,
+                    uvs,
+                    colours,
+                    uvs2,
+                    colours2,
+                    uvs3,
+                    indices,
+                ],
+            ) = &self.buffers
             else {
                 return;
             };
@@ -719,8 +800,9 @@ impl ZoneRenderer {
                     colours.buffer,
                     uvs2.buffer,
                     colours2.buffer,
+                    uvs3.buffer,
                 ],
-                &[0; 6],
+                &[0; 7],
             );
             d.cmd_bind_index_buffer(cmd, indices.buffer, 0, vk::IndexType::UINT32);
             let (mut pipeline, mut set, mut look) = (None, None, None);
@@ -787,7 +869,7 @@ impl Drop for ZoneRenderer {
     }
 }
 
-/// Triangle lists: positions, two sets of texture coordinates and colours per
+/// Triangle lists: positions, three sets of texture coordinates and two colours per
 /// vertex, the transform per instance; depth test (reversed depth) and write; no culling, since
 /// transforms may mirror. `fragment` is the fragment shader's SPIR-V and entry point.
 /// The ground has its own vertex shader, in world space, which reads the texture
@@ -856,6 +938,11 @@ fn pipeline(
             stride: 4,
             input_rate: vk::VertexInputRate::VERTEX,
         },
+        vk::VertexInputBindingDescription {
+            binding: 6,
+            stride: 8,
+            input_rate: vk::VertexInputRate::VERTEX,
+        },
     ];
     let attribute = |location, binding, format, offset| vk::VertexInputAttributeDescription {
         location,
@@ -874,6 +961,7 @@ fn pipeline(
         attribute(5, 3, bytes, 0),
         attribute(7, 4, vk::Format::R32G32_SFLOAT, 0),
         attribute(8, 5, bytes, 0),
+        attribute(9, 6, vk::Format::R32G32_SFLOAT, 0),
     ];
     let ground = [
         attribute(0, 0, vk::Format::R32G32B32_SFLOAT, 0),

@@ -4,7 +4,7 @@
 use frostbite::level::{Mesh, Placement, Transform, Zone};
 use frostbite::mesh::Geometry;
 use frostbite::texture::{Kind, Texture};
-use nfsh_render::scene::{self, Asphalt, Section, Shading};
+use nfsh_render::scene::{self, Asphalt, Edge, Section, Shading};
 use nfsh_render::zone::Loaded;
 use nfsh_render::{Camera, Gpu, Light, Target, ZoneRenderer};
 
@@ -199,6 +199,7 @@ fn asphalt_shows_its_damaged_layer_where_the_mask_is_dark() {
         tyre_tint: [0.5; 3],
         bias: 0.21,
         detail: [[0.5; 3]; 5],
+        edge: None,
     });
     let section = |g: &Geometry| Section {
         geometry: Geometry {
@@ -206,7 +207,7 @@ fn asphalt_shows_its_damaged_layer_where_the_mask_is_dark() {
             ..g.clone()
         },
         texture: Some([1; 16]),
-        layers: [2, 3, 4, 5].map(|t| Some([t; 16])),
+        layers: [2, 3, 4, 5, 0, 0].map(|t| (t > 0).then_some([t; 16])),
         shading: asphalt,
     };
     // A white clean layer, a black damaged one, a full height, no noise; the mask's
@@ -418,4 +419,91 @@ fn a_ground_layer_adds_its_diffuse_as_detail() {
     let (row, missing) = ground_row(dark, detail(), gone);
     assert_eq!(missing, [("stripes".to_string(), "gone".to_string())]);
     assert_eq!(row, plain);
+}
+
+/// The middle pixel of the square at 5 m drawn as asphalt that gives way to a green
+/// ground (its map; the ground's own square is hidden behind, at 6 m): a white clean
+/// layer at full height, the shoulder's texture `shoulder` (its blue says where the
+/// road shows) and the mask `mask` (its green times the height, under the dirt's
+/// offset, lets the ground through).
+fn asphalt_over_ground(shoulder: [u8; 8], mask: [u8; 8]) -> [u8; 4] {
+    const WHITE: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+    let gpu = Gpu::new_headless().unwrap();
+    let (zone, square) = square_zone(&[5.0]);
+    let asphalt = Shading::Asphalt(Asphalt {
+        tint: [[0.4; 3]; 2],
+        tiling: [[1.0; 2]; 2],
+        blend: [0.17, 0.88],
+        tyre: [0.5, 0.88],
+        tyre_tint: [0.5; 3],
+        bias: 0.21,
+        detail: [[0.5; 3]; 5],
+        edge: Some(Edge {
+            tiling: [1.0; 2],
+            dirt: [0.216, 0.815, 0.0],
+        }),
+    });
+    let section = Section {
+        geometry: Geometry {
+            uvs2: square.uvs.clone(),
+            uvs3: square.uvs.clone(),
+            // The road pieces' red is 0: a red of 1 keeps the road over the ground.
+            colours: Some(vec![[0, 255, 255, 255]; 4]),
+            ..square.clone()
+        },
+        texture: Some([1; 16]),
+        layers: [2, 3, 4, 5, 6, 7].map(|t| Some([t; 16])),
+        shading: asphalt,
+    };
+    let mut scene = scene::build(&zone, |_| Ok(vec![section.clone()]));
+    let ground = frostbite::terrain::Ground {
+        positions: square.positions.iter().map(|p| [p[0], p[1], 6.0]).collect(),
+        colours: vec![[0, 255, 0, 255]; 4],
+        indices: square.indices.clone(),
+        map: frostbite::terrain::GroundMap {
+            min: [-10.0; 2],
+            texel: 20.0,
+            width: 1,
+            height: 1,
+            colours: vec![[0, 255, 0, 255]],
+            weights: vec![[0; 8]],
+        },
+        ..Default::default()
+    };
+    scene::add_ground(&mut scene, &ground, Vec::new());
+    let load = move |guid: &[u8; 16]| {
+        Ok(bc1(
+            0x36,
+            match guid[0] {
+                1 | 3 | 6 => WHITE,
+                4 => mask,
+                7 => shoulder,
+                _ => [0; 8],
+            },
+        ))
+    };
+    let renderer = ZoneRenderer::new(&gpu, &scene, Target::COLOR_FORMAT, load, Vec::new()).unwrap();
+    assert_eq!(renderer.missing, []);
+    let mut target = Target::new(&gpu, W, H).unwrap();
+    let extent = target.color.extent;
+    let camera = Camera::new([0.0; 3], 0.0, 0.0, W, H);
+    let rgba = target
+        .render(|cmd| renderer.record(cmd, &camera, extent, &LIGHT))
+        .unwrap();
+    pixel(&rgba, W / 2, H / 2)
+}
+
+#[test]
+fn asphalt_gives_way_to_the_ground_where_its_shoulder_and_mask_say() {
+    const WHITE: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+    const BLACK: [u8; 8] = [0; 8];
+    // The shoulder's blue and the mask's green white: the road, grey.
+    let road = asphalt_over_ground(WHITE, WHITE);
+    assert!(road[0] > 180 && road[0] == road[1], "road {road:?}");
+    // The shoulder black: the ground's green.
+    let off = asphalt_over_ground(BLACK, WHITE);
+    assert!(off[1] > 150 && off[0] < 60, "off the shoulder {off:?}");
+    // The mask's green black (dirt): the ground's green too.
+    let dirt = asphalt_over_ground(WHITE, BLACK);
+    assert!(dirt[1] > 150 && dirt[0] < 60, "dirt {dirt:?}");
 }

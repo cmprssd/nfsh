@@ -34,6 +34,8 @@ pub const POSITION: u8 = 0x01;
 pub const TEXCOORD0: u8 = 0x21;
 /// On roads, the mask's coordinates (see `docs/FORMATS.md`).
 pub const TEXCOORD1: u8 = 0x22;
+/// On roads, the shoulder's coordinates (see `docs/FORMATS.md`).
+pub const TEXCOORD2: u8 = 0x23;
 /// Taken as a vertex colour: road lines' are white or yellow (see `docs/FORMATS.md`).
 pub const COLOUR0: u8 = 0x1E;
 /// On roads, a second vertex colour: how much of three detail colours the asphalt
@@ -138,6 +140,8 @@ pub struct Geometry {
     /// The second texture coordinates and vertex colours, likewise.
     pub uvs2: Option<Vec<[f32; 2]>>,
     pub colours2: Option<Vec<[u8; 4]>>,
+    /// The third texture coordinates, likewise.
+    pub uvs3: Option<Vec<[f32; 2]>>,
     /// Three a triangle, counting from the section's first vertex.
     pub indices: Vec<u32>,
 }
@@ -191,7 +195,7 @@ impl Lod {
                 .map(Some),
             _ => Ok(None),
         };
-        let (uvs2, colours2) = (uvs(TEXCOORD1)?, colours(COLOUR1)?);
+        let (uvs2, colours2, uvs3) = (uvs(TEXCOORD1)?, colours(COLOUR1)?, uvs(TEXCOORD2)?);
         let (uvs, colours) = (uvs(TEXCOORD0)?, colours(COLOUR0)?);
 
         let width = usize::from(self.index_width);
@@ -235,6 +239,7 @@ impl Lod {
             colours,
             uvs2,
             colours2,
+            uvs3,
             indices,
         })
     }
@@ -690,14 +695,15 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_second_coordinates_and_colours() {
+    fn reads_the_second_and_third_coordinates_and_colours() {
         let (res, chunk) = sample();
         let set = MeshSet::parse(&res).unwrap();
         let lod = &set.lods[0];
         let mut s = lod.sections[0].clone();
-        assert_eq!(lod.section(&s, &chunk).unwrap().uvs2, None);
-        // Both over the first coordinates' bytes.
-        for (usage, format) in [(TEXCOORD1, HALF2), (COLOUR1, UNORM4)] {
+        let g = lod.section(&s, &chunk).unwrap();
+        assert_eq!((g.uvs2, g.uvs3), (None, None));
+        // All over the first coordinates' bytes.
+        for (usage, format) in [(TEXCOORD1, HALF2), (COLOUR1, UNORM4), (TEXCOORD2, HALF2)] {
             s.elements.push(Element {
                 usage,
                 format,
@@ -707,6 +713,7 @@ mod tests {
         }
         let g = lod.section(&s, &chunk).unwrap();
         assert_eq!(g.uvs2, g.uvs);
+        assert_eq!(g.uvs3, g.uvs);
         assert_eq!(
             g.colours2,
             Some(vec![[0, 0, 0, 0x38], [0, 0x3C, 0, 0], [0, 0x40, 0, 0x3C]])

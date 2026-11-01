@@ -561,3 +561,28 @@ layer only" above.
   in one descriptor set per combination of textures used (grey where a draw has
   none). The look's uniform slot grows to 512 bytes. Why: the fewest changes to
   how draws are made, sorted and bound; a zone uses a few dozen combinations.
+
+## 2026-11-01: The asphalt's edges (decided by Claude, pending review)
+
+The owner chose the road edges as the next task. Supersedes "Left out for now: the
+blend into the terrain's colour" in "The asphalt's layers" above.
+
+- **Asphalt gives way to the ground as its shader says**: only with
+  `rd_drv_blendwithterrain` and a `Shoulder_NH`, by the shoulder's blue in the third
+  texture coordinates, the vertex colour's red and the dirt (the mask's green times
+  the layers' height under `Dirt_Height_Offset`) (docs/FORMATS.md, "Asphalt", step 5).
+  Why: it is the original's rule, read from its programs like the layers before it;
+  the wet road's shader has no such step, so those roads keep their hard edge.
+- **What shows through is nfsh's own ground, exactly as drawn**: the walk that makes
+  the ground's vertices also fills a map of its colour and detail weights over the
+  same area, a texel every 2 m (larger when the area is over 8 km, keeping it at most
+  4,096 a side), and asphalt draws the ground's colour and detail from it at each
+  pixel. Why: the original samples its terrain's virtual texture, which nfsh doesn't
+  have; drawing the same ground the same way leaves no seam where the road's mesh
+  ends. Per-vertex colours on the road meshes would be too coarse along a road and
+  can't follow an instanced mesh.
+- **The clamp to 0.04 to 0.5 covers the ground's share too**, as in the original.
+  Why: it is the shader's order; the ground's colours sit inside that range.
+- **A road mesh without vertex colours keeps its road** (their red counts as 1).
+  Why: nfsh fills a missing vertex colour with white, which decals need; no asphalt
+  near zone 495 lacks them.
