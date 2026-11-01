@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 step() { echo; echo "== $*"; }
 
 step "format"; cargo fmt --all -- --check
-step "shell syntax"; for f in scripts/*.sh .local-ci; do bash -n "$f"; done
+step "shell syntax"; for f in scripts/*.sh bench/*.sh .local-ci; do bash -n "$f"; done
 step "python syntax"; for f in scripts/*.py; do python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$f"; done
 # OVERVIEW.md's generated blocks are counted from git, the tree and INVENTORY.md; rewrite
 # them (python3 scripts/progress.py) so the docs never fall behind the code.

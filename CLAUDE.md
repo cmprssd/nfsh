@@ -34,5 +34,7 @@ Claude, pending review").
   blocks come from `python3 scripts/progress.py` (git, the tree, `docs/INVENTORY.md`);
   `.local-ci` fails when they are stale, so run it before pushing.
 - **Refresh the progress page after each merge** (https://cmprssd.github.io/nfsh/, the
-  `gh-pages` branch): `scripts/publish-progress.sh` from the updated main builds it and
-  force-pushes it to `gh-pages` as one commit.
+  `gh-pages` branch): after a release, `bench/history.sh` renders the history views with
+  it (one Windows build, headless); then `scripts/publish-progress.sh` from the updated
+  main builds the page and force-pushes it to `gh-pages` as one commit. The page is
+  monochrome (cmprssd's rule): only the renders keep their colour.
