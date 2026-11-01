@@ -115,7 +115,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 24 decision entries, 9 chosen by the owner, 14 made by Claude for review.
+  So far: 25 decision entries, 10 chosen by the owner, 14 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
