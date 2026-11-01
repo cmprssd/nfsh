@@ -194,6 +194,16 @@ impl Store {
             .find(|e| e.name.eq_ignore_ascii_case(name))
     }
 
+    /// The first res named `name` (ignoring case), in any bundle.
+    pub fn res(&self, name: &str) -> Option<&Asset> {
+        self.superbundles
+            .iter()
+            .flat_map(|sb| &sb.bundles)
+            .flat_map(|b| &b.bundle.res)
+            .map(|r| &r.asset)
+            .find(|a| a.name.eq_ignore_ascii_case(name))
+    }
+
     /// Every res of type `res_type` by id; the first copy of each.
     pub fn res_of_type(&self, res_type: u32) -> HashMap<u64, Location> {
         let mut res = HashMap::new();
