@@ -931,7 +931,7 @@ impl Drop for ZoneRenderer {
 /// vertex, the transform per instance; depth test (reversed depth) and write; no culling, since
 /// transforms may mirror. `fragment` is the fragment shader's SPIR-V and entry point.
 /// The ground has its own vertex shader, in world space, which reads the texture
-/// coordinates' 8 bytes as two sets of four weights.
+/// coordinates' 8 bytes as two sets of four weights, and its normals.
 /// A decal blends by its alpha, doesn't write depth, and is pulled a little towards
 /// the eye so it stays over the road it lies on.
 fn pipeline(
@@ -1038,6 +1038,7 @@ fn pipeline(
         attribute(4, 2, bytes, 0),
         attribute(5, 3, bytes, 0),
         attribute(6, 2, bytes, 4),
+        attribute(10, 7, vk::Format::R8G8B8A8_SNORM, 0),
     ];
     let attributes: &[_] = if pass == Pass::Ground { &ground } else { &mesh };
     let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()

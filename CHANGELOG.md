@@ -4,6 +4,14 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.21.0] - 2026-11-02
+
+### Changed
+
+- `nfsh view` lights the ground by normals taken from its heights: hills and banks
+  shade smoothly instead of in facets 2 m across, with no seam where one terrain tile
+  meets the next, and the layers' normal maps bend those normals.
+
 ## [0.20.0] - 2026-11-02
 
 ### Changed

@@ -489,7 +489,11 @@ size, likely a layer's weight each, not read yet):
   0 is a **hole** (the ground is left out: 64 tiles cut holes their parents don't
   have). Rows run along z and columns along x, with a 4-sample border: sample (r, c)
   of a tile at (x0, z0) of size S lies at (x0 + (c − 4)·S/128, z0 + (r − 4)·S/128), so
-  a 128 m tile has a sample every metre.
+  a 128 m tile has a sample every metre. The border is the neighbours' own samples:
+  across each of the 14,852 edges between two tiles of a size with heights, the nine
+  columns (or rows) both hold, each one's last four interior, the edge and its four
+  border, are alike (holes aside; checked on 2026-11-02), so a slope taken into the
+  border agrees on both sides of the edge.
 - `2,312 + 18,496·k` bytes (630 tiles): no heights, only the pages and the colour.
   A tile like this is drawn from its nearest ancestor's heights.
 

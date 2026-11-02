@@ -689,3 +689,24 @@ Follows "Normal maps" above, which left the ground's layers for next.
   x and z is not settled (its `__2d` programs sample at `r0.yx`, and which of r0's
   components is world x is not worked out); the diffuse and normal maps are drawn
   the same way, so they agree either way.
+
+## 2026-11-02: The ground's smooth normals
+
+Follows "The ground's normal maps" above, which bent the triangle's normal.
+
+- **Each vertex's normal is the slope of its heights**, a central difference over the
+  samples one vertex apart either side (the vertex spacing, so it is the slope the
+  drawn mesh has), one-sided beside a hole or past the border, level along an axis
+  with neither. Why: the smallest step that is smooth; averaging the triangles'
+  normals would give the same away from tile edges but needs the neighbours' vertices.
+- **Across tile edges from the heightfield's own border**: the 4 samples past each
+  edge are the neighbour's (and its 4 the tile's), on all 14,852 edges between tiles of a size (a store test
+  pins it; docs/FORMATS.md, "Terrain"), so both sides of an edge get the same normal
+  without looking up the neighbour. A vertex spacing over 4 samples takes the
+  one-sided slope at the edge.
+- **Sent as the meshes' normals are** (signed bytes, w marking one present), and the
+  ground's shader falls back to the triangle's where w is 0. Why: the same buffer
+  and attribute the meshes use; no new binding.
+- **Left out**: asphalt's edges still bend the road's own normal where the ground
+  shows through, not the ground's (the ground map carries no normals).
+
