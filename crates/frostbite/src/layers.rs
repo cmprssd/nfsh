@@ -148,7 +148,27 @@ pub struct Texture {
     /// Its primary scale ([`primary_scale`]): world x and z times this are its
     /// coordinates (so it repeats every 1 / scale metres); none when it has none.
     pub scale: Option<f32>,
+    /// The far detail overlaid on it, the same in every shader with the layer.
+    pub far: Option<Far>,
 }
+
+/// A texture's sample overlaid on a layer's map ([`dxbc::Overlay`]): a far detail.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Far {
+    /// Its ebx name.
+    pub name: String,
+    /// World x and z times this are its coordinates.
+    pub scale: f32,
+    /// The channel of it overlaid on the map's first channel (a colour takes one for
+    /// all three; a normal map's red and green take its red and green).
+    pub channel: u8,
+    /// How much of the overlay is mixed in.
+    pub strength: f32,
+}
+
+/// A far detail as a shader's program overlays it: its texture's name hash, scale
+/// (bits, so it compares exactly), channel and strength (bits).
+type Candidate = (u32, u32, u8, u32);
 
 /// Each layer's own textures ([`own_textures`]) the store names, in name order, each
 /// with its primary scale.
@@ -161,7 +181,12 @@ pub fn textures(store: &Store) -> Result<BTreeMap<u16, Vec<Texture>>> {
     let db = ShaderDb::read(store)?;
     let own = own_textures(&shaders, &db)?;
     let sampled = sampled(store, &shaders, &db)?;
-    let wanted: BTreeSet<u32> = own.values().flatten().copied().collect();
+    let mut wanted: BTreeSet<u32> = own.values().flatten().copied().collect();
+    wanted.extend(
+        sampled
+            .iter()
+            .flat_map(|s| s.overlays.values().flatten().map(|c| c.0)),
+    );
     let mut names: HashMap<u32, &str> = HashMap::new();
     for e in store
         .superbundles
@@ -180,15 +205,31 @@ pub fn textures(store: &Store) -> Result<BTreeMap<u16, Vec<Texture>>> {
             let mut d: Vec<Texture> = textures
                 .iter()
                 .filter_map(|t| Some((t, names.get(t)?)))
-                .map(|(t, n)| Texture {
-                    name: n.to_string(),
-                    scale: primary_scale(
+                .map(|(t, n)| {
+                    let with = || {
                         shaders
                             .iter()
                             .zip(&sampled)
                             .filter(|(s, _)| s.layers.contains(&layer))
-                            .map(|(_, by)| by.get(t).map_or(&[][..], Vec::as_slice)),
-                    ),
+                            .map(|(_, by)| by)
+                    };
+                    Texture {
+                        name: n.to_string(),
+                        scale: primary_scale(
+                            with().map(|by| by.scales.get(t).map_or(&[][..], Vec::as_slice)),
+                        ),
+                        far: common_far(
+                            with().map(|by| by.overlays.get(t).map_or(&[][..], Vec::as_slice)),
+                        )
+                        .and_then(|(hash, scale, channel, strength)| {
+                            Some(Far {
+                                name: names.get(&hash)?.to_string(),
+                                scale: f32::from_bits(scale),
+                                channel,
+                                strength: f32::from_bits(strength),
+                            })
+                        }),
+                    }
                 })
                 .collect();
             d.sort_by(|a, b| a.name.cmp(&b.name));
@@ -197,13 +238,32 @@ pub fn textures(store: &Store) -> Result<BTreeMap<u16, Vec<Texture>>> {
         .collect())
 }
 
-/// For each of `shaders`, the scales its programs sample each of its textures at (by
-/// name hash).
-fn sampled(
-    store: &Store,
-    shaders: &[Shader],
-    db: &ShaderDb,
-) -> Result<Vec<HashMap<u32, Vec<Scale>>>> {
+/// The far detail every shader overlays on a texture, when there is exactly one.
+fn common_far<'a>(mut shaders: impl Iterator<Item = &'a [Candidate]>) -> Option<Candidate> {
+    let mut common = shaders.next()?.to_vec();
+    for s in shaders {
+        common.retain(|c| s.contains(c));
+    }
+    common.sort_unstable();
+    common.dedup();
+    match common[..] {
+        [one] => Some(one),
+        _ => None,
+    }
+}
+
+/// What a shader's programs do with each of its textures (by name hash).
+#[derive(Default)]
+struct Sampled {
+    /// The scales they sample it at…
+    scales: HashMap<u32, Vec<Scale>>,
+    /// …and the far details they overlay on it: another texture's sample at a direct
+    /// scale.
+    overlays: HashMap<u32, Vec<Candidate>>,
+}
+
+/// For each of `shaders`, what its programs do with its textures.
+fn sampled(store: &Store, shaders: &[Shader], db: &ShaderDb) -> Result<Vec<Sampled>> {
     let programs: HashMap<String, crate::Location> = store
         .superbundles
         .iter()
@@ -216,7 +276,7 @@ fn sampled(
     let mut code: HashMap<u32, Vec<dxbc::Instruction>> = HashMap::new();
     let mut out = Vec::with_capacity(shaders.len());
     for s in shaders {
-        let mut by: HashMap<u32, Vec<Scale>> = HashMap::new();
+        let mut by = Sampled::default();
         for p in db.permutations_of(name_hash(&s.name.to_lowercase())) {
             if let Entry::Vacant(e) = code.entry(p.program) {
                 let name = shaderdb::program_name(&db.programs[p.program as usize]);
@@ -227,10 +287,31 @@ fn sampled(
                     dxbc::parse(&entries.read(*at)?).map_err(|e| Error(format!("{name}: {e}")))?;
                 e.insert(read);
             }
-            for b in &db.blocks[p.block as usize] {
-                by.entry(b.texture)
+            let block = &db.blocks[p.block as usize];
+            let program = &code[&p.program];
+            for b in block {
+                by.scales
+                    .entry(b.texture)
                     .or_default()
-                    .extend(dxbc::sample_scales(&code[&p.program], b.slot));
+                    .extend(dxbc::sample_scales(program, b.slot));
+            }
+            for o in dxbc::overlays(program) {
+                let (Some(blend), Some(Scale::Direct(scale))) =
+                    (block.iter().find(|b| b.slot == o.slot), o.scale)
+                else {
+                    continue;
+                };
+                for b in block.iter().filter(|b| o.base.contains(&b.slot)) {
+                    if b.texture != blend.texture {
+                        let c = (
+                            blend.texture,
+                            scale.to_bits(),
+                            o.channels[0],
+                            o.strength.to_bits(),
+                        );
+                        by.overlays.entry(b.texture).or_default().push(c);
+                    }
+                }
             }
         }
         out.push(by);
@@ -423,5 +504,60 @@ mod tests {
             }
         }
         assert_eq!(paired, 31);
+        // The far details (counted on the owner's store, 2026-11-02): each layer's at
+        // one scale, its colour taking green but for mega grass's blue.
+        let far = |layer: u16, name: &str| {
+            let f = diffuse[&layer]
+                .iter()
+                .find(|d| d.name.ends_with(name))
+                .unwrap()
+                .far
+                .clone()?;
+            Some((
+                f.name.rsplit('/').next().unwrap().to_owned(),
+                f.scale,
+                f.channel,
+                f.strength,
+            ))
+        };
+        let rock = |scale, channel, strength| {
+            Some((
+                "t_vrg_wheelerdam_rock_02_n".to_owned(),
+                scale,
+                channel,
+                strength,
+            ))
+        };
+        let mid = |scale, channel, strength| {
+            Some((
+                "t_terrain_mid_distance_details_n".to_owned(),
+                scale,
+                channel,
+                strength,
+            ))
+        };
+        assert_eq!(far(1, "t_mega_grass_01_d"), rock(0.02, 2, 0.9));
+        assert_eq!(far(1, "t_mega_grass_01_n"), rock(0.02, 0, 0.5));
+        assert_eq!(far(4, "t_mega_grass_01_d"), rock(0.002, 1, 0.05));
+        assert_eq!(far(2, "t_field_base_03_n"), rock(0.004, 0, 0.15));
+        assert_eq!(far(6, "t_burnforestground_01_d"), rock(0.006, 1, 1.0));
+        assert_eq!(far(18, "t_forestground_01_n"), mid(0.005, 0, 1.0));
+        assert_eq!(far(3, "t_terrain_sand_footprints_01_d"), mid(0.001, 1, 0.1));
+        assert_eq!(far(10, "t_miami_grass_01_d"), None);
+        assert_eq!(far(10, "t_miami_grass_01_n"), mid(0.005, 0, 0.05));
+        assert_eq!(far(11, "t_miami_grass_01_d"), None);
+        // A diffuse and its normal map take one far map at one scale.
+        let mut both = 0;
+        for maps in diffuse.values() {
+            for d in maps.iter().filter(|d| d.name.ends_with("_d")) {
+                let normal = format!("{}_n", d.name.strip_suffix("_d").unwrap());
+                let n = maps.iter().find(|n| n.name == normal);
+                if let (Some(a), Some(b)) = (&d.far, n.and_then(|n| n.far.as_ref())) {
+                    assert_eq!((&a.name, a.scale), (&b.name, b.scale), "{}", d.name);
+                    both += 1;
+                }
+            }
+        }
+        assert_eq!(both, 22);
     }
 }

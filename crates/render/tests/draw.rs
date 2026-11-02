@@ -95,7 +95,15 @@ fn middle_of(
     let gpu = Gpu::new_headless().unwrap();
     let (zone, square) = square_zone(&[5.0]);
     let scene = scene::build(&zone, |_| Ok(sections(&square)));
-    let renderer = ZoneRenderer::new(&gpu, &scene, Target::COLOR_FORMAT, load, Vec::new()).unwrap();
+    let renderer = ZoneRenderer::new(
+        &gpu,
+        &scene,
+        Target::COLOR_FORMAT,
+        load,
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap();
     let mut target = Target::new(&gpu, W, H).unwrap();
     let extent = target.color.extent;
     let camera = Camera::new([0.0; 3], 0.0, 0.0, W, H);
@@ -218,6 +226,7 @@ fn draws_a_placed_mesh_where_the_camera_sees_it() {
         &scene,
         Target::COLOR_FORMAT,
         |_| unreachable!(),
+        Vec::new(),
         Vec::new(),
     )
     .unwrap();
@@ -399,6 +408,7 @@ fn an_empty_scene_draws_nothing() {
         Target::COLOR_FORMAT,
         |_| unreachable!(),
         Vec::new(),
+        Vec::new(),
     )
     .unwrap();
     let mut target = Target::new(&gpu, W, H).unwrap();
@@ -418,6 +428,16 @@ fn ground_row(
     detail: Vec<scene::Detail>,
     loaded: Vec<DetailTextures>,
 ) -> (Vec<[u8; 4]>, Vec<(String, String)>) {
+    ground_row_far(colour, detail, loaded, Vec::new())
+}
+
+/// [`ground_row`], with the far detail maps `far`.
+fn ground_row_far(
+    colour: [u8; 4],
+    detail: Vec<scene::Detail>,
+    loaded: Vec<DetailTextures>,
+    far: Vec<frostbite::Result<Loaded>>,
+) -> (Vec<[u8; 4]>, Vec<(String, String)>) {
     let gpu = Gpu::new_headless().unwrap();
     let (_, square) = square_zone(&[]);
     let ground = frostbite::terrain::Ground {
@@ -436,6 +456,7 @@ fn ground_row(
         Target::COLOR_FORMAT,
         |_| unreachable!(),
         loaded,
+        far,
     )
     .unwrap();
     let mut target = Target::new(&gpu, W, H).unwrap();
@@ -480,6 +501,7 @@ fn a_ground_layer_adds_its_diffuse_as_detail() {
             texture: "stripes".into(),
             normal: None,
             scale: 0.5,
+            far: None,
         }]
     };
     let dark = [120, 0, 0, 255];
@@ -522,6 +544,7 @@ fn a_ground_layers_normal_map_bends_the_ground() {
             texture: "white".into(),
             normal: normal.map(Into::into),
             scale: 0.5,
+            far: None,
         }]
     };
     let textures = |normal: Option<frostbite::Result<Loaded>>| {
@@ -555,6 +578,75 @@ fn a_ground_layers_normal_map_bends_the_ground() {
     );
     assert_eq!(missing, [("gone".to_string(), "gone".to_string())]);
     assert_eq!(row, flat);
+}
+
+#[test]
+fn a_ground_layers_far_detail_is_overlaid_on_its_colour_and_normal() {
+    // A dark grey diffuse (its own average), and far maps with no green, and tilting
+    // the normal all the way along x, across the sun shining straight at the square.
+    const GREY: [u8; 8] = [0xEF, 0x7B, 0xEF, 0x7B, 0, 0, 0, 0];
+    const NO_GREEN: [u8; 8] = [0x1F, 0xF8, 0x1F, 0xF8, 0, 0, 0, 0];
+    const ALONG_X: [u8; 8] = [0x00, 0xFC, 0x00, 0xFC, 0, 0, 0, 0];
+    let detail = |normal, colour| {
+        vec![scene::Detail {
+            texture: "grey".into(),
+            normal: None,
+            scale: 0.5,
+            far: Some(scene::Far {
+                texture: "far".into(),
+                scale: 0.05,
+                normal,
+                colour,
+            }),
+        }]
+    };
+    let textures = || {
+        vec![DetailTextures {
+            diffuse: Ok(bc1(0x37, GREY)),
+            normal: None,
+        }]
+    };
+    let row = |normal, colour, far: [u8; 8]| {
+        let (row, missing) = ground_row_far(
+            [180; 4],
+            detail(normal, colour),
+            textures(),
+            vec![Ok(bc1(0x36, far))],
+        );
+        assert!(missing.is_empty(), "{missing:?}");
+        row
+    };
+    let middle = W as usize / 2;
+    let (unseen, _) = ground_row([180; 4], detail(0.0, (1, 0.0)), textures());
+    // Mixed in not at all, it is the ground as without it.
+    let plain = row(0.0, (1, 0.0), NO_GREEN);
+    assert_eq!(plain, unseen);
+    // Its green overlaid on the grey under a half darkens it to black.
+    let dark = row(0.0, (1, 1.0), NO_GREEN);
+    assert!(
+        dark[middle][0] + 60 < plain[middle][0],
+        "darkened: {:?}, not {:?}",
+        dark[middle],
+        plain[middle]
+    );
+    // Overlaid on the flat normal (a half), its red and green are the normal.
+    let bent = row(1.0, (1, 0.0), ALONG_X);
+    assert!(
+        bent[middle][0] + 30 < plain[middle][0],
+        "turned from the sun: {:?}, not {:?}",
+        bent[middle],
+        plain[middle]
+    );
+
+    // A far map that can't be read leaves the layer without it, and is listed.
+    let (row, missing) = ground_row_far(
+        [180; 4],
+        detail(1.0, (1, 1.0)),
+        textures(),
+        vec![Err(frostbite::Error("gone".into()))],
+    );
+    assert_eq!(missing, [("far".to_string(), "gone".to_string())]);
+    assert_eq!(row, plain);
 }
 
 /// The middle pixel of the square at 5 m drawn as asphalt that gives way to a green
@@ -620,7 +712,15 @@ fn asphalt_over_ground(shoulder: [u8; 8], mask: [u8; 8], normal: [u8; 4]) -> [u8
             },
         ))
     };
-    let renderer = ZoneRenderer::new(&gpu, &scene, Target::COLOR_FORMAT, load, Vec::new()).unwrap();
+    let renderer = ZoneRenderer::new(
+        &gpu,
+        &scene,
+        Target::COLOR_FORMAT,
+        load,
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap();
     assert_eq!(renderer.missing, []);
     let mut target = Target::new(&gpu, W, H).unwrap();
     let extent = target.color.extent;

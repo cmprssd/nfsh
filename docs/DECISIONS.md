@@ -758,3 +758,36 @@ layer coordinates swap x and z (its `__2d` programs sample at `r0.yx`).
   rests on the runtime constants, which were not read; the normal maps' curl agrees
   with v growing with z.
 
+## 2026-11-02: The ground's far detail
+
+Follows "The ground's normal maps" above, which left the far detail normals out.
+
+- **One far sample a layer** (owner): each weighted layer samples its own far detail
+  map at its own scale, as Heat's programs do, rather than one sample a pixel for the
+  heaviest layer. Why: exact where layers mix; the owner took the cost, up to 8 more
+  samples a ground pixel (24 at most, from 16).
+- **On the colour too** (owner): the far map's channel is overlaid on the layer's
+  diffuse as on its normal map, from the same sample. Why: no extra cost, and it is
+  Heat's large-scale light and dark. The colour then drifts from the tile's colour
+  image by that overlay; the average used to divide the diffuse stays the diffuse's
+  own.
+- **Read from the programs, not typed in**: the far map, scale, channel and strength
+  are what every shader with the layer overlays on that layer's diffuse and normal
+  map (docs/FORMATS.md, "Shader programs"); a layer whose shaders disagree gets none.
+  Where the diffuse's and the normal map's far detail are of different maps or
+  scales the normal's is left out (none on the owner's store).
+- **The far maps go up once each**, as a third texture array (binding 12), with each
+  slot's scale, map, strengths and channel in its look; a far map that fails leaves
+  its layers without far detail, and is listed. Why: two 4096² maps serve every
+  layer; one per slot would be up to eight copies.
+- **The overlay is done before the detail's average is divided out**, so the far
+  detail changes the layer's detail as Heat changes the layer's map. A layer without
+  a normal map takes the far map's red and green over a flat half, as Heat's overlay
+  on a half gives.
+- Measured against 0.21.2 on the history views (zone 495, the HD 630): 12% of the
+  speedway view's pixels change by more than 2 of 255, at most 18; the road-edge view
+  13%, at most 11; the night view by at most 8. The speedway's layers mix their far
+  detail gently (colour 0.05 to 0.2, normal 0.1 to 0.3).
+- **Left out**: the SMD maps and macro colour the same far sample is overlaid on, the
+  blue mask hiding the turned copies' repeats (nfsh draws no turned copies), and the
+  road sets' layers.
