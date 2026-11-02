@@ -4,6 +4,16 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.22.0] - 2026-11-02
+
+### Added
+
+- `nfsh view` lays each ground layer's far detail over it, as the game does: a large
+  map (repeating every 50 m to 1 km, by layer) overlaid on the layer's colour and on
+  its normal map, at the scale and strength the game's own shaders use for that
+  layer. It adds faint large-scale light and dark patches and undulation; on the
+  speedway's gentle layers about 12% of the ground's pixels change slightly.
+
 ## [0.21.2] - 2026-11-02
 
 ### Fixed

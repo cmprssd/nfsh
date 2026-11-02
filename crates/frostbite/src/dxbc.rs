@@ -14,8 +14,13 @@ const MAGIC: &[u8; 4] = b"DXBC";
 const CHUNK_COUNT_AT: usize = 28;
 
 /// The opcodes nfsh traces; every other one is only stepped over.
+const ADD: u32 = 0x00;
 const DP2: u32 = 0x0F;
+const DP3: u32 = 0x10;
+const DP4: u32 = 0x11;
+const LT: u32 = 0x31;
 const MAD: u32 = 0x32;
+const MOVC: u32 = 0x37;
 const MUL: u32 = 0x38;
 /// `sample` and its variants (`_c`, `_c_lz`, `_l`, `_d`, `_b`).
 const SAMPLES: std::ops::RangeInclusive<u32> = 0x45..=0x4A;
@@ -267,28 +272,202 @@ pub enum Scale {
 /// position (an input mapped by a `mad`), in instruction order. A sample whose
 /// coordinates come from elsewhere is left out.
 pub fn sample_scales(code: &[Instruction], slot: u32) -> Vec<Scale> {
-    code.iter()
-        .enumerate()
-        .filter(|(_, i)| SAMPLES.contains(&i.opcode))
-        .filter(|(_, i)| {
-            i.operands
-                .get(2)
-                .is_some_and(|t| t.kind == Kind::Texture && t.register == slot)
-        })
-        .filter_map(|(at, i)| {
-            let uv = i.operands.get(1).filter(|o| o.kind == Kind::Temp)?;
-            let [u, v] = [0, 1].map(|c| axis_scale(code, at, uv.register, uv.components[c]));
-            match (u, v) {
-                (Some(Scale::Direct(a)), Some(Scale::Direct(b))) if a == b => {
-                    Some(Scale::Direct(a))
-                }
-                (Some(Scale::Rotated(s)), _) | (_, Some(Scale::Rotated(s))) => {
-                    Some(Scale::Rotated(s))
-                }
-                _ => None,
-            }
-        })
+    (0..code.len())
+        .filter(|&at| sampled_slot(&code[at]) == Some(slot))
+        .filter_map(|at| sample_scale(code, at))
         .collect()
+}
+
+/// The texture slot instruction `i` samples, if it is a sample.
+fn sampled_slot(i: &Instruction) -> Option<u32> {
+    SAMPLES.contains(&i.opcode).then_some(())?;
+    i.operands
+        .get(2)
+        .filter(|t| t.kind == Kind::Texture)
+        .map(|t| t.register)
+}
+
+/// The scale of the sample at `at` when its coordinates come from the world position.
+fn sample_scale(code: &[Instruction], at: usize) -> Option<Scale> {
+    let uv = code[at].operands.get(1).filter(|o| o.kind == Kind::Temp)?;
+    let [u, v] = [0, 1].map(|c| axis_scale(code, at, uv.register, uv.components[c]));
+    match (u, v) {
+        (Some(Scale::Direct(a)), Some(Scale::Direct(b))) if a == b => Some(Scale::Direct(a)),
+        (Some(Scale::Rotated(s)), _) | (_, Some(Scale::Rotated(s))) => Some(Scale::Rotated(s)),
+        _ => None,
+    }
+}
+
+/// One texture's sample overlaid on a value, then mixed in:
+/// `base + strength × (overlay(base, blend) − base)`, where `overlay(b, x)` is `2bx`
+/// below a half and `1 − 2(1 − b)(1 − x)` from it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Overlay {
+    /// The texture slots the base is computed from.
+    pub base: std::collections::BTreeSet<u32>,
+    /// The blend's texture slot…
+    pub slot: u32,
+    /// …the scale it is sampled at…
+    pub scale: Option<Scale>,
+    /// …and the channel of it each written component takes, in order.
+    pub channels: Vec<u8>,
+    pub strength: f32,
+}
+
+/// Every overlay of a sampled texture onto a value in `code`, in instruction order:
+/// a `movc` choosing between its two halves by `lt base, 0.5`, the first the `mul`
+/// of the base with a sample (doubled by an `add`); mixed in by a `mad` with a
+/// literal (`base + k × (movc − base)`), or taken whole (strength 1).
+pub fn overlays(code: &[Instruction]) -> Vec<Overlay> {
+    let mixed: Vec<(usize, Overlay)> = (0..code.len())
+        .filter(|&at| code[at].opcode == MAD)
+        .filter_map(|at| {
+            let mut movc = None;
+            let o = overlay(code, at, |c| {
+                let [_, diff, k, b] = code[at].operands.get(..4)? else {
+                    return None;
+                };
+                let strength = k.literal(c)?;
+                let base = value(code, at, b, c)?;
+                // diff = movc − base
+                let d = value(code, at, diff, c)?;
+                let add = &code[d.0];
+                (add.opcode == ADD).then_some(())?;
+                let sources: Vec<Value> = add.operands[1..]
+                    .iter()
+                    .map(|o| value(code, d.0, o, d.2))
+                    .collect::<Option<_>>()?;
+                sources.contains(&base).then_some(())?;
+                let m = *sources.iter().find(|v| **v != base)?;
+                let (core, b) = halves(code, m)?;
+                (b == base).then_some(())?;
+                movc = Some(m.0);
+                Some((core, strength))
+            })?;
+            Some((movc?, o))
+        })
+        .collect();
+    let taken: Vec<usize> = mixed.iter().map(|(m, _)| *m).collect();
+    let mut all: Vec<(usize, Overlay)> = (0..code.len())
+        .filter(|&at| code[at].opcode == MOVC && !taken.contains(&at))
+        .filter_map(|at| {
+            let dest = code[at].operands.first()?;
+            let o = overlay(code, at, |c| {
+                let m = (at, dest.register, c);
+                Some((halves(code, m)?.0, 1.0))
+            })?;
+            Some((at, o))
+        })
+        .chain(mixed)
+        .collect();
+    all.sort_by_key(|(at, _)| *at);
+    all.into_iter().map(|(_, o)| o).collect()
+}
+
+/// A value: the instruction defining it, the register and the component.
+type Value = (usize, u32, u8);
+
+/// An overlay's blend: its slot, scale and channel, and its base.
+type Core = (u32, Option<Scale>, u8, Value);
+
+/// The overlay the instruction at `at` ends, from `each` destination component's core
+/// and strength; none unless every component has one, all of one slot and strength.
+fn overlay(
+    code: &[Instruction],
+    at: usize,
+    mut each: impl FnMut(u8) -> Option<(Core, f32)>,
+) -> Option<Overlay> {
+    let dest = code[at].operands.first()?;
+    let mut channels = Vec::new();
+    let mut found: Option<(u32, Option<Scale>, f32)> = None;
+    let mut base = std::collections::BTreeSet::new();
+    for &c in &dest.components[..dest.written] {
+        let ((slot, scale, channel, from), strength) = each(c)?;
+        if found.is_some_and(|f| f.0 != slot || f.2 != strength) {
+            return None;
+        }
+        found = Some((slot, scale, strength));
+        channels.push(channel);
+        base.extend(slots(code, from.0 + 1, from.1, from.2));
+    }
+    let (slot, scale, strength) = found?;
+    Some(Overlay {
+        base,
+        slot,
+        scale,
+        channels,
+        strength,
+    })
+}
+
+/// The value source operand `o` of the instruction at `at` reads for its
+/// destination's component `c`.
+fn value(code: &[Instruction], at: usize, o: &Operand, c: u8) -> Option<Value> {
+    (o.kind == Kind::Temp).then_some(())?;
+    let k = o.components[c as usize];
+    Some((definition(code, at, o.register, k)?, o.register, k))
+}
+
+/// The `movc` value `m` as an overlay's two halves: its blend's core and its base.
+fn halves(code: &[Instruction], m: Value) -> Option<(Core, Value)> {
+    let movc = &code[m.0];
+    (movc.opcode == MOVC).then_some(())?;
+    let cond = value(code, m.0, movc.operands.get(1)?, m.2)?;
+    let lt = &code[cond.0];
+    (lt.opcode == LT && lt.operands.get(2)?.literal(cond.2) == Some(0.5)).then_some(())?;
+    let base = value(code, cond.0, lt.operands.get(1)?, cond.2)?;
+    // twice the product: add p, p
+    let doubled = value(code, m.0, movc.operands.get(2)?, m.2)?;
+    let twice = &code[doubled.0];
+    (twice.opcode == ADD).then_some(())?;
+    let product = value(code, doubled.0, twice.operands.get(1)?, doubled.2)?;
+    (value(code, doubled.0, twice.operands.get(2)?, doubled.2)? == product).then_some(())?;
+    let mul = &code[product.0];
+    (mul.opcode == MUL).then_some(())?;
+    let factors: Vec<Value> = mul.operands[1..]
+        .iter()
+        .map(|o| value(code, product.0, o, product.2))
+        .collect::<Option<_>>()?;
+    factors.contains(&base).then_some(())?;
+    let blend = *factors.iter().find(|v| **v != base)?;
+    let sample = &code[blend.0];
+    let slot = sampled_slot(sample)?;
+    // The resource's swizzle says which of its channels each component receives.
+    let channel = sample.operands.get(2)?.components[blend.2 as usize];
+    Some(((slot, sample_scale(code, blend.0), channel, base), base))
+}
+
+/// The texture slots whose samples component `c` of `register` at `at` is computed
+/// from, through every instruction before it (ignoring branches).
+fn slots(code: &[Instruction], at: usize, register: u32, c: u8) -> std::collections::BTreeSet<u32> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut todo: Vec<(usize, u32, u8)> = vec![(at, register, c)];
+    while let Some((at, register, c)) = todo.pop() {
+        let Some(d) = definition(code, at, register, c) else {
+            continue;
+        };
+        if !seen.insert((d, c)) {
+            continue;
+        }
+        let i = &code[d];
+        if let Some(slot) = sampled_slot(i) {
+            out.insert(slot);
+            continue;
+        }
+        let read: &[u8] = match i.opcode {
+            DP2 => &[0, 1],
+            DP3 => &[0, 1, 2],
+            DP4 => &[0, 1, 2, 3],
+            _ => &[c],
+        };
+        for o in i.operands.iter().skip(1).filter(|o| o.kind == Kind::Temp) {
+            for &k in read {
+                todo.push((d, o.register, o.components[k as usize]));
+            }
+        }
+    }
+    out
 }
 
 /// The last instruction before `at` writing component `c` of temporary `register`.
@@ -368,6 +547,10 @@ pub(crate) mod tests {
         }
         pub fn texture(n: u32) -> Vec<u32> {
             read(7, n, [0, 1, 2, 3])
+        }
+        /// `t<n>` read with `swizzle`: the channel each component receives.
+        pub fn texture_as(n: u32, swizzle: [u32; 4]) -> Vec<u32> {
+            read(7, n, swizzle)
         }
         pub fn sampler(n: u32) -> Vec<u32> {
             vec![6 << 12 | 1 << 20, n]
@@ -535,6 +718,85 @@ pub(crate) mod tests {
         }
         assert_eq!(s8[1], Scale::Direct(0.1));
         assert!(sample_scales(&code, 6).is_empty());
+    }
+
+    #[test]
+    fn finds_overlays_mixed_in_and_whole() {
+        let xyz = [0, 1, 2, 2];
+        let at = |op: u32, d: u32, sources: &[Vec<u32>]| {
+            let mut o = vec![op::dest(d, 7)];
+            o.extend_from_slice(sources);
+            ins(op, &o)
+        };
+        let sample = |d: u32, mask: u32, uv: [u32; 4], t: Vec<u32>| {
+            ins(
+                0x45,
+                &[op::dest(d, mask), op::temp(9, uv), t, op::sampler(3)],
+            )
+        };
+        // The overlay of r1 with r2's `channel` (from a sample at r2's `components`):
+        // lt, the doubled product, a screen half, the movc into r`out`.
+        let overlay = |out: u32, r2: [u32; 4]| {
+            vec![
+                at(LT, 3, &[op::temp(1, xyz), op::literal([0.5; 4])]),
+                at(MUL, 4, &[op::temp(2, r2), op::temp(1, xyz)]),
+                at(ADD, 4, &[op::temp(4, xyz), op::temp(4, xyz)]),
+                at(ADD, 5, &[op::temp(1, xyz), op::temp(2, r2)]),
+                at(
+                    MOVC,
+                    out,
+                    &[op::temp(3, xyz), op::temp(4, xyz), op::temp(5, xyz)],
+                ),
+            ]
+        };
+        let mut code = vec![
+            world(),
+            // r9 = r0.yxyx * (0.02, 0.02, 0.2, 0.2)
+            ins(
+                MUL,
+                &[
+                    op::dest(9, 15),
+                    op::temp(0, [1, 0, 1, 0]),
+                    op::literal([0.02, 0.02, 0.2, 0.2]),
+                ],
+            ),
+            // The base, t3 at 0.2; the blend, t5 at 0.02.
+            sample(1, 7, [2, 3, 2, 2], op::texture(3)),
+            sample(2, 7, [0, 1, 0, 0], op::texture(5)),
+        ];
+        // Mixed in by 0.9: r8 = r1 + 0.9 (r6 − r1), with r2's blue.
+        code.extend(overlay(6, [2; 4]));
+        code.push(at(ADD, 7, &[op::temp(1, xyz), op::temp(6, xyz)]));
+        code.push(at(
+            MAD,
+            8,
+            &[op::temp(7, xyz), op::literal([0.9; 4]), op::temp(1, xyz)],
+        ));
+        // Taken whole, with r2.z from a sample swizzled `.zwyx`: the texture's y.
+        code.push(sample(2, 12, [0, 1, 0, 0], op::texture_as(5, [2, 3, 1, 0])));
+        code.extend(overlay(10, [2; 4]));
+        let code = parse(&res(&code)).unwrap();
+        let o = overlays(&code);
+        let base = std::collections::BTreeSet::from([3]);
+        assert_eq!(
+            o,
+            [
+                Overlay {
+                    base: base.clone(),
+                    slot: 5,
+                    scale: Some(Scale::Direct(0.02)),
+                    channels: vec![2; 3],
+                    strength: 0.9,
+                },
+                Overlay {
+                    base,
+                    slot: 5,
+                    scale: Some(Scale::Direct(0.02)),
+                    channels: vec![1; 3],
+                    strength: 1.0,
+                },
+            ]
+        );
     }
 
     #[test]

@@ -31,9 +31,13 @@ struct Look {
     // vertex colour.
     colour: vec4<f32>,
     // The ground's: each detail layer's scale (0: none), then the inverse of its
-    // average colour, with 1 in w where it has a normal map.
+    // average colour, with 1 in w where it has a normal map; its far detail's scale
+    // (0: none), layer in far_maps, and how much of it the normal and the colour
+    // take, then which of its channels the colour takes (1 in that one).
     scale: array<vec4<f32>, 2>,
     inverse_mean: array<vec4<f32>, 8>,
+    far: array<vec4<f32>, 8>,
+    far_channel: array<vec4<f32>, 8>,
     // Asphalt's (scene.rs, Asphalt): its clean layer's tint is `tint`, its damaged
     // one's this; both layers' tiling (clean in xy); the layers' blend (xy) and the
     // wheel paths' (zw), each an offset and a contrast; the wheel paths' tint, with
@@ -68,6 +72,8 @@ struct Look {
 @group(0) @binding(10) var normal_map: texture_2d<f32>;
 // The ground's detail layers' normal maps, in the same slots as their diffuse maps.
 @group(0) @binding(11) var layer_normals: texture_2d_array<f32>;
+// The far detail maps the ground's layers overlay, each once.
+@group(0) @binding(12) var far_maps: texture_2d_array<f32>;
 @group(1) @binding(0) var<uniform> look: Look;
 
 struct Out {
@@ -354,7 +360,8 @@ struct Surface {
 
 // The tile's colour `v` (sRGB-encoded), times its layers' diffuse maps each divided
 // by its own average, weighted: from afar the colour stays the tile's. Their normal
-// maps are weighted alike, a layer without one counting as flat.
+// maps are weighted alike, a layer without one counting as flat. Each layer's far
+// detail is overlaid on both, as Heat's shaders do, and mixed in by its strengths.
 fn ground(xz: vec2<f32>, v: vec4<f32>, weights_low: vec4<f32>, weights_high: vec4<f32>) -> Surface {
     let base = vec3(linear(v.r), linear(v.g), linear(v.b));
     // Derivatives taken here, where every pixel runs, for the samples in the branch.
@@ -367,12 +374,21 @@ fn ground(xz: vec2<f32>, v: vec4<f32>, weights_low: vec4<f32>, weights_high: vec
         let w = weights[i / 4u][i % 4u];
         let s = look.scale[i / 4u][i % 4u];
         if w > 0.002 && s > 0.0 {
-            let c = textureSampleGrad(layers, filtered, xz * s, i, dx * s, dy * s).rgb;
-            detail += w * (c * look.inverse_mean[i].rgb - 1.0);
-            if look.inverse_mean[i].w > 0.5 {
-                let n = textureSampleGrad(layer_normals, filtered, xz * s, i, dx * s, dy * s).rg;
-                rg += w * (n - 0.5);
+            let far = look.far[i];
+            var d = vec3(0.5);
+            if far.x > 0.0 {
+                let f = xz * far.x;
+                d = textureSampleGrad(far_maps, filtered, f, u32(far.y), dx * far.x, dy * far.x).rgb;
             }
+            var c = textureSampleGrad(layers, filtered, xz * s, i, dx * s, dy * s).rgb;
+            c = overlay(c, vec3(dot(d, look.far_channel[i].rgb)), far.w);
+            detail += w * (c * look.inverse_mean[i].rgb - 1.0);
+            var n = vec2(0.5);
+            if look.inverse_mean[i].w > 0.5 {
+                n = textureSampleGrad(layer_normals, filtered, xz * s, i, dx * s, dy * s).rg;
+            }
+            n = overlay(vec3(n, 0.5), vec3(d.rg, 0.5), far.z).xy;
+            rg += w * (n - 0.5);
         }
     }
     return Surface(base * max(detail, vec3(0.0)), rg);

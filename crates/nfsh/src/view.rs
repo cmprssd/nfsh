@@ -161,6 +161,11 @@ fn renderer(
             normal: d.normal.as_deref().map(&mut by_name),
         })
         .collect();
+    let far: Vec<_> = scene::far_maps(&scene.detail)
+        .iter()
+        .map(|name| by_name(name))
+        .collect();
+    let far_count = far.len();
     let load = |guid: &[u8; 16]| -> frostbite::Result<Loaded> {
         let (name, texture) = textures.by_partition(guid)?;
         let pixels = textures
@@ -169,13 +174,14 @@ fn renderer(
         Ok((name, texture, pixels))
     };
     let renderer =
-        ZoneRenderer::new(gpu, scene, format, load, detail).map_err(|e| e.to_string())?;
+        ZoneRenderer::new(gpu, scene, format, load, detail, far).map_err(|e| e.to_string())?;
     let normals = scene.detail.iter().filter(|d| d.normal.is_some()).count();
-    let wanted = scene.textures.len() + scene.detail.len() + normals;
+    let ground = scene.detail.len() + normals + far_count;
+    let wanted = scene.textures.len() + ground;
     eprintln!(
         "{} textures ({} of them ground detail), {:.1} MiB uploaded in {:.1} s",
         wanted.saturating_sub(renderer.missing.len()),
-        scene.detail.len() + normals,
+        ground,
         renderer.texture_bytes as f64 / f64::from(1 << 20),
         start.elapsed().as_secs_f64()
     );

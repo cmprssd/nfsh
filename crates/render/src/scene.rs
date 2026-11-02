@@ -298,6 +298,34 @@ pub struct Detail {
     pub normal: Option<String>,
     /// World x and z times this are both maps' coordinates.
     pub scale: f32,
+    /// The far detail overlaid on both, if it has one.
+    pub far: Option<Far>,
+}
+
+/// A far detail map overlaid on a layer's diffuse and normal maps, as Heat's terrain
+/// shaders do ([`frostbite::layers::Far`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Far {
+    /// Its ebx name.
+    pub texture: String,
+    /// World x and z times this are its coordinates.
+    pub scale: f32,
+    /// How much of its red and green, overlaid on the normal map's, is mixed in.
+    pub normal: f32,
+    /// Its channel overlaid on the diffuse colour, and how much of that is mixed in
+    /// (0 for none).
+    pub colour: (u8, f32),
+}
+
+/// The far detail maps `detail` names, each once, in slot order.
+pub fn far_maps(detail: &[Detail]) -> Vec<String> {
+    let mut maps: Vec<String> = Vec::new();
+    for f in detail.iter().filter_map(|d| d.far.as_ref()) {
+        if !maps.contains(&f.texture) {
+            maps.push(f.texture.clone());
+        }
+    }
+    maps
 }
 
 /// The road sets' maps (`drv_…_d`), whose channels are not plain colour.
@@ -306,7 +334,9 @@ const ROAD_SET: &str = "drv_";
 /// Each layer's detail, from its own textures ([`frostbite::layers::textures`]): the
 /// diffuse map (`…_d`) with the finest scale (the first by name among equals),
 /// leaving out maps with no scale and the road sets', with the normal map of the same
-/// name (`…_n`) where the layer has it. A layer with no diffuse has no detail.
+/// name (`…_n`) where the layer has it, and the far detail overlaid on them (the
+/// diffuse's and the normal's are of one map at one scale, else the normal's is left
+/// out). A layer with no diffuse has no detail.
 pub fn ground_detail(
     textures: &BTreeMap<u16, Vec<frostbite::layers::Texture>>,
 ) -> BTreeMap<u16, Detail> {
@@ -322,12 +352,33 @@ pub fn ground_detail(
                 .filter_map(|d| Some((d.scale?, &d.name)))
                 .reduce(|a, b| if b.0 > a.0 { b } else { a })?;
             let normal = format!("{}_n", finest.1.strip_suffix("_d").unwrap_or(finest.1));
+            let normal = maps.iter().find(|n| n.name == normal);
+            let on_diffuse = maps.iter().find(|d| d.name == *finest.1)?.far.as_ref();
+            let on_normal = normal.and_then(|n| n.far.as_ref());
+            let far = match (on_diffuse, on_normal) {
+                (Some(c), n) => Some(Far {
+                    texture: c.name.clone(),
+                    scale: c.scale,
+                    normal: n
+                        .filter(|n| n.name == c.name && n.scale == c.scale)
+                        .map_or(0.0, |n| n.strength),
+                    colour: (c.channel, c.strength),
+                }),
+                (None, Some(n)) => Some(Far {
+                    texture: n.name.clone(),
+                    scale: n.scale,
+                    normal: n.strength,
+                    colour: (0, 0.0),
+                }),
+                (None, None) => None,
+            };
             Some((
                 layer,
                 Detail {
                     texture: finest.1.clone(),
-                    normal: maps.iter().any(|n| n.name == normal).then_some(normal),
+                    normal: normal.map(|n| n.name.clone()),
                     scale: finest.0,
+                    far,
                 },
             ))
         })
@@ -814,6 +865,7 @@ mod tests {
             texture: "grass".into(),
             normal: None,
             scale: 0.2,
+            far: None,
         }];
         add_ground(&mut scene, &ground, detail.clone());
         assert_eq!(scene.positions.len(), 7);
@@ -853,6 +905,7 @@ mod tests {
         let d = |name: &str, scale| Texture {
             name: format!("textures/{name}"),
             scale,
+            far: None,
         };
         let textures = BTreeMap::from([
             (1, vec![d("grass_d", Some(0.2)), d("grass_n", Some(0.2))]),
@@ -889,6 +942,62 @@ mod tests {
         assert_eq!(pick(6), ("textures/burnt_01_d", None, 0.1));
         assert_eq!(pick(12), ("textures/pine_d", None, 0.48));
         assert_eq!(detail.keys().copied().collect::<Vec<_>>(), [1, 3, 6, 12]);
+    }
+
+    #[test]
+    fn a_layers_far_detail_is_its_diffuses_with_its_normals_strength() {
+        use frostbite::layers::{self, Texture};
+        let far = |name: &str, scale, channel, strength| layers::Far {
+            name: format!("textures/{name}"),
+            scale,
+            channel,
+            strength,
+        };
+        let d = |name: &str, far| Texture {
+            name: format!("textures/{name}"),
+            scale: Some(0.1),
+            far,
+        };
+        let textures = BTreeMap::from([
+            (
+                1,
+                vec![
+                    d("grass_d", Some(far("rock_n", 0.02, 2, 0.9))),
+                    d("grass_n", Some(far("rock_n", 0.02, 0, 0.5))),
+                ],
+            ),
+            // Only the normal map's: the colour takes none.
+            (
+                2,
+                vec![
+                    d("sand_d", None),
+                    d("sand_n", Some(far("mid_n", 0.005, 0, 0.05))),
+                ],
+            ),
+            // Another map or scale on the normal: its strength is left out.
+            (
+                3,
+                vec![
+                    d("mud_d", Some(far("rock_n", 0.01, 1, 0.4))),
+                    d("mud_n", Some(far("rock_n", 0.002, 0, 0.3))),
+                ],
+            ),
+            (4, vec![d("bare_d", None)]),
+        ]);
+        let detail = ground_detail(&textures);
+        let f = |layer| detail[&layer].far.clone();
+        let made = |texture: &str, scale, normal, colour| Far {
+            texture: format!("textures/{texture}"),
+            scale,
+            normal,
+            colour,
+        };
+        assert_eq!(f(1), Some(made("rock_n", 0.02, 0.5, (2, 0.9))));
+        assert_eq!(f(2), Some(made("mid_n", 0.005, 0.05, (0, 0.0))));
+        assert_eq!(f(3), Some(made("rock_n", 0.01, 0.0, (1, 0.4))));
+        assert_eq!(f(4), None);
+        let slots: Vec<Detail> = detail.into_values().collect();
+        assert_eq!(far_maps(&slots), ["textures/rock_n", "textures/mid_n"]);
     }
 
     #[test]

@@ -598,7 +598,8 @@ under Textures), red and green are the normal (their means within 0.06 of a half
 red along u and green along v *decreasing*: on all 17 BC1 maps the slopes' curl is
 1.05 to 1.96 times smaller that way. Besides them most layers own a far detail
 normal at a twentieth or less of their scale (`t_vrg_wheelerdam_rock_02_n`,
-`t_terrain_mid_distance_details_n`, BC1 4096²), and SMD maps (BC1 or BC7).
+`t_terrain_mid_distance_details_n`, BC1 4096²), and SMD maps (BC1 or BC7). How the
+far detail is laid over a layer's maps is under "Shader programs" below.
 
 **Tiling is not a constant**: no `__2d` block has a `Tiling` (other shaders do); a
 layer's tiling, tint and how the layers blend are compiled into the shaders'
@@ -647,6 +648,39 @@ roads' `drv_set4_damage_d` in layers 8 and 9. Two have none: layer 28 binds
 `t_terrain_desert_fine_gravel_02_d` but only shaders also with layer 5 or 29 sample
 it, and layer 3's sand waves take their coordinates from something other than a
 literal scale (not worked out).
+
+**The far detail is overlaid** (worked out on 2026-11-02): a program samples a far
+detail map once at each of its layers' far scales and lays it over the layer's maps
+with the usual overlay, `2bx` where the base `b` is under a half and
+`1 − 2(1 − b)(1 − x)` from it (a `lt b, 0.5` choosing between the two halves with a
+`movc`), then mixes it in by a literal (`b + k (overlay − b)`, a `mad`), or takes it
+whole. On the normal map, its red and green go over the normal map's red and green;
+on the diffuse, one of its channels goes over all three of the colour's: green, but
+blue for mega grass in layer 1 (in layers 2 and 6 blue is a mask hiding the turned
+copy's repeats). The channel is the resource's swizzle (a sample written to `.zw` from
+`t6.zwyx` reads green and red). The same overlay lays the far detail over the SMD maps
+and a macro colour, which nfsh does not draw. `frostbite::dxbc` finds every such
+overlay (the base's textures, the blend's texture, scale and channel, the strength),
+and `frostbite::layers` keeps, for each of a layer's textures, the far detail every
+shader with the layer overlays on it: across the 282 shaders there is one, at one
+scale, for 22 diffuse and normal pairs and a few normal maps alone. On zone 495's
+layers it is gentle; among all layers:
+
+| layer | far map, scale | colour (channel, strength) | normal |
+|------:|----------------|----------------------------|-------:|
+| 1 | rock, 0.02 | blue, 0.9 | 0.5 |
+| 2 | rock, 0.004 | green, 0.2 | 0.15 |
+| 3 | mid, 0.001 | green, 0.1 | 0.1 |
+| 4 | rock, 0.002 | green, 0.05 | 0.15 |
+| 6 | rock, 0.006 | green, 1 | 0.35 |
+| 7, 13 | rock, 0.01 | green, 0.4 and 0.2 | 0.3 |
+| 18 | mid, 0.005 | green, 0.8 | 1 |
+| 25 | rock, 0.01 | green, 0.15 | 0.15 |
+
+(rock is `t_vrg_wheelerdam_rock_02_n`, mid `t_terrain_mid_distance_details_n`; the
+store test in `layers` pins some of them.) Layer 11 has none; 5, 10, 26, 28 and 29
+overlay theirs on the normal map only; the road sets' normal maps take another road
+set's at 0.02 (not drawn: nfsh draws no road-set layer).
 
 ## Meshes
 

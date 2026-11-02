@@ -84,8 +84,13 @@ struct Look {
     colour: [f32; 4],
     /// The ground's: each detail layer's scale (0 for none)…
     scale: [[f32; 4]; 2],
-    /// …and the inverse of its average colour, with 1 in `w` when it has a normal map.
+    /// …the inverse of its average colour, with 1 in `w` when it has a normal map…
     inverse_mean: [[f32; 4]; 8],
+    /// …its far detail's scale (0 for none), layer in the far maps, and how much of
+    /// it the normal and the colour take…
+    far: [[f32; 4]; 8],
+    /// …and which of its channels the colour takes (1 in that one).
+    far_channel: [[f32; 4]; 8],
     /// Asphalt's ([`crate::scene::Asphalt`]; its clean layer's tint is `tint`): the damaged
     /// layer's tint…
     tint_bg: [f32; 4],
@@ -119,6 +124,8 @@ impl Look {
             colour: [0.0; 4],
             scale: [[0.0; 4]; 2],
             inverse_mean: [[0.0; 4]; 8],
+            far: [[0.0; 4]; 8],
+            far_channel: [[0.0; 4]; 8],
             tint_bg: [0.0; 4],
             tiling: [0.0; 4],
             blend: [0.0; 4],
@@ -260,9 +267,10 @@ pub struct DetailTextures {
     pub normal: Option<frostbite::Result<Loaded>>,
 }
 
-/// The ground's detail as the shader takes it: each slot's scale, and its average
-/// colour's inverse with whether it has a normal map.
-type DetailLook = ([[f32; 4]; 2], [[f32; 4]; 8]);
+/// The ground's detail as the shader takes it: each slot's scale, its average
+/// colour's inverse with whether it has a normal map, and its far detail and the
+/// channel of it the colour takes ([`Look`]).
+type DetailLook = ([[f32; 4]; 2], [[f32; 4]; 8], [[f32; 4]; 8], [[f32; 4]; 8]);
 
 pub struct ZoneRenderer {
     gpu: Arc<Gpu>,
@@ -278,7 +286,7 @@ pub struct ZoneRenderer {
     /// One per combination of images the draws use ([`ImageSet`]).
     sets: Vec<vk::DescriptorSet>,
     /// The grey one first, then each texture that uploaded, then the ground's detail
-    /// layers' diffuse and normal maps (texture arrays) and its map.
+    /// layers' diffuse, normal and far detail maps (texture arrays) and its map.
     images: Vec<Image>,
     /// By pass; opaque and cut out draws sorted by their images, decals in the
     /// scene's order, so the later of two overlapping decals is drawn over the
@@ -297,7 +305,7 @@ pub struct ZoneRenderer {
 /// A draw's images, as indices into [`ZoneRenderer`]'s: its colour (binding 0),
 /// asphalt's other layers (bindings 2 to 7) and its normal map (10), grey (a flat
 /// normal) where it has none. Every set also binds the ground's map (8) and detail
-/// layers' diffuse (9) and normal maps (11).
+/// layers' diffuse (9), normal (11) and far detail maps (12).
 type ImageSet = [usize; 8];
 
 /// The bindings of an [`ImageSet`]'s images.
@@ -315,15 +323,17 @@ fn shader_module(gpu: &Gpu, spirv: &[u8]) -> Result<vk::ShaderModule> {
 impl ZoneRenderer {
     /// Uploads `scene` and its textures, each from `load` (by `TextureAsset`
     /// partition), and the ground's detail layers' textures `detail` (one per
-    /// [`Scene::detail`]), and makes the pipelines for drawing into `color_format`. A
-    /// texture that can't be loaded or sampled is drawn grey, a detail layer's left
-    /// out, and listed in `missing`.
+    /// [`Scene::detail`]) and their far detail maps `far` (one per
+    /// [`crate::scene::far_maps`]), and makes the pipelines for drawing into
+    /// `color_format`. A texture that can't be loaded or sampled is drawn grey, a
+    /// detail layer's left out, and listed in `missing`.
     pub fn new(
         gpu: &Arc<Gpu>,
         scene: &Scene,
         color_format: vk::Format,
         mut load: impl FnMut(&[u8; 16]) -> frostbite::Result<Loaded>,
         detail: Vec<DetailTextures>,
+        far: Vec<frostbite::Result<Loaded>>,
     ) -> Result<Self> {
         let d = &gpu.device;
         // Everything is made into `r`, so whatever was made is destroyed by its Drop
@@ -403,6 +413,7 @@ impl ZoneRenderer {
             image(9),
             image(10),
             image(11),
+            image(12),
         ];
         r.set_layout = unsafe {
             d.create_descriptor_set_layout(
@@ -476,10 +487,12 @@ impl ZoneRenderer {
                 }
             }
         }
-        let ([ground, ground_normals], detail_look) = r.upload_detail(scene, detail)?;
+        let ([ground, ground_normals, ground_far], detail_look) =
+            r.upload_detail(scene, detail, far)?;
         let ground_image = r.images.len();
         r.images.push(ground);
         r.images.push(ground_normals);
+        r.images.push(ground_far);
         let (map, map_look) = r.upload_ground_map(scene.ground_map.as_ref())?;
         let map_image = r.images.len();
         r.images.push(map);
@@ -509,7 +522,7 @@ impl ZoneRenderer {
         let sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
-                descriptor_count: count * 11,
+                descriptor_count: count * 12,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLER,
@@ -539,7 +552,12 @@ impl ZoneRenderer {
             };
         }
         for (set, images) in r.sets.iter().zip(&distinct) {
-            let shared = [(8, map_image), (9, ground_image), (11, ground_image + 1)];
+            let shared = [
+                (8, map_image),
+                (9, ground_image),
+                (11, ground_image + 1),
+                (12, ground_image + 2),
+            ];
             for (binding, image) in SET_BINDINGS
                 .into_iter()
                 .zip(images.iter().copied())
@@ -568,7 +586,7 @@ impl ZoneRenderer {
                 // The ground, and asphalt where it gives way to it, draw its detail.
                 let edge = matches!(draw.shading, Shading::Asphalt(a) if a.edge.is_some());
                 if draw.shading == Shading::Ground || edge {
-                    (look.scale, look.inverse_mean) = detail_look;
+                    (look.scale, look.inverse_mean, look.far, look.far_channel) = detail_look;
                 }
                 if edge {
                     look.ground_map = map_look;
@@ -633,16 +651,19 @@ impl ZoneRenderer {
     }
 
     /// Uploads the ground's detail layers' diffuse maps as one array and their normal
-    /// maps as another, a layer per slot, with each slot's look: its scale, its
-    /// average colour's inverse and whether it has a normal map. A diffuse map that
-    /// can't be read, or is not BC1, leaves its slot without detail (scale 0), and a
-    /// normal map that can't be read its slot flat; either is listed in `missing`.
+    /// maps as another, a layer per slot, and their far detail maps `far` as a third,
+    /// one layer each; with each slot's look: its scale, its average colour's inverse
+    /// and whether it has a normal map, and its far detail. A diffuse map that can't be
+    /// read, or is not BC1, leaves its slot without detail (scale 0), a normal map that
+    /// can't be read its slot flat, and a far detail map that can't its slots without
+    /// one; each is listed in `missing`.
     fn upload_detail(
         &mut self,
         scene: &Scene,
         detail: Vec<DetailTextures>,
-    ) -> Result<([Image; 2], DetailLook)> {
-        let mut look: DetailLook = ([[0.0; 4]; 2], [[0.0; 4]; 8]);
+        far: Vec<frostbite::Result<Loaded>>,
+    ) -> Result<([Image; 3], DetailLook)> {
+        let mut look: DetailLook = ([[0.0; 4]; 2], [[0.0; 4]; 8], [[0.0; 4]; 8], [[0.0; 4]; 8]);
         let (diffuse, normals): (Vec<_>, Vec<_>) = scene
             .detail
             .iter()
@@ -666,14 +687,29 @@ impl ZoneRenderer {
                 .map(|(n, &drawn)| n.filter(|_| drawn)),
             |_, _, _| Ok(()),
         )?;
+        let maps = crate::scene::far_maps(&scene.detail);
+        let (far, far_drawn) =
+            self.upload_layers(maps.iter().cloned().zip(far).map(Some), |_, _, _| Ok(()))?;
         for (slot, (d, mean)) in scene.detail.iter().zip(means).enumerate() {
             if let Some(mean) = mean.filter(|_| drawn[slot]) {
                 look.0[slot / 4][slot % 4] = d.scale;
                 let [r, g, b] = mean.map(|m| 1.0 / m.max(1e-3));
                 look.1[slot] = [r, g, b, if bent[slot] { 1.0 } else { 0.0 }];
+                let map = d
+                    .far
+                    .as_ref()
+                    .and_then(|f| Some((f, maps.iter().position(|m| *m == f.texture)?)))
+                    .filter(|&(_, at)| far_drawn.get(at) == Some(&true));
+                if let Some((f, at)) = map {
+                    // A colour channel past blue takes none.
+                    let (channel, colour) = f.colour;
+                    let colour = if channel < 3 { colour } else { 0.0 };
+                    look.2[slot] = [f.scale, at as f32, f.normal, colour];
+                    look.3[slot][usize::from(channel.min(3))] = 1.0;
+                }
             }
         }
-        Ok(([diffuse, normals], look))
+        Ok(([diffuse, normals, far], look))
     }
 
     /// Uploads `slots` as one texture array, a layer per slot, each checked by
