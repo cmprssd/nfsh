@@ -585,6 +585,17 @@ something else, not worked out. Layers 16, 17, 21 to 24, 27 and 31 to 38 have no
 `__2d` shader (likely masks with nothing to draw); 30 has one but owns only the
 shared detail normal.
 
+**Each layer's normal maps** (worked out on 2026-11-02) are among its own textures:
+every diffuse map with a scale has one named as it is with `_n` for `_d` (31 pairs
+across the layers), sampled at the same scale in every shader with the layer. They
+are BC1 unorm, 2048², the size and mips of their diffuse maps (BC1 sRGB), but for
+the road sets' and the sand waves' (BC7). As on the meshes' maps ("Normal maps",
+under Textures), red and green are the normal (their means within 0.06 of a half),
+red along u and green along v *decreasing*: on all 17 BC1 maps the slopes' curl is
+1.05 to 1.96 times smaller that way. Besides them most layers own a far detail
+normal at a twentieth or less of their scale (`t_vrg_wheelerdam_rock_02_n`,
+`t_terrain_mid_distance_details_n`, BC1 4096²), and SMD maps (BC1 or BC7).
+
 **Tiling is not a constant**: no `__2d` block has a `Tiling` (other shaders do); a
 layer's tiling, tint and how the layers blend are compiled into the shaders'
 bytecode. nfsh reads the tiling from it (below, "Shader programs").

@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.20.0] - 2026-11-02
+
+### Changed
+
+- `nfsh view` draws the ground's normal maps: each of its layers' grass, gravel,
+  sand and forest floor has its own fine relief, which catches the sun as in the
+  game, blended between layers as their colours are, and carried on under the road's
+  edges where the asphalt gives way to the ground.
+
+### Not yet
+
+- The far detail normals most of the ground's layers also sample (a large rock's and
+  a "mid distance details" map), and the road sets' layers.
+
 ## [0.19.0] - 2026-11-01
 
 ### Changed

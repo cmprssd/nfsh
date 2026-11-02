@@ -84,7 +84,7 @@ struct Look {
     colour: [f32; 4],
     /// The ground's: each detail layer's scale (0 for none)…
     scale: [[f32; 4]; 2],
-    /// …and the inverse of its average colour.
+    /// …and the inverse of its average colour, with 1 in `w` when it has a normal map.
     inverse_mean: [[f32; 4]; 8],
     /// Asphalt's ([`crate::scene::Asphalt`]; its clean layer's tint is `tint`): the damaged
     /// layer's tint…
@@ -247,8 +247,15 @@ pub fn mips(t: &Texture, data_len: usize) -> std::result::Result<Vec<Mip>, Strin
 /// A texture's name, its header and its chunk's bytes.
 pub type Loaded = (String, Texture, Vec<u8>);
 
+/// A ground detail layer's textures: its diffuse map, and its normal map if it has
+/// one ([`crate::scene::Detail`]).
+pub struct DetailTextures {
+    pub diffuse: frostbite::Result<Loaded>,
+    pub normal: Option<frostbite::Result<Loaded>>,
+}
+
 /// The ground's detail as the shader takes it: each slot's scale, and its average
-/// colour's inverse.
+/// colour's inverse with whether it has a normal map.
 type DetailLook = ([[f32; 4]; 2], [[f32; 4]; 8]);
 
 pub struct ZoneRenderer {
@@ -265,7 +272,7 @@ pub struct ZoneRenderer {
     /// One per combination of images the draws use ([`ImageSet`]).
     sets: Vec<vk::DescriptorSet>,
     /// The grey one first, then each texture that uploaded, then the ground's detail
-    /// layers (a texture array).
+    /// layers' diffuse and normal maps (texture arrays) and its map.
     images: Vec<Image>,
     /// By pass; opaque and cut out draws sorted by their images, decals in the
     /// scene's order, so the later of two overlapping decals is drawn over the
@@ -284,7 +291,7 @@ pub struct ZoneRenderer {
 /// A draw's images, as indices into [`ZoneRenderer`]'s: its colour (binding 0),
 /// asphalt's other layers (bindings 2 to 7) and its normal map (10), grey (a flat
 /// normal) where it has none. Every set also binds the ground's map (8) and detail
-/// layers (9).
+/// layers' diffuse (9) and normal maps (11).
 type ImageSet = [usize; 8];
 
 /// The bindings of an [`ImageSet`]'s images.
@@ -310,7 +317,7 @@ impl ZoneRenderer {
         scene: &Scene,
         color_format: vk::Format,
         mut load: impl FnMut(&[u8; 16]) -> frostbite::Result<Loaded>,
-        detail: Vec<frostbite::Result<Loaded>>,
+        detail: Vec<DetailTextures>,
     ) -> Result<Self> {
         let d = &gpu.device;
         // Everything is made into `r`, so whatever was made is destroyed by its Drop
@@ -389,6 +396,7 @@ impl ZoneRenderer {
             image(8),
             image(9),
             image(10),
+            image(11),
         ];
         r.set_layout = unsafe {
             d.create_descriptor_set_layout(
@@ -462,9 +470,10 @@ impl ZoneRenderer {
                 }
             }
         }
-        let (ground, detail_look) = r.upload_detail(scene, detail)?;
+        let ([ground, ground_normals], detail_look) = r.upload_detail(scene, detail)?;
         let ground_image = r.images.len();
         r.images.push(ground);
+        r.images.push(ground_normals);
         let (map, map_look) = r.upload_ground_map(scene.ground_map.as_ref())?;
         let map_image = r.images.len();
         r.images.push(map);
@@ -494,7 +503,7 @@ impl ZoneRenderer {
         let sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
-                descriptor_count: count * 10,
+                descriptor_count: count * 11,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLER,
@@ -524,7 +533,7 @@ impl ZoneRenderer {
             };
         }
         for (set, images) in r.sets.iter().zip(&distinct) {
-            let shared = [(8, map_image), (9, ground_image)];
+            let shared = [(8, map_image), (9, ground_image), (11, ground_image + 1)];
             for (binding, image) in SET_BINDINGS
                 .into_iter()
                 .zip(images.iter().copied())
@@ -617,48 +626,88 @@ impl ZoneRenderer {
         Ok(format)
     }
 
-    /// Uploads the ground's detail layers' textures as one array, a layer per slot,
-    /// with each slot's look: its scale and its average colour's inverse. A texture
-    /// that can't be read, or is not like the first that can (BC1, the same format,
-    /// size and mips), leaves its slot without detail (scale 0, its layer zeros) and
-    /// is listed in `missing`. With none, a grey array of one layer.
+    /// Uploads the ground's detail layers' diffuse maps as one array and their normal
+    /// maps as another, a layer per slot, with each slot's look: its scale, its
+    /// average colour's inverse and whether it has a normal map. A diffuse map that
+    /// can't be read, or is not BC1, leaves its slot without detail (scale 0), and a
+    /// normal map that can't be read its slot flat; either is listed in `missing`.
     fn upload_detail(
         &mut self,
         scene: &Scene,
-        detail: Vec<frostbite::Result<Loaded>>,
-    ) -> Result<(Image, DetailLook)> {
+        detail: Vec<DetailTextures>,
+    ) -> Result<([Image; 2], DetailLook)> {
         let mut look: DetailLook = ([[0.0; 4]; 2], [[0.0; 4]; 8]);
+        let (diffuse, normals): (Vec<_>, Vec<_>) = scene
+            .detail
+            .iter()
+            .zip(detail)
+            .take(8)
+            .map(|(d, t)| {
+                let normal = d.normal.clone().zip(t.normal);
+                ((d.texture.clone(), t.diffuse), normal)
+            })
+            .unzip();
+        let mut means = [None; 8];
+        let (diffuse, drawn) =
+            self.upload_layers(diffuse.into_iter().map(Some), |slot, t, data| {
+                means[slot] = Some(bc1_mean(t, data).ok_or("not BC1: no average colour")?);
+                Ok(())
+            })?;
+        let (normals, bent) = self.upload_layers(
+            normals
+                .into_iter()
+                .zip(&drawn)
+                .map(|(n, &drawn)| n.filter(|_| drawn)),
+            |_, _, _| Ok(()),
+        )?;
+        for (slot, (d, mean)) in scene.detail.iter().zip(means).enumerate() {
+            if let Some(mean) = mean.filter(|_| drawn[slot]) {
+                look.0[slot / 4][slot % 4] = d.scale;
+                let [r, g, b] = mean.map(|m| 1.0 / m.max(1e-3));
+                look.1[slot] = [r, g, b, if bent[slot] { 1.0 } else { 0.0 }];
+            }
+        }
+        Ok(([diffuse, normals], look))
+    }
+
+    /// Uploads `slots` as one texture array, a layer per slot, each checked by
+    /// `check` (given its slot) and like the first that uploads (the same format,
+    /// mips and size); with whether each slot uploaded. A slot that has no texture,
+    /// or one that fails (listed in `missing`), is zeros. With none, one grey layer.
+    fn upload_layers(
+        &mut self,
+        slots: impl Iterator<Item = Option<(String, frostbite::Result<Loaded>)>>,
+        mut check: impl FnMut(usize, &Texture, &[u8]) -> std::result::Result<(), String>,
+    ) -> Result<(Image, Vec<bool>)> {
         // The first usable layer's format, mips and size; then every slot's bytes.
         let mut like: Option<(vk::Format, Vec<Mip>, usize)> = None;
         let mut layers: Vec<Option<Vec<u8>>> = Vec::new();
-        for (slot, (d, loaded)) in scene.detail.iter().zip(detail).take(8).enumerate() {
+        for (slot, texture) in slots.enumerate() {
+            let Some((name, loaded)) = texture else {
+                layers.push(None);
+                continue;
+            };
             let read = loaded.map_err(|e| e.0).and_then(|(_, texture, data)| {
                 let format = self.sampled_format(&texture)?;
                 let mips = mips(&texture, data.len())?;
-                let mean = bc1_mean(&texture, &data).ok_or("not BC1: no average colour")?;
+                check(slot, &texture, &data)?;
                 if let Some((f, m, size)) = &like
                     && (*f, m, *size) != (format, &mips, data.len())
                 {
-                    return Err(format!(
-                        "{format:?} {mips:?}, unlike the first detail layer"
-                    ));
+                    return Err(format!("{format:?} {mips:?}, unlike the first layer"));
                 }
                 like.get_or_insert((format, mips, data.len()));
-                Ok((mean, data))
+                Ok(data)
             });
             match read {
-                Ok((mean, data)) => {
-                    look.0[slot / 4][slot % 4] = d.scale;
-                    let [r, g, b] = mean.map(|m| 1.0 / m.max(1e-3));
-                    look.1[slot] = [r, g, b, 0.0];
-                    layers.push(Some(data));
-                }
+                Ok(data) => layers.push(Some(data)),
                 Err(why) => {
-                    self.missing.push((d.texture.clone(), why));
+                    self.missing.push((name, why));
                     layers.push(None);
                 }
             }
         }
+        let uploaded = layers.iter().map(Option::is_some).collect();
         let gpu = self.gpu.clone();
         let Some((format, mips, size)) = like else {
             let grey = [Mip {
@@ -669,7 +718,7 @@ impl ZoneRenderer {
             let data = [128, 128, 128, 255];
             let image =
                 Image::sampled_array(&gpu, vk::Format::R8G8B8A8_UNORM, &grey, (1, 4), &data)?;
-            return Ok((image, ([[0.0; 4]; 2], [[0.0; 4]; 8])));
+            return Ok((image, uploaded));
         };
         let mut data = Vec::with_capacity(size * layers.len());
         for layer in layers {
@@ -681,7 +730,7 @@ impl ZoneRenderer {
         let count = (data.len() / size) as u32;
         let image = Image::sampled_array(&gpu, format, &mips, (count, size as u64), &data)?;
         self.texture_bytes += data.len() as u64;
-        Ok((image, look))
+        Ok((image, uploaded))
     }
 
     /// Uploads the ground's map as a three-layer array: its colours, then its weights

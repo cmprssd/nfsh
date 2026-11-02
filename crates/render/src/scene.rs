@@ -294,37 +294,39 @@ pub struct Scene {
 pub struct Detail {
     /// Its diffuse map's ebx name.
     pub texture: String,
-    /// World x and z times this are its coordinates.
+    /// Its normal map's, if it has one.
+    pub normal: Option<String>,
+    /// World x and z times this are both maps' coordinates.
     pub scale: f32,
 }
 
 /// The road sets' maps (`drv_…_d`), whose channels are not plain colour.
 const ROAD_SET: &str = "drv_";
 
-/// Each layer's detail, from its diffuse maps ([`frostbite::layers::diffuse`]): the
-/// one with the finest scale (the first by name among equals), leaving out maps with
-/// no scale and the road sets'. A layer with none has no detail.
+/// Each layer's detail, from its own textures ([`frostbite::layers::textures`]): the
+/// diffuse map (`…_d`) with the finest scale (the first by name among equals),
+/// leaving out maps with no scale and the road sets', with the normal map of the same
+/// name (`…_n`) where the layer has it. A layer with no diffuse has no detail.
 pub fn ground_detail(
-    diffuse: &BTreeMap<u16, Vec<frostbite::layers::Diffuse>>,
+    textures: &BTreeMap<u16, Vec<frostbite::layers::Texture>>,
 ) -> BTreeMap<u16, Detail> {
-    diffuse
+    textures
         .iter()
         .filter_map(|(&layer, maps)| {
             let finest = maps
                 .iter()
                 .filter(|d| {
-                    !d.name
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or("")
-                        .starts_with(ROAD_SET)
+                    let short = d.name.rsplit('/').next().unwrap_or("");
+                    short.ends_with("_d") && !short.starts_with(ROAD_SET)
                 })
                 .filter_map(|d| Some((d.scale?, &d.name)))
                 .reduce(|a, b| if b.0 > a.0 { b } else { a })?;
+            let normal = format!("{}_n", finest.1.strip_suffix("_d").unwrap_or(finest.1));
             Some((
                 layer,
                 Detail {
                     texture: finest.1.clone(),
+                    normal: maps.iter().any(|n| n.name == normal).then_some(normal),
                     scale: finest.0,
                 },
             ))
@@ -800,6 +802,7 @@ mod tests {
         };
         let detail = vec![Detail {
             texture: "grass".into(),
+            normal: None,
             scale: 0.2,
         }];
         add_ground(&mut scene, &ground, detail.clone());
@@ -832,29 +835,45 @@ mod tests {
 
     #[test]
     fn each_layers_detail_is_its_finest_scaled_diffuse_but_a_road_sets() {
-        use frostbite::layers::Diffuse;
-        let d = |name: &str, scale| Diffuse {
+        use frostbite::layers::Texture;
+        let d = |name: &str, scale| Texture {
             name: format!("textures/{name}"),
             scale,
         };
-        let diffuse = BTreeMap::from([
-            (1, vec![d("grass_d", Some(0.2))]),
-            (3, vec![d("footprints_d", Some(0.2)), d("waves_d", None)]),
+        let textures = BTreeMap::from([
+            (1, vec![d("grass_d", Some(0.2)), d("grass_n", Some(0.2))]),
+            (
+                3,
+                vec![
+                    d("footprints_d", Some(0.2)),
+                    d("footprints_smd", Some(0.2)),
+                    d("waves_d", None),
+                    d("waves_n", None),
+                ],
+            ),
             (
                 6,
-                vec![d("burnt_01_d", Some(0.1)), d("burnt_02_d", Some(0.1))],
+                vec![
+                    d("burnt_01_d", Some(0.1)),
+                    d("burnt_02_d", Some(0.1)),
+                    d("burnt_02_n", Some(0.1)),
+                ],
             ),
             (12, vec![d("pine_d", Some(0.48)), d("field_d", Some(0.4))]),
             (8, vec![d("drv_set3_clean_d", Some(0.1))]),
-            (28, vec![d("gravel_d", None)]),
-            (30, vec![]),
+            (28, vec![d("gravel_d", None), d("gravel_n", Some(0.1))]),
+            (30, vec![d("rock_n", Some(0.01))]),
         ]);
-        let detail = ground_detail(&diffuse);
-        let pick = |layer| (detail[&layer].texture.as_str(), detail[&layer].scale);
-        assert_eq!(pick(1), ("textures/grass_d", 0.2));
-        assert_eq!(pick(3), ("textures/footprints_d", 0.2));
-        assert_eq!(pick(6), ("textures/burnt_01_d", 0.1));
-        assert_eq!(pick(12), ("textures/pine_d", 0.48));
+        let detail = ground_detail(&textures);
+        let pick = |layer| {
+            let d = &detail[&layer];
+            (d.texture.as_str(), d.normal.as_deref(), d.scale)
+        };
+        assert_eq!(pick(1), ("textures/grass_d", Some("textures/grass_n"), 0.2));
+        assert_eq!(pick(3), ("textures/footprints_d", None, 0.2));
+        // The normal map goes with the diffuse chosen, not another of the layer's.
+        assert_eq!(pick(6), ("textures/burnt_01_d", None, 0.1));
+        assert_eq!(pick(12), ("textures/pine_d", None, 0.48));
         assert_eq!(detail.keys().copied().collect::<Vec<_>>(), [1, 3, 6, 12]);
     }
 

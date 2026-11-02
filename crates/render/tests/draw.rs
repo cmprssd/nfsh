@@ -5,7 +5,7 @@ use frostbite::level::{Mesh, Placement, Transform, Zone};
 use frostbite::mesh::{Frame, Geometry};
 use frostbite::texture::{Kind, Texture};
 use nfsh_render::scene::{self, Asphalt, Edge, Section, Shading};
-use nfsh_render::zone::Loaded;
+use nfsh_render::zone::{DetailTextures, Loaded};
 use nfsh_render::{Camera, Gpu, Light, Target, ZoneRenderer};
 
 const W: u32 = 64;
@@ -416,7 +416,7 @@ fn an_empty_scene_draws_nothing() {
 fn ground_row(
     colour: [u8; 4],
     detail: Vec<scene::Detail>,
-    loaded: Vec<frostbite::Result<Loaded>>,
+    loaded: Vec<DetailTextures>,
 ) -> (Vec<[u8; 4]>, Vec<(String, String)>) {
     let gpu = Gpu::new_headless().unwrap();
     let (_, square) = square_zone(&[]);
@@ -478,12 +478,16 @@ fn a_ground_layer_adds_its_diffuse_as_detail() {
     let detail = || {
         vec![scene::Detail {
             texture: "stripes".into(),
+            normal: None,
             scale: 0.5,
         }]
     };
     let dark = [120, 0, 0, 255];
     let (plain, _) = ground_row(dark, Vec::new(), Vec::new());
-    let loaded = vec![Ok(("stripes".to_string(), texture, data))];
+    let loaded = vec![DetailTextures {
+        diffuse: Ok(("stripes".to_string(), texture, data)),
+        normal: None,
+    }];
     let (row, missing) = ground_row(dark, detail(), loaded);
     assert!(missing.is_empty(), "{missing:?}");
     // Across the square, brighter where the detail is white, darker where black.
@@ -498,10 +502,59 @@ fn a_ground_layer_adds_its_diffuse_as_detail() {
     assert!(change.iter().any(|&c| c < -15), "darker: {change:?}");
 
     // A layer whose texture can't be read is left out and listed.
-    let gone = vec![Err(frostbite::Error("gone".into()))];
+    let gone = vec![DetailTextures {
+        diffuse: Err(frostbite::Error("gone".into())),
+        normal: None,
+    }];
     let (row, missing) = ground_row(dark, detail(), gone);
     assert_eq!(missing, [("stripes".to_string(), "gone".to_string())]);
     assert_eq!(row, plain);
+}
+
+#[test]
+fn a_ground_layers_normal_map_bends_the_ground() {
+    // A white diffuse (its own average: no detail), and a normal map tilting the
+    // normal all the way along x, across the sun shining straight at the square.
+    const WHITE: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+    const ALONG_X: [u8; 8] = [0x00, 0xFC, 0x00, 0xFC, 0, 0, 0, 0];
+    let detail = |normal: Option<&str>| {
+        vec![scene::Detail {
+            texture: "white".into(),
+            normal: normal.map(Into::into),
+            scale: 0.5,
+        }]
+    };
+    let textures = |normal: Option<frostbite::Result<Loaded>>| {
+        vec![DetailTextures {
+            diffuse: Ok(bc1(0x37, WHITE)),
+            normal,
+        }]
+    };
+    let grey = [180, 180, 180, 255];
+    let middle = W as usize / 2;
+    let (flat, missing) = ground_row(grey, detail(None), textures(None));
+    assert!(missing.is_empty(), "{missing:?}");
+    let (bent, missing) = ground_row(
+        grey,
+        detail(Some("along_x")),
+        textures(Some(Ok(bc1(0x36, ALONG_X)))),
+    );
+    assert!(missing.is_empty(), "{missing:?}");
+    assert!(
+        bent[middle][0] + 30 < flat[middle][0],
+        "turned from the sun: {:?}, not {:?}",
+        bent[middle],
+        flat[middle]
+    );
+
+    // A normal map that can't be read leaves the ground flat, and is listed.
+    let (row, missing) = ground_row(
+        grey,
+        detail(Some("gone")),
+        textures(Some(Err(frostbite::Error("gone".into())))),
+    );
+    assert_eq!(missing, [("gone".to_string(), "gone".to_string())]);
+    assert_eq!(row, flat);
 }
 
 /// The middle pixel of the square at 5 m drawn as asphalt that gives way to a green

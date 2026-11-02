@@ -140,9 +140,9 @@ pub fn primary_scale<'a>(mut shaders: impl Iterator<Item = &'a [Scale]>) -> Opti
     finest(false).or_else(|| finest(true))
 }
 
-/// A layer's diffuse map and the scale it is drawn at.
+/// One of a layer's own textures and the scale it is drawn at.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Diffuse {
+pub struct Texture {
     /// Its ebx name.
     pub name: String,
     /// Its primary scale ([`primary_scale`]): world x and z times this are its
@@ -150,9 +150,9 @@ pub struct Diffuse {
     pub scale: Option<f32>,
 }
 
-/// Each layer's diffuse maps: its own textures whose names end in `_d`, in name
-/// order, each with its primary scale.
-pub fn diffuse(store: &Store) -> Result<BTreeMap<u16, Vec<Diffuse>>> {
+/// Each layer's own textures ([`own_textures`]) the store names, in name order, each
+/// with its primary scale.
+pub fn textures(store: &Store) -> Result<BTreeMap<u16, Vec<Texture>>> {
     let asset = store
         .res(COMBINATIONS)
         .ok_or_else(|| Error(format!("{COMBINATIONS}: not in the store")))?;
@@ -177,11 +177,10 @@ pub fn diffuse(store: &Store) -> Result<BTreeMap<u16, Vec<Diffuse>>> {
     Ok(own
         .into_iter()
         .map(|(layer, textures)| {
-            let mut d: Vec<Diffuse> = textures
+            let mut d: Vec<Texture> = textures
                 .iter()
                 .filter_map(|t| Some((t, names.get(t)?)))
-                .filter(|(_, n)| n.to_lowercase().ends_with("_d"))
-                .map(|(t, n)| Diffuse {
+                .map(|(t, n)| Texture {
                     name: n.to_string(),
                     scale: primary_scale(
                         shaders
@@ -349,19 +348,20 @@ mod tests {
         assert!(own_textures(&missing, &db).is_err());
     }
 
-    /// Reads every layer's diffuse maps from the store `NFSH_STORE` points at.
+    /// Reads every layer's own textures from the store `NFSH_STORE` points at.
     #[test]
-    fn each_layer_has_its_own_diffuse_maps() {
+    fn each_layer_has_its_own_diffuse_and_normal_maps() {
         let Some(dir) = std::env::var_os("NFSH_STORE") else {
             eprintln!("NFSH_STORE not set; skipped");
             return;
         };
         let store = Store::open(Path::new(&dir)).unwrap();
-        let diffuse = diffuse(&store).unwrap();
+        let diffuse = textures(&store).unwrap();
         let short = |layer: u16| -> Vec<&str> {
             diffuse[&layer]
                 .iter()
                 .map(|d| d.name.rsplit('/').next().unwrap())
+                .filter(|n| n.ends_with("_d"))
                 .collect()
         };
         let scale = |layer: u16, name: &str| {
@@ -399,5 +399,29 @@ mod tests {
         assert_eq!(scale(28, "t_terrain_desert_fine_gravel_02_d"), None);
         assert_eq!(scale(3, "t_terrain_sand_wave_01_d"), None);
         assert_eq!(scale(3, "t_terrain_sand_footprints_01_d"), Some(0.2));
+        // Every scaled diffuse map's normal map is its name with `_n`, sampled at the
+        // same scale.
+        assert_eq!(scale(1, "t_mega_grass_01_n"), Some(0.2));
+        let mut paired = 0;
+        for (layer, maps) in &diffuse {
+            for d in maps
+                .iter()
+                .filter(|d| d.name.ends_with("_d") && d.scale.is_some())
+            {
+                let normal = format!("{}_n", d.name.strip_suffix("_d").unwrap());
+                match maps.iter().find(|n| n.name == normal) {
+                    Some(n) => {
+                        let (a, b) = (d.scale.unwrap(), n.scale.unwrap());
+                        assert!(
+                            (a - b).abs() < 1e-6,
+                            "layer {layer}: {normal} at {b}, not {a}"
+                        );
+                        paired += 1;
+                    }
+                    None => panic!("layer {layer}: no {normal}"),
+                }
+            }
+        }
+        assert_eq!(paired, 31);
     }
 }
