@@ -17,7 +17,7 @@ use frostbite::store::Store;
 use frostbite::terrain::{self, Chunks, Ground, Tree};
 use frostbite::texture::Textures;
 use nfsh_render::scene::{self, Scene};
-use nfsh_render::zone::Loaded;
+use nfsh_render::zone::{DetailTextures, Loaded};
 use nfsh_render::{Camera, FrameLoop, Gpu, Light, Presented, Swapchain, Target, ZoneRenderer, vk};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -148,14 +148,19 @@ fn renderer(
 ) -> Result<ZoneRenderer, String> {
     let start = Instant::now();
     let mut textures = Textures::new(store).map_err(|e| e.to_string())?;
-    let mut detail = Vec::new();
-    for d in &scene.detail {
-        let read = textures.by_name(&d.texture).and_then(|texture| {
-            let pixels = textures.pixels(&texture)?;
-            Ok((d.texture.clone(), texture, pixels))
-        });
-        detail.push(read);
-    }
+    let mut by_name = |name: &str| -> frostbite::Result<Loaded> {
+        let texture = textures.by_name(name)?;
+        let pixels = textures.pixels(&texture)?;
+        Ok((name.to_owned(), texture, pixels))
+    };
+    let detail = scene
+        .detail
+        .iter()
+        .map(|d| DetailTextures {
+            diffuse: by_name(&d.texture),
+            normal: d.normal.as_deref().map(&mut by_name),
+        })
+        .collect();
     let load = |guid: &[u8; 16]| -> frostbite::Result<Loaded> {
         let (name, texture) = textures.by_partition(guid)?;
         let pixels = textures
@@ -165,11 +170,12 @@ fn renderer(
     };
     let renderer =
         ZoneRenderer::new(gpu, scene, format, load, detail).map_err(|e| e.to_string())?;
-    let wanted = scene.textures.len() + scene.detail.len();
+    let normals = scene.detail.iter().filter(|d| d.normal.is_some()).count();
+    let wanted = scene.textures.len() + scene.detail.len() + normals;
     eprintln!(
         "{} textures ({} of them ground detail), {:.1} MiB uploaded in {:.1} s",
         wanted.saturating_sub(renderer.missing.len()),
-        scene.detail.len(),
+        scene.detail.len() + normals,
         renderer.texture_bytes as f64 / f64::from(1 << 20),
         start.elapsed().as_secs_f64()
     );
@@ -191,8 +197,8 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
     let mut scene = scene::build(&zone, |m| scene::first_lod(&mut meshes, m, noise));
     // The ground under the zone; without it the zone is still drawn, and without its
     // layers' detail the ground is.
-    let detail = match layers::diffuse(store) {
-        Ok(diffuse) => scene::ground_detail(&diffuse),
+    let detail = match layers::textures(store) {
+        Ok(textures) => scene::ground_detail(&textures),
         Err(e) => {
             eprintln!("  ground drawn without detail: {e}");
             Default::default()

@@ -1,10 +1,11 @@
 // A zone's meshes: each placement's transform from the instance, the colour from the
 // section's texture as its look says, the normal from the mesh's own bent by its
 // normal map (or, where it has none, from the triangle itself, by its screen-space
-// derivatives), lit by the time of day's sun and sky, exposed, then tonemapped. Decals are blended over what is drawn under them. The ground is its
-// tiles' colour with its layers' diffuse maps over it as detail. Asphalt blends two
-// layers by its road's mask, lays detail colours over them and gives way to the
-// ground at its edges.
+// derivatives), lit by the time of day's sun and sky, exposed, then tonemapped.
+// Decals are blended over what is drawn under them. The ground is its tiles' colour
+// with its layers' diffuse maps over it as detail, its normal bent by their normal
+// maps. Asphalt blends two layers by its road's mask, lays detail colours over them
+// and gives way to the ground at its edges.
 
 struct Push {
     view_proj: mat4x4<f32>,
@@ -30,7 +31,7 @@ struct Look {
     // vertex colour.
     colour: vec4<f32>,
     // The ground's: each detail layer's scale (0: none), then the inverse of its
-    // average colour.
+    // average colour, with 1 in w where it has a normal map.
     scale: array<vec4<f32>, 2>,
     inverse_mean: array<vec4<f32>, 8>,
     // Asphalt's (scene.rs, Asphalt): its clean layer's tint is `tint`, its damaged
@@ -65,6 +66,8 @@ struct Look {
 @group(0) @binding(9) var layers: texture_2d_array<f32>;
 // The section's normal map (red and green the normal); grey, a flat normal, for none.
 @group(0) @binding(10) var normal_map: texture_2d<f32>;
+// The ground's detail layers' normal maps, in the same slots as their diffuse maps.
+@group(0) @binding(11) var layer_normals: texture_2d_array<f32>;
 @group(1) @binding(0) var<uniform> look: Look;
 
 struct Out {
@@ -246,13 +249,17 @@ fn fs_asphalt(in: Out) -> @location(0) vec4<f32> {
     c = overlay(c, look.detail[4].rgb, n.b);
     let tyre = 1.0 - blend(mask.b, look.blend.z, look.blend.w);
     c *= 1.0 + tyre * (2.0 * look.tyre_tint.rgb - 1.0);
-    var rg = mix(damaged_n.rg, clean_n.rg, s);
+    // The mesh's normal, or the triangle's where it has none, so the ground's can be
+    // bent from it too.
+    let base = vec4(select(upward(in.world), normalize(in.normal.xyz), in.normal.w > 0.5), 1.0);
+    var normal = bent(base, in.tangent, mix(damaged_n.rg, clean_n.rg, s));
     if look.edge.z > 0.5 {
         let road = road_shows(in, s, height, clean_n.b, mask.g);
-        c = mix(ground_under(in.world.xz), c, road);
-        rg = mix(vec2(0.5), rg, road);
+        let under = ground_under(in.world.xz);
+        c = mix(under.colour, c, road);
+        normal = vec4(mix(ground_bent(base.xyz, under.rg).xyz, normal.xyz, road), 1.0);
     }
-    return shade(in.world, bent(in.normal, in.tangent, rg), clamp(c, vec3(0.04), vec3(0.5)), 1.0);
+    return shade(in.world, normal, clamp(c, vec3(0.04), vec3(0.5)), 1.0);
 }
 
 // How much of the road shows over the ground: where the shoulder's blue says, in
@@ -269,7 +276,7 @@ fn road_shows(in: Out, s: f32, damaged_height: f32, clean_height: f32, green: f3
 }
 
 // The ground as it is drawn at `xz`, from its map.
-fn ground_under(xz: vec2<f32>) -> vec3<f32> {
+fn ground_under(xz: vec2<f32>) -> Surface {
     let uv = clamp((xz - look.ground_map.xy) * look.ground_map.zw, vec2(0.0), vec2(1.0));
     let c = textureSampleLevel(ground_map, filtered, uv, 0, 0.0);
     let low = textureSampleLevel(ground_map, filtered, uv, 1, 0.0);
@@ -305,26 +312,51 @@ fn vs_ground(
 
 @fragment
 fn fs_ground(in: GroundOut) -> @location(0) vec4<f32> {
-    let colour = ground(in.world.xz, in.colour, in.weights_low, in.weights_high);
-    return shade(in.world, vec4(0.0), colour, 1.0);
+    let g = ground(in.world.xz, in.colour, in.weights_low, in.weights_high);
+    return shade(in.world, ground_bent(upward(in.world), g.rg), g.colour, 1.0);
+}
+
+// The triangle's normal at `world`, turned to face up.
+fn upward(world: vec3<f32>) -> vec3<f32> {
+    let face = normalize(cross(dpdx(world), dpdy(world)));
+    return select(face, -face, face.y < 0.0);
+}
+
+// The normal `n` bent by the ground's layers' red and green `rg`: their coordinates
+// are world x and z, so the tangent runs along x and the bitangent (v decreasing)
+// along -z, which is n × x where n is up.
+fn ground_bent(n: vec3<f32>, rg: vec2<f32>) -> vec4<f32> {
+    return bent(vec4(n, 1.0), vec4(1.0, 0.0, 0.0, 1.0), rg);
+}
+
+// The ground's colour, and its layers' normal maps' red and green blended.
+struct Surface {
+    colour: vec3<f32>,
+    rg: vec2<f32>,
 }
 
 // The tile's colour `v` (sRGB-encoded), times its layers' diffuse maps each divided
-// by its own average, weighted: from afar the colour stays the tile's.
-fn ground(xz: vec2<f32>, v: vec4<f32>, weights_low: vec4<f32>, weights_high: vec4<f32>) -> vec3<f32> {
+// by its own average, weighted: from afar the colour stays the tile's. Their normal
+// maps are weighted alike, a layer without one counting as flat.
+fn ground(xz: vec2<f32>, v: vec4<f32>, weights_low: vec4<f32>, weights_high: vec4<f32>) -> Surface {
     let base = vec3(linear(v.r), linear(v.g), linear(v.b));
     // Derivatives taken here, where every pixel runs, for the samples in the branch.
     let dx = dpdx(xz);
     let dy = dpdy(xz);
     var weights = array<vec4<f32>, 2>(weights_low, weights_high);
     var detail = vec3(1.0);
+    var rg = vec2(0.5);
     for (var i = 0u; i < 8u; i++) {
         let w = weights[i / 4u][i % 4u];
         let s = look.scale[i / 4u][i % 4u];
         if w > 0.002 && s > 0.0 {
             let c = textureSampleGrad(layers, filtered, xz * s, i, dx * s, dy * s).rgb;
             detail += w * (c * look.inverse_mean[i].rgb - 1.0);
+            if look.inverse_mean[i].w > 0.5 {
+                let n = textureSampleGrad(layer_normals, filtered, xz * s, i, dx * s, dy * s).rg;
+                rg += w * (n - 0.5);
+            }
         }
     }
-    return base * max(detail, vec3(0.0));
+    return Surface(base * max(detail, vec3(0.0)), rg);
 }

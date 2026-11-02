@@ -658,3 +658,34 @@ page to be monochrome, as a rule for every cmprssd project (`~/projects/cmprssd/
 - **A release is compared with the one before it**, any earlier one on request, and
   each shows the share of pixels it changed (more than 8 in a channel). There is no
   original to compare against until milestone 5's baseline.
+
+## 2026-11-02: The ground's normal maps (decided by Claude, pending review)
+
+Follows "Normal maps" above, which left the ground's layers for next.
+
+- **Each detail layer's normal map is its diffuse's name with `_n`**, drawn at the
+  diffuse's coordinates: every scaled diffuse has one at the same scale
+  (docs/FORMATS.md, "Each layer's normal maps"). Why: one sample coordinate a layer,
+  the owner's one-sample rule; a store test pins the pairing.
+- **The ground is bent in a world-aligned frame**: its coordinates are world x and z
+  times the scale, so the tangent is x and green runs towards v decreasing, -z, the
+  convention the curl of all 17 maps agrees with. The normal bent is the triangle's.
+  Why: the ground has no frame of its own and needs none; normals from its heights
+  are a separate step.
+- **The layers' red and green are weighted as their colours**: a half plus each
+  layer's weight times its offset from a half, a layer without a normal map counting
+  as flat. Why: the same split as the colour and as asphalt's two layers; how the
+  original mixes them is compiled into its shaders and was not read.
+- **Their own array at binding 11, a flag a slot**: a second BC1 array beside the
+  diffuse one, and 1 in the look's `inverse_mean[i].w` where a slot has a normal map;
+  a map that fails is listed and its slot drawn flat. Why: the zeros a missing slot
+  holds are not a flat normal in BC1, and the flag also skips the sample.
+- **Asphalt's edges take the ground's normal where the ground shows**, mixed with the
+  road's by how much of the road shows. Why: the ground under the edge would
+  otherwise be the only flat ground, along every road.
+- **Left out**: the far detail normals (`t_vrg_wheelerdam_rock_02_n`,
+  `t_terrain_mid_distance_details_n`), the layers drawn without detail (the road
+  sets', the sand waves') and the SMD maps. Whether the original's coordinates swap
+  x and z is not settled (its `__2d` programs sample at `r0.yx`, and which of r0's
+  components is world x is not worked out); the diffuse and normal maps are drawn
+  the same way, so they agree either way.
