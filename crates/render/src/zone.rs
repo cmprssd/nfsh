@@ -186,19 +186,25 @@ pub struct Light {
     pub ground: f32,
 }
 
+/// The sun's light on a white surface facing it at midday (170,000 lux at EV 15),
+/// exposed: what the sky's light is measured against.
+const MIDDAY_SUN: f32 = 170_000.0 / std::f32::consts::PI / (1.2 * 32_768.0);
+
 impl Light {
     /// The sun is as bright as its illuminance makes a white diffuse surface
     /// (E / π), times the exposure. How bright the sky's light is has not been worked
     /// out (the sky's `LuminanceScale` is not in known units), so its colours are
-    /// taken as they are: about what auto exposure leaves them at in the shade.
+    /// what it gives back under midday's sun, and the sky follows the sun from there:
+    /// both times' skies scatter the sun (or moon) through the same atmosphere.
     pub fn new(l: &Lighting) -> Self {
         let exposed = l.sun_intensity / std::f32::consts::PI * l.exposure();
+        let sky = exposed / MIDDAY_SUN;
         let g = l.ground_colour;
         Self {
             sun: l.sun_direction(),
             sun_light: l.sun_colour.map(|c| c * exposed),
-            sky: l.sky_colour,
-            ground: (g[0] + g[1] + g[2]) / 3.0,
+            sky: l.sky_colour.map(|c| c * sky),
+            ground: (g[0] + g[1] + g[2]) / 3.0 * sky,
         }
     }
 }
@@ -1105,7 +1111,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_sun_is_exposed_and_the_sky_taken_as_it_is() {
+    fn the_sun_is_exposed_and_the_sky_follows_it() {
         let l = Lighting {
             sun_colour: [1.0, 0.5, 0.25],
             sun_intensity: std::f32::consts::PI * 1000.0,
@@ -1126,8 +1132,22 @@ mod tests {
             assert!((got - want).abs() < 1e-5, "{got} {want}");
         }
         assert!((light.sun[1] - 1.0).abs() < 1e-6);
-        assert_eq!(light.sky, [0.3, 0.3, 0.4]);
-        assert!((light.ground - 0.2).abs() < 1e-6);
+        // The sky as bright against the sun as at midday, where white is 1.376.
+        let sky = white / 1.376_19;
+        for (got, want) in light.sky.iter().zip([0.3 * sky, 0.3 * sky, 0.4 * sky]) {
+            assert!((got - want).abs() < 1e-4, "{got} {want}");
+        }
+        assert!((light.ground - 0.2 * sky).abs() < 1e-4);
+        // Midday's sun (170,000 lux at EV 15) leaves the sky's colours as they are.
+        let midday = Light::new(&Lighting {
+            sun_intensity: 170_000.0,
+            ev: [15.0, 15.0],
+            ..l
+        });
+        assert_eq!(
+            midday.sky.map(|c| (c * 1e5).round()),
+            [30_000.0, 30_000.0, 40_000.0]
+        );
     }
 
     #[test]

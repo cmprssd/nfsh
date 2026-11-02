@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.21.1] - 2026-11-02
+
+### Fixed
+
+- `nfsh view`'s night is night: the sky's light now dims with the moon as it does
+  with the sun, instead of staying as bright as at midday, so the night view is about
+  a third darker overall and what faces away from the moon goes dark. Midday is
+  unchanged.
+
+### Not yet
+
+- Street lights, the night's own sky and colour grading, and the precomputed light
+  (Enlighten) the game adds at night.
+
 ## [0.21.0] - 2026-11-02
 
 ### Changed
