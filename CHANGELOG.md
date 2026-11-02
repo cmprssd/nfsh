@@ -4,6 +4,14 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.21.2] - 2026-11-02
+
+### Fixed
+
+- Where a road gives way to the ground at its edges, `nfsh view` lights that ground by
+  the ground's own slope, as the ground beside it is lit, instead of the road's. On
+  the flat speedway the change is slight; it shows where a road meets a bank.
+
 ## [0.21.1] - 2026-11-02
 
 ### Fixed

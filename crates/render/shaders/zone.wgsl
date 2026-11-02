@@ -60,8 +60,8 @@ struct Look {
 @group(0) @binding(5) var noise: texture_2d<f32>;
 @group(0) @binding(6) var clean_normal: texture_2d<f32>;
 @group(0) @binding(7) var shoulder: texture_2d<f32>;
-// The ground's colour, then its weights (four a layer), on a grid (zone.rs,
-// upload_ground_map); and its detail layers' diffuse maps, one per layer.
+// The ground's colour, its weights (four a layer), then its normal, on a grid
+// (zone.rs, upload_ground_map); and its detail layers' diffuse maps, one per layer.
 @group(0) @binding(8) var ground_map: texture_2d_array<f32>;
 @group(0) @binding(9) var layers: texture_2d_array<f32>;
 // The section's normal map (red and green the normal); grey, a flat normal, for none.
@@ -256,8 +256,9 @@ fn fs_asphalt(in: Out) -> @location(0) vec4<f32> {
     if look.edge.z > 0.5 {
         let road = road_shows(in, s, height, clean_n.b, mask.g);
         let under = ground_under(in.world.xz);
+        let level = ground_normal_under(in.world.xz, base.xyz);
         c = mix(under.colour, c, road);
-        normal = vec4(mix(ground_bent(base.xyz, under.rg).xyz, normal.xyz, road), 1.0);
+        normal = vec4(mix(ground_bent(level, under.rg).xyz, normal.xyz, road), 1.0);
     }
     return shade(in.world, normal, clamp(c, vec3(0.04), vec3(0.5)), 1.0);
 }
@@ -275,13 +276,24 @@ fn road_shows(in: Out, s: f32, damaged_height: f32, clean_height: f32, green: f3
     return max(edge, red) * (1.0 - dirt * (1.0 - red));
 }
 
+// Where `xz` falls on the ground's map.
+fn ground_map_uv(xz: vec2<f32>) -> vec2<f32> {
+    return clamp((xz - look.ground_map.xy) * look.ground_map.zw, vec2(0.0), vec2(1.0));
+}
+
 // The ground as it is drawn at `xz`, from its map.
 fn ground_under(xz: vec2<f32>) -> Surface {
-    let uv = clamp((xz - look.ground_map.xy) * look.ground_map.zw, vec2(0.0), vec2(1.0));
+    let uv = ground_map_uv(xz);
     let c = textureSampleLevel(ground_map, filtered, uv, 0, 0.0);
     let low = textureSampleLevel(ground_map, filtered, uv, 1, 0.0);
     let high = textureSampleLevel(ground_map, filtered, uv, 2, 0.0);
     return ground(xz, c, low, high);
+}
+
+// The ground's smooth normal at `xz`, from its map; `fallback` where it has none.
+fn ground_normal_under(xz: vec2<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    let n = textureSampleLevel(ground_map, filtered, ground_map_uv(xz), 3, 0.0);
+    return select(fallback, normalize(n.xyz * 2.0 - 1.0), n.w > 0.5);
 }
 
 struct GroundOut {

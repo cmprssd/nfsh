@@ -586,8 +586,11 @@ pub struct GroundMap {
     pub height: usize,
     /// Row by row (z, then x): the colour (sRGB-encoded; alpha 255)…
     pub colours: Vec<[u8; 4]>,
-    /// …and each of [`Ground::detail`]'s share of the weight, as a vertex's.
+    /// …each of [`Ground::detail`]'s share of the weight, as a vertex's…
     pub weights: Vec<[u8; DETAIL_SLOTS]>,
+    /// …and its normal as a vertex's, each axis from -1 to 1 as 0 to 255, alpha 255;
+    /// all 0 where it has none (no heights, or a hole).
+    pub normals: Vec<[u8; 4]>,
 }
 
 /// The most texels on a side of a [`GroundMap`]: a larger area takes larger texels.
@@ -609,6 +612,7 @@ impl GroundMap {
             height,
             colours: vec![[r, g, b, 255]; width * height],
             weights: vec![[0; DETAIL_SLOTS]; width * height],
+            normals: vec![[0; 4]; width * height],
         }
     }
 
@@ -853,6 +857,13 @@ fn emit(
             }
             if let Some((at, side, p)) = &sources.pages {
                 map.weights[i] = p.weights(*at, *side, [x, z], &ground.detail);
+            }
+            // The nearest sample's, `step` either side as the vertices' are.
+            let [column, row] =
+                [0, 1].map(|k| BORDER + (([x, z][k] - min[k]) / cell).round().max(0.0) as usize);
+            if let Some(n) = heights.normal(row, column, step, cell) {
+                let [a, b, c] = n.map(|a| ((a * 0.5 + 0.5) * 255.0).round() as u8);
+                map.normals[i] = [a, b, c, 255];
             }
         }
     }
@@ -1330,6 +1341,12 @@ mod tests {
                 [0, 255, 0, 255]
             };
             assert_eq!(c, want, "texel {i}");
+        }
+        // Every texel leans back against the rows' rise as the vertices do: 1/32 m a
+        // metre in the first's own heights, 1/64 in the root's (twice its size).
+        for (i, &n) in m.normals.iter().enumerate() {
+            let z = if i % 16 < 8 { 124 } else { 126 };
+            assert_eq!(n, [128, 255, z, 255], "texel {i}");
         }
         // The second's chunk unreadable: it is drawn in the root's colour.
         let g = ground(&tree, [0.0, -128.0], [128.0, -1.0], 16.0, &[], |id| {

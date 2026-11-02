@@ -739,9 +739,9 @@ impl ZoneRenderer {
         Ok((image, uploaded))
     }
 
-    /// Uploads the ground's map as a three-layer array: its colours, then its weights
-    /// (four in each layer); with its look: its corner and one over its size. Without
-    /// a map, one grey texel without weights.
+    /// Uploads the ground's map as a four-layer array: its colours, its weights (four
+    /// in each of two layers), then its normals; with its look: its corner and one
+    /// over its size. Without a map, one grey texel without weights or a normal.
     fn upload_ground_map(&mut self, map: Option<&GroundMap>) -> Result<(Image, [f32; 4])> {
         let gpu = self.gpu.clone();
         let format = vk::Format::R8G8B8A8_UNORM;
@@ -751,26 +751,28 @@ impl ZoneRenderer {
                 width: 1,
                 height: 1,
             }];
-            let data = [128, 128, 128, 255, 0, 0, 0, 0, 0, 0, 0, 0];
+            let data = [128, 128, 128, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             return Ok((
-                Image::sampled_array(&gpu, format, &one, (3, 4), &data)?,
+                Image::sampled_array(&gpu, format, &one, (4, 4), &data)?,
                 [0.0; 4],
             ));
         };
         let texels = m.width * m.height;
-        let mut data: Vec<u8> = Vec::with_capacity(texels * 12);
+        let mut data: Vec<u8> = Vec::with_capacity(texels * 16);
         data.extend(m.colours.iter().flatten());
         data.resize(texels * 4, 0);
         for half in [0, 4] {
             data.extend(m.weights.iter().flat_map(|w| &w[half..half + 4]));
             data.resize(data.len().next_multiple_of(texels * 4), 0);
         }
+        data.extend(m.normals.iter().flatten());
+        data.resize(texels * 16, 0);
         let mip = [Mip {
             offset: 0,
             width: m.width as u32,
             height: m.height as u32,
         }];
-        let image = Image::sampled_array(&gpu, format, &mip, (3, texels as u64 * 4), &data)?;
+        let image = Image::sampled_array(&gpu, format, &mip, (4, texels as u64 * 4), &data)?;
         self.texture_bytes += data.len() as u64;
         let size = [m.width, m.height].map(|n| n as f32 * m.texel);
         Ok((image, [m.min[0], m.min[1], 1.0 / size[0], 1.0 / size[1]]))
