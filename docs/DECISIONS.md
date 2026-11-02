@@ -726,3 +726,16 @@ at both times: at night's exposure (EV 2.25) as bright as the moon itself.
   `LuminanceScale` (983 and 30) is not in known units, so it is not used.
 - **Left out**: street lights, the night's colour grading and sky, Enlighten's light.
   The moon is straight overhead, so open flat ground stays moonlit.
+
+## 2026-11-02: Asphalt's edges take the ground's normal
+
+Follows "The ground's smooth normals" above, which left this out.
+
+- **The ground's map carries its normals as a fourth layer** (bytes, -1 to 1 as 0 to
+  255, alpha 255 where there is one), each texel's from its nearest height sample
+  with the same step as the vertices', so the edge is lit as the ground beside it.
+  Where the map has none (no heights, a hole), the road's own normal stands in. Why:
+  the map is already sampled there; one more layer costs 4 bytes a texel and no new
+  binding.
+- Measured on the road-edge view (zone 495, midday): 13% of pixels change, by at
+  most 5 of 255, as the speedway's ground is nearly level.
