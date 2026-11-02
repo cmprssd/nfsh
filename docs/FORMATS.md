@@ -872,6 +872,7 @@ The fields read, at midday and at night (`twilight_02`):
 | OutdoorLight `SunRotationX`, `SunRotationY` | 153.1, 34.7 | 229.6, 90 | degrees: bearing and elevation, by the values (the bearing's axis is not checked) |
 | OutdoorLight `SkyColor`, `GroundColor` | (0.318, 0.341, 0.4), 0.05 grey | the same | not overridden: the defaults |
 | Sky `LuminanceScale` | 983 | 30 | the sky's brightness, in units not worked out |
+| Sky `SkyType` | `Procedural` | `Procedural` | both skies scatter the sun (moon) through the same atmosphere (the same Rayleigh and Mie coefficients) |
 | Tonemap `MinEV`, `MaxEV` | 14.25, 15 | 0.75, 2.25 | the automatic exposure's range, EV at ISO 100 |
 | Tonemap `ExposureCompensation` | 1.1 | -1.1 | stops |
 | Tonemap `TonemapMethod` | `FilmicNeutral` | `FilmicNeutral` | |

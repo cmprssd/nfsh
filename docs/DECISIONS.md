@@ -710,3 +710,19 @@ Follows "The ground's normal maps" above, which bent the triangle's normal.
 - **Left out**: asphalt's edges still bend the road's own normal where the ground
   shows through, not the ground's (the ground map carries no normals).
 
+
+## 2026-11-02: The sky's light follows the sun's
+
+The night view was barely darker than midday in every release. The sun (the moon at
+night, 6 lux) was exposed, but the sky's light was `SkyColor` as it is, about 0.35
+at both times: at night's exposure (EV 2.25) as bright as the moon itself.
+
+- **The sky's light is `SkyColor` (and `GroundColor`) times the sun's exposed light
+  over midday's** (170,000 lux at EV 15): `SkyColor` stays what the sky gives back
+  at midday, and both scale with the sun from there. Asked of the owner: keep midday
+  as it is, rather than read `SkyColor` as a share of the sun's light (which brightens
+  midday's shade by about 37%). Why scale with the sun: both times' skies are
+  procedural, scattering the sun or moon through the same atmosphere; the sky's
+  `LuminanceScale` (983 and 30) is not in known units, so it is not used.
+- **Left out**: street lights, the night's colour grading and sky, Enlighten's light.
+  The moon is straight overhead, so open flat ground stays moonlit.
