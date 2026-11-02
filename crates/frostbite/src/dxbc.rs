@@ -427,7 +427,7 @@ pub(crate) mod tests {
         d
     }
 
-    /// The world position into r0.xy, the way the terrain shaders start.
+    /// The world position into r0.xy as (z, x), the way the terrain shaders start.
     pub(crate) fn world() -> Vec<u32> {
         ins(
             MAD,

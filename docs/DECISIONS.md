@@ -739,3 +739,22 @@ Follows "The ground's smooth normals" above, which left this out.
   binding.
 - Measured on the road-edge view (zone 495, midday): 13% of pixels change, by at
   most 5 of 255, as the speedway's ground is nearly level.
+
+## 2026-11-02: The ground layers' axes
+
+Follows "The ground's normal maps" above, which left open whether the original's
+layer coordinates swap x and z (its `__2d` programs sample at `r0.yx`).
+
+- **They do not: a layer's u is world x and its v world z, as nfsh draws them.** The
+  programs read their input swapped into `r0`, so `r0.yx` undoes it; the ground's
+  normal they build from the heightfield is (along the first, up, along the second),
+  and the layers' normal maps are turned by it with red going to x and green to -z
+  (docs/FORMATS.md, "Shader programs"). Why it settles it: Frostbite's world is
+  (x, up, z), and the heightfield's columns run along x in nfsh's own reading, which
+  the meshes and roads line up with.
+- **No change to the drawing.** Not confirmed with a shot: the drawing does not
+  change, and with no screenshot of the original to compare against (docs/BASELINE.md
+  is not done) a shot would only show nfsh's own. Each axis's direction (whether v grows with z)
+  rests on the runtime constants, which were not read; the normal maps' curl agrees
+  with v growing with z.
+

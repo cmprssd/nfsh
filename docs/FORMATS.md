@@ -616,8 +616,18 @@ at 28 and their offsets after it, each chunk a tag and a size. The `__2d` shader
 programs (one each, 282 different ones) are pixel shaders of shader
 model 5 with no reflection chunk: `ISGN` (`SV_Position`, `TEXCOORD0` in v1),
 `OSGN`, `SHEX`. Their code starts by mapping v1 to the world position with a `mad`
-by a constant (`r0.xy`, x and z), and a texture's `t` register is its slot in the
-parameter block.
+by a constant, reading v1 swapped (`v1.yx`): `r0.xy` holds z and x, so the
+coordinates read `r0.yx`, which is (x, z), with no swap between the two (worked out
+on 2026-11-02). A texture's `t` register is its slot in the parameter block.
+
+**Which axis is x** follows from the same programs. Each builds the ground's normal
+from the heightfield, sampled at the world position mapped by a constant, as the
+height differences along `r0.yx`'s first and second components on either side of up,
+in that order: (first, up, second), Frostbite's (x, up, z). It turns its layers'
+blended normal by that frame, so on level ground a normal map's red goes to x and its
+green to -z. So a layer's u runs along world x and its v along world z, the
+heightfield's columns along x as nfsh reads them ("Terrain"), and a normal map's
+green is along -z, as its curl says (below).
 
 **A layer's coordinates** are the world position times a literal (a `mul`, or a
 `mad` adding a literal), or the position turned and scaled: one axis a `mad` adding
