@@ -3,9 +3,9 @@
 // normal map (or, where it has none, from the triangle itself, by its screen-space
 // derivatives), lit by the time of day's sun and sky, exposed, then tonemapped.
 // Decals are blended over what is drawn under them. The ground is its tiles' colour
-// with its layers' diffuse maps over it as detail, its normal bent by their normal
-// maps. Asphalt blends two layers by its road's mask, lays detail colours over them
-// and gives way to the ground at its edges.
+// with its layers' diffuse maps over it as detail, its normal (from its heights) bent
+// by their normal maps. Asphalt blends two layers by its road's mask, lays detail
+// colours over them and gives way to the ground at its edges.
 
 struct Push {
     view_proj: mat4x4<f32>,
@@ -291,6 +291,8 @@ struct GroundOut {
     // Each detail layer's share of the ground's weight there.
     @location(2) weights_low: vec4<f32>,
     @location(3) weights_high: vec4<f32>,
+    // Its normal from its heights; w 1 where it has one.
+    @location(4) normal: vec4<f32>,
 }
 
 // The ground, already in world space; its texture coordinates' bytes are its weights.
@@ -300,6 +302,7 @@ fn vs_ground(
     @location(4) weights_low: vec4<f32>,
     @location(5) vertex_colour: vec4<f32>,
     @location(6) weights_high: vec4<f32>,
+    @location(10) normal: vec4<f32>,
 ) -> GroundOut {
     var out: GroundOut;
     out.clip = push.view_proj * vec4(p, 1.0);
@@ -307,13 +310,15 @@ fn vs_ground(
     out.colour = vertex_colour;
     out.weights_low = weights_low;
     out.weights_high = weights_high;
+    out.normal = normal;
     return out;
 }
 
 @fragment
 fn fs_ground(in: GroundOut) -> @location(0) vec4<f32> {
     let g = ground(in.world.xz, in.colour, in.weights_low, in.weights_high);
-    return shade(in.world, ground_bent(upward(in.world), g.rg), g.colour, 1.0);
+    let n = select(upward(in.world), normalize(in.normal.xyz), in.normal.w > 0.5);
+    return shade(in.world, ground_bent(n, g.rg), g.colour, 1.0);
 }
 
 // The triangle's normal at `world`, turned to face up.

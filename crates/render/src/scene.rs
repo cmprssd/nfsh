@@ -523,6 +523,15 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
     scene.uvs2.resize(scene.positions.len(), [0.0; 2]);
     scene.colours2.resize(scene.positions.len(), [0; 4]);
     scene.uvs3.resize(scene.positions.len(), [0.0; 2]);
+    // Its normals likewise, a short list's last drawn by their triangles; its
+    // tangent is world x, in the shader.
+    scene.normals.extend(
+        ground
+            .normals
+            .iter()
+            .take(ground.positions.len())
+            .map(|&n| normal(n)),
+    );
     scene.normals.resize(scene.positions.len(), [0; 4]);
     scene.tangents.resize(scene.positions.len(), [0; 4]);
     scene.ground_map = Some(ground.map.clone());
@@ -798,6 +807,7 @@ mod tests {
             // One short: the last is grey, with no weights.
             colours: vec![[10, 20, 30, 255]; 3],
             weights: vec![[1, 2, 3, 4, 5, 6, 7, 8]; 3],
+            normals: vec![[0.0, 1.0, 0.0], [0.6, 0.8, 0.0]],
             ..Ground::default()
         };
         let detail = vec![Detail {
@@ -814,6 +824,10 @@ mod tests {
         assert_eq!(scene.detail, detail);
         assert_eq!(scene.colours[3..6], [[10, 20, 30, 255]; 3]);
         assert_eq!(scene.colours[6], [128, 128, 128, 255]);
+        assert_eq!(
+            scene.normals[3..],
+            [[0, 127, 0, 127], [76, 102, 0, 127], [0; 4], [0; 4]]
+        );
         assert_eq!(scene.indices[3..], [0, 2, 1, 0, 3, 2]);
         let ground_draw = Draw {
             index_count: 6,

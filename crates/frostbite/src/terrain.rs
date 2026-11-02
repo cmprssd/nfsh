@@ -408,6 +408,33 @@ impl Heightfield {
         let h = self.samples[row * SAMPLES + column];
         (h != 0).then_some(f32::from(h) * UNIT)
     }
+
+    /// The ground's normal (unit length, y up) at row `row` and column `column`, from
+    /// the heights `step` samples either side, `cell` metres a sample: into the border
+    /// at the tile's edges, so it agrees with its neighbour's. One-sided where a side
+    /// is a hole or beyond the border, level along an axis with neither; `None` at a
+    /// hole.
+    pub fn normal(&self, row: usize, column: usize, step: usize, cell: f32) -> Option<[f32; 3]> {
+        let here = self.at(row, column)?;
+        let d = step as f32 * cell;
+        let slope = |before: Option<f32>, after: Option<f32>| match (before, after) {
+            (Some(a), Some(b)) => (b - a) / (2.0 * d),
+            (Some(a), None) => (here - a) / d,
+            (None, Some(b)) => (b - here) / d,
+            (None, None) => 0.0,
+        };
+        let back = |i: usize| i.checked_sub(step);
+        let dx = slope(
+            back(column).and_then(|c| self.at(row, c)),
+            self.at(row, column + step),
+        );
+        let dz = slope(
+            back(row).and_then(|r| self.at(r, column)),
+            self.at(row + step, column),
+        );
+        let length = (dx * dx + 1.0 + dz * dz).sqrt();
+        Some([-dx / length, 1.0 / length, -dz / length])
+    }
 }
 
 /// A tile's colour, `COLOUR_SIDE` × `COLOUR_SIDE` texels (sRGB-encoded) in rows
@@ -528,6 +555,8 @@ impl Pages {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Ground {
     pub positions: Vec<[f32; 3]>,
+    /// One per position, from its heights ([`Heightfield::normal`]).
+    pub normals: Vec<[f32; 3]>,
     /// One per position, from the tile's colour (sRGB-encoded; alpha 255).
     pub colours: Vec<[u8; 4]>,
     /// The layers whose weights the vertices carry, at most [`DETAIL_SLOTS`].
@@ -785,13 +814,17 @@ fn emit(
     for i in 0..side {
         for j in 0..side {
             let (row, column) = (first[1] + i * step, first[0] + j * step);
-            if let Some(y) = heights.at(row, column) {
+            if let (Some(y), Some(n)) = (
+                heights.at(row, column),
+                heights.normal(row, column, step, cell),
+            ) {
                 index_of.insert((i, j), base + index_of.len() as u32);
                 let (x, z) = (
                     min[0] + (column - BORDER) as f32 * cell,
                     min[1] + (row - BORDER) as f32 * cell,
                 );
                 ground.positions.push([x, y, z]);
+                ground.normals.push(n);
                 let [r, g, b] = sources
                     .colour
                     .as_ref()
@@ -1206,6 +1239,28 @@ mod tests {
     }
 
     #[test]
+    fn a_normal_leans_against_the_slope_of_the_heights_around_it() {
+        // Each row is 1/32 m above the one before, a sample every metre.
+        let h = Heightfield::parse(&rows()).unwrap();
+        let rising = 1.0 / 32.0;
+        let length = (1.0f32 + rising * rising).sqrt();
+        let up_the_rows = [0.0, 1.0 / length, -rising / length];
+        let near = |n: Option<[f32; 3]>, want: [f32; 3]| {
+            let n = n.unwrap();
+            assert!((0..3).all(|k| (n[k] - want[k]).abs() < 1e-6), "{n:?}");
+        };
+        // Two samples either side, from two metres apart.
+        near(h.normal(50, 50, 2, 1.0), up_the_rows);
+        // One-sided at the first row and the last, and beside the hole at (10, 10).
+        near(h.normal(0, 50, 2, 1.0), up_the_rows);
+        near(h.normal(SAMPLES - 1, 50, 2, 1.0), up_the_rows);
+        near(h.normal(10, 8, 2, 1.0), up_the_rows);
+        // Level along an axis with no sample either side.
+        near(h.normal(60, 60, 100, 1.0), [0.0, 1.0, 0.0]);
+        assert_eq!(h.normal(10, 10, 2, 1.0), None);
+    }
+
+    #[test]
     fn the_ground_takes_each_leaf_from_its_own_heights_or_an_ancestors() {
         let tree = Tree::parse(&sample()).unwrap();
         let mut asked = Vec::new();
@@ -1226,6 +1281,13 @@ mod tests {
         assert_eq!(g.indices.len(), 8 * 8 * 6);
         assert_eq!(g.positions[0], [-128.0, 5.0 / 32.0, -128.0]);
         assert_eq!(g.positions[80], [0.0, 133.0 / 32.0, 0.0]);
+        // Every vertex leans back against the rows' rise, 1/32 m a metre.
+        assert_eq!(g.normals.len(), g.positions.len());
+        assert!(
+            g.normals
+                .iter()
+                .all(|n| n[0] == 0.0 && (n[2] * 32.0 + n[1]).abs() < 1e-6)
+        );
         // The fourth quadrant, at full spacing, misses the hole's four cells.
         let g = ground(&tree, [-128.0, 0.0], [0.0, 128.0], 0.5, &[], |_| Ok(rows()));
         assert_eq!(g.positions.len(), 129 * 129 - 1);
@@ -1377,5 +1439,50 @@ mod tests {
             }
         }
         assert_eq!((equal, near, holes), (7_477, 61, 64));
+        // A tile's border is its neighbour's samples, which normals across the edge
+        // rely on: each tile against the one of its size to its east and its south,
+        // counting the pairs whose shared samples all agree (holes aside).
+        let at: HashMap<[u32; 3], usize> = tree
+            .tiles
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (square(t.min, t.size), i))
+            .collect();
+        let (mut pairs, mut agree) = (0, 0);
+        for (i, t) in tree.tiles.iter().enumerate() {
+            let Some(a) = &heights[i] else { continue };
+            for (k, [dx, dz]) in [[1.0, 0.0], [0.0, 1.0]].into_iter().enumerate() {
+                let next = [t.min[0] + dx * t.size, t.min[1] + dz * t.size];
+                let Some(b) = at
+                    .get(&square(next, t.size))
+                    .and_then(|&j| heights[j].as_ref())
+                else {
+                    continue;
+                };
+                // Along the edge (`along`), every sample both hold: one's from 4 short
+                // of its edge to its border's end, the other's from its border's start.
+                let mut same = true;
+                for along in 0..SAMPLES {
+                    for d in 0..=2 * BORDER {
+                        let (x, y) = (CELLS + d, d);
+                        let (s, u) = if k == 0 {
+                            (
+                                a.samples[along * SAMPLES + x],
+                                b.samples[along * SAMPLES + y],
+                            )
+                        } else {
+                            (
+                                a.samples[x * SAMPLES + along],
+                                b.samples[y * SAMPLES + along],
+                            )
+                        };
+                        same &= s == u || s == 0 || u == 0;
+                    }
+                }
+                pairs += 1;
+                agree += usize::from(same);
+            }
+        }
+        assert_eq!((pairs, agree), (14_852, 14_852));
     }
 }
