@@ -1416,7 +1416,8 @@ mod tests {
         assert_eq!(zone.placements.len(), 2171);
         let first: Vec<_> = scene.draws.iter().filter(|d| d.lod == 0).collect();
         assert_eq!(first.len(), 780);
-        assert_eq!(scene.textures.len(), 238);
+        // 238 textures at the first LODs; the far roads' baked colours add 37.
+        assert_eq!(scene.textures.len(), 275);
         assert_eq!(scene.instances.len(), 2171);
         assert_eq!(scene.triangles(), 3_988_832);
         // Every LOD, 2026-11-03: 6,061 LODs over the placements, and half as many
@@ -1467,10 +1468,11 @@ mod tests {
         // their layers (the 36 with positions only are plain grey), 58 of them giving
         // way to the ground at their edges (the 30 others are the wet road's shader);
         // 130 decals, 53 of them lines coloured by their vertices; the asphalt's
-        // layers add 22 textures, and the normal maps 132.
+        // layers add 22 textures, and the normal maps 132. The far roads' baked
+        // colours (2026-11-03) add 67.
         assert_eq!(count, [1047, 20, 0, 88, 130]);
         assert_eq!(edged, 58);
         assert_eq!(painted, 53);
-        assert_eq!(scene.textures.len(), 310);
+        assert_eq!(scene.textures.len(), 377);
     }
 }
