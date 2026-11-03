@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-11-02 (35 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-11-03 (36 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -54,7 +54,7 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
-3 crates in one Cargo workspace, 18,300 lines of Rust (sources and tests), 151 tests.
+3 crates in one Cargo workspace, 18,343 lines of Rust (sources and tests), 154 tests.
 <!-- /progress -->
 
 ```mermaid
@@ -74,7 +74,7 @@ flowchart BT
 |------|------:|------:|------|
 | `frostbite` | 11,085 | 96 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store, with every ebx's partition GUID; reads ebx partitions (types, instances, fields, arrays, references); walks a level's sub-levels and what each zone places (meshes in world space); reads mesh sets and decodes their geometry (LODs, sections, positions, texture coordinates, tangent frames, triangles); reads texture headers and their pixels (block-compressed mips, layers), and what each material names (its shader, textures and vector parameters); reads a time of day's sun, sky and exposure from its visual environment; reads the terrain's quadtree of tiles, their heightfields, colours and pages, and builds the ground's mesh under an area, with normals from its heights, coloured and weighted by its layers, with a map of the same colour and weights for what lies over it; reads the terrain's layer tree (which layers each tile's pages are for), the level's shader database (each shader permutation's parameter block, the textures it binds and its program) and so each terrain layer's own diffuse maps; reads a shader program's instructions far enough to find the scale each terrain layer's diffuse is drawn at, and the far detail its programs overlay on its diffuse and normal maps; averages a BC1 texture's colour |
 | `nfsh` | 2,266 | 15 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store, `reindex` lists its partition GUIDs, `ebx` prints a partition as text, `level` prints Palm City's bundles or one zone's placements, `mesh` prints a mesh's LODs and writes one as an .obj, `texture` prints a texture and writes it as a .dds, `view` flies through one zone in a window, textured and lit at midday or tealnight (or writes a screenshot) |
-| `render` | 4,949 | 40 | the Vulkan renderer (`nfsh-render`, Vulkan 1.3 through `ash`): device bring-up, a window's swapchain and frame loop with GPU timing, an offscreen target read back for screenshots and tests; packs a zone's placed meshes (first LOD) into one vertex, index and instance buffer and draws them with one instanced draw per section, each with its colour texture uploaded block-compressed as stored (grey when one can't be read), road asphalt as its clean and damaged layers blended by the road's mask with its detail colours over them, giving way to the ground at its edges as its shoulder texture says (up to eight textures a draw, and the ground's map of its colour, detail weights and normals) and road lines, cracks and tyre marks blended over it as decals, lit by the time of day's sun and sky, exposed and tonemapped, with each mesh's own normals bent by its normal map, and asphalt's by its layers' (the triangle's where it has none); the ground under the zone as one more draw, in its tiles' colours with up to eight of its layers' diffuse maps (one texture array) laid over them as detail, weighted by each layer's share of the tiles' pages, and its normals (from its heights, smooth across its tiles' edges) bent by those layers' normal maps (another array; also under asphalt where it gives way to the ground), each layer's far detail map overlaid on both at its own scale and strength (a third array) |
+| `render` | 4,992 | 43 | the Vulkan renderer (`nfsh-render`, Vulkan 1.3 through `ash`): device bring-up, a window's swapchain and frame loop with GPU timing, an offscreen target read back for screenshots and tests; packs a zone's placed meshes (first LOD) into one vertex, index and instance buffer and draws them with one instanced draw per section, each with its colour texture uploaded block-compressed as stored (grey when one can't be read), road asphalt as its clean and damaged layers blended by the road's mask with its detail colours over them, giving way to the ground at its edges as its shoulder texture says (up to eight textures a draw, and the ground's map of its colour, detail weights and normals) and road lines, cracks and tyre marks blended over it as decals, lit by the time of day's sun and sky, exposed and tonemapped, with each mesh's own normals bent by its normal map, and asphalt's by its layers' (the triangle's where it has none); the ground under the zone as one more draw, in its tiles' colours with up to eight of its layers' diffuse maps (one texture array) laid over them as detail, weighted by each layer's share of the tiles' pages, and its normals (from its heights, smooth across its tiles' edges) bent by those layers' normal maps (another array; also under asphalt where it gives way to the ground), each layer's far detail map overlaid on both at its own scale and strength (a third array) |
 <!-- /progress -->
 
 Every reader checks bounds and returns an error on malformed input, so a damaged or
@@ -133,15 +133,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-36 commits, 35 merged PRs from 2026-10-30 to 2026-11-02, on 4 working days: 26 feat, 5
-docs, 3 fix, 1 ci. About 26,662 lines added and 1,565 removed; 64 tracked files.
+37 commits, 36 merged PRs from 2026-10-30 to 2026-11-03, on 5 working days: 26 feat, 5
+docs, 4 fix, 1 ci. About 26,722 lines added and 1,573 removed; 64 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
-    x-axis ["Oct 30", "Oct 31", "Nov 1", "Nov 2"]
+    x-axis ["Oct 30", "Oct 31", "Nov 1", "Nov 2", "Nov 3"]
     y-axis "PRs" 0 --> 17
-    bar [1, 13, 15, 6]
+    bar [1, 13, 15, 6, 1]
 ```
 <!-- /progress -->
 

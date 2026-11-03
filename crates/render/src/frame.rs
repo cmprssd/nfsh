@@ -12,6 +12,18 @@ use crate::swapchain::Swapchain;
 
 pub const FRAMES_IN_FLIGHT: usize = 2;
 
+/// The longest a frame's GPU time can be: the OS resets a GPU that takes longer
+/// (Windows after 2 s), so a longer reading is a misread counter, not a frame.
+const LONGEST_GPU_MS: f32 = 2000.0;
+
+/// The GPU time between two timestamps of a counter `valid_bits` wide (it wraps there)
+/// ticking every `period` ns, in ms; `None` when it is longer than a frame can be.
+fn gpu_ms(start: u64, end: u64, valid_bits: u32, period: f32) -> Option<f32> {
+    let mask = u64::MAX.checked_shr(64 - valid_bits.min(64)).unwrap_or(0);
+    let ms = (end.wrapping_sub(start) & mask) as f64 * f64::from(period) / 1e6;
+    (ms <= f64::from(LONGEST_GPU_MS)).then_some(ms as f32)
+}
+
 /// Begins rendering into `color` (cleared to black) and `depth` (cleared to 0, the
 /// far end of reversed depth), both already in attachment layouts.
 pub fn begin_rendering(
@@ -84,6 +96,8 @@ pub struct FrameLoop {
     next: usize,
     /// Two timestamps per slot; `None` when the queue has no timestamps.
     queries: Option<vk::QueryPool>,
+    /// How many of a timestamp's low bits count (the counter wraps there).
+    valid_bits: u32,
     depth: Option<Image>,
 }
 
@@ -105,6 +119,7 @@ impl FrameLoop {
             slots: Vec::new(),
             next: 0,
             queries: None,
+            valid_bits: 0,
             depth: None,
         };
         let cmds = unsafe {
@@ -140,10 +155,10 @@ impl FrameLoop {
             gpu.instance
                 .get_physical_device_queue_family_properties(gpu.physical)
         };
-        let has_timestamps = families
+        frames.valid_bits = families
             .get(gpu.queue_family as usize)
-            .is_some_and(|f| f.timestamp_valid_bits > 0);
-        if has_timestamps {
+            .map_or(0, |f| f.timestamp_valid_bits);
+        if frames.valid_bits > 0 {
             frames.queries = Some(unsafe {
                 d.create_query_pool(
                     &vk::QueryPoolCreateInfo::default()
@@ -180,7 +195,7 @@ impl FrameLoop {
                     )
                 }
                 .ok()
-                .map(|()| t[1].wrapping_sub(t[0]) as f32 * gpu.timestamp_period / 1e6)
+                .and_then(|()| gpu_ms(t[0], t[1], self.valid_bits, gpu.timestamp_period))
             }
             _ => None,
         };
@@ -345,5 +360,33 @@ impl Drop for FrameLoop {
             }
             d.destroy_command_pool(self.pool, None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gpu_ms;
+
+    #[test]
+    fn gpu_time_is_the_difference_in_ms() {
+        // Intel's period: 83.333 ns a tick; 400,000 ticks are 33.33 ms.
+        assert_eq!(gpu_ms(1_000, 401_000, 36, 83.333), Some(33.3332));
+        assert_eq!(gpu_ms(5, 5, 64, 1.0), Some(0.0));
+    }
+
+    #[test]
+    fn a_counter_that_wraps_between_the_stamps_still_reads_right() {
+        // A 36-bit counter: 100 ticks before the wrap to 300 after it is 400 ticks.
+        let top = (1u64 << 36) - 100;
+        assert_eq!(gpu_ms(top, 300, 36, 1_000.0), Some(0.4));
+    }
+
+    #[test]
+    fn readings_longer_than_a_frame_can_be_are_dropped() {
+        // An end before the start on a 64-bit counter: billions of years, not a frame.
+        assert_eq!(gpu_ms(1_000, 999, 64, 83.333), None);
+        // 2.5 s.
+        assert_eq!(gpu_ms(0, 2_500_000_000, 64, 1.0), None);
+        assert_eq!(gpu_ms(0, 2_000_000_000, 64, 1.0), Some(2000.0));
     }
 }
