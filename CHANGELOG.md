@@ -4,6 +4,15 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.22.1] - 2026-11-03
+
+### Fixed
+
+- `nfsh view`'s title no longer shows an absurd GPU time (once read as 10¹⁴ ms) when
+  the GPU's timestamp counter wraps between a frame's start and end: the counter is
+  read only as wide as the GPU says it is, and a reading longer than a frame can last
+  is left out of the mean.
+
 ## [0.22.0] - 2026-11-02
 
 ### Added
