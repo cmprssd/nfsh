@@ -2,9 +2,9 @@
 //! pixels back.
 
 use frostbite::level::{Mesh, Placement, Transform, Zone};
-use frostbite::mesh::{Frame, Geometry};
+use frostbite::mesh::{Frame, Geometry, Switches};
 use frostbite::texture::{Kind, Texture};
-use nfsh_render::scene::{self, Asphalt, Edge, Section, Shading};
+use nfsh_render::scene::{self, Asphalt, Edge, Model, Section, Shading};
 use nfsh_render::zone::{DetailTextures, Loaded};
 use nfsh_render::{Camera, Gpu, Light, Target, ZoneRenderer};
 
@@ -94,7 +94,7 @@ fn middle_of(
 ) -> ([u8; 4], Vec<(String, String)>) {
     let gpu = Gpu::new_headless().unwrap();
     let (zone, square) = square_zone(&[5.0]);
-    let scene = scene::build(&zone, |_| Ok(sections(&square)));
+    let scene = scene::build(&zone, |_| Ok(Model::whole(sections(&square))));
     let renderer = ZoneRenderer::new(
         &gpu,
         &scene,
@@ -220,7 +220,7 @@ fn draws_a_placed_mesh_where_the_camera_sees_it() {
         geometry: square,
         ..Section::default()
     };
-    let scene = scene::build(&zone, |_| Ok(vec![section.clone()]));
+    let scene = scene::build(&zone, |_| Ok(Model::whole(vec![section.clone()])));
     let renderer = ZoneRenderer::new(
         &gpu,
         &scene,
@@ -293,6 +293,7 @@ fn asphalt_shows_its_damaged_layer_where_the_mask_is_dark() {
         edge: None,
     });
     let section = |g: &Geometry| Section {
+        lod: 0,
         geometry: Geometry {
             uvs2: g.uvs.clone(),
             ..g.clone()
@@ -672,6 +673,7 @@ fn asphalt_over_ground(shoulder: [u8; 8], mask: [u8; 8], normal: [u8; 4]) -> [u8
         }),
     });
     let section = Section {
+        lod: 0,
         geometry: Geometry {
             uvs2: square.uvs.clone(),
             uvs3: square.uvs.clone(),
@@ -684,7 +686,7 @@ fn asphalt_over_ground(shoulder: [u8; 8], mask: [u8; 8], normal: [u8; 4]) -> [u8
         normal_map: None,
         shading: asphalt,
     };
-    let mut scene = scene::build(&zone, |_| Ok(vec![section.clone()]));
+    let mut scene = scene::build(&zone, |_| Ok(Model::whole(vec![section.clone()])));
     let ground = frostbite::terrain::Ground {
         positions: square.positions.iter().map(|p| [p[0], p[1], 6.0]).collect(),
         colours: vec![[0, 255, 0, 255]; 4],
@@ -767,4 +769,60 @@ fn where_the_ground_shows_through_it_takes_the_grounds_own_normal() {
         asphalt_over_ground(WHITE, WHITE, UP),
         asphalt_over_ground(WHITE, WHITE, NONE)
     );
+}
+
+/// A 40 m square, red at its first LOD and grey at its second (from 50 m), not drawn
+/// under 0.5% of the screen, placed `z` metres ahead: the middle pixel.
+fn lod_middle(z: f32) -> [u8; 4] {
+    let gpu = Gpu::new_headless().unwrap();
+    let (mut zone, square) = square_zone(&[z]);
+    let t = &mut zone.placements[0].transform;
+    (t.right, t.up) = ([20.0, 0.0, 0.0], [0.0, 20.0, 0.0]);
+    let switches = Switches {
+        distances: [50.0, 1e4, 1e4, 1e4, 1e4, 1e4],
+        cull_area: 0.5,
+        cull_scale: 1.0,
+    };
+    let near = textured(1, Shading::Colour)(&square);
+    let far = Section {
+        lod: 1,
+        ..grey(&square)
+    };
+    let scene = scene::build(&zone, |_| {
+        Ok(Model {
+            sections: vec![near.clone(), far.clone()],
+            switches,
+        })
+    });
+    let renderer = ZoneRenderer::new(
+        &gpu,
+        &scene,
+        Target::COLOR_FORMAT,
+        |_| Ok(bc1(0x37, RED)),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap();
+    let mut target = Target::new(&gpu, W, H).unwrap();
+    let extent = target.color.extent;
+    let camera = Camera::new([0.0; 3], 0.0, 0.0, W, H);
+    let rgba = target
+        .render(|cmd| renderer.record(cmd, &camera, extent, &LIGHT))
+        .unwrap();
+    pixel(&rgba, W / 2, H / 2)
+}
+
+#[test]
+fn each_placement_is_drawn_at_the_lod_its_distance_chooses() {
+    // Near: the first LOD, red.
+    let [r, g, b, _] = lod_middle(30.0);
+    assert!(r > 100 && g < 30 && b < 30, "{r} {g} {b}");
+    // Past 50 m: the second, grey.
+    let [r, g, b, _] = lod_middle(100.0);
+    assert!(
+        r > 30 && r.abs_diff(g) < 8 && g.abs_diff(b) < 20,
+        "{r} {g} {b}"
+    );
+    // So far that it covers under 0.5% of the screen (past about 510 m): nothing.
+    assert_eq!(lod_middle(600.0), [0, 0, 0, 255]);
 }

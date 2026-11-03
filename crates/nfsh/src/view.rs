@@ -200,7 +200,7 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
     let roads = level.add_drivable_surfaces(&mut zone, ROAD_MARGIN)?;
     let mut meshes = Meshes::new(store)?;
     let noise = scene::texture_partition(store, scene::ASPHALT_NOISE);
-    let mut scene = scene::build(&zone, |m| scene::first_lod(&mut meshes, m, noise));
+    let mut scene = scene::build(&zone, |m| scene::lods(&mut meshes, m, noise));
     // The ground under the zone; without it the zone is still drawn, and without its
     // layers' detail the ground is.
     let detail = match layers::textures(store) {

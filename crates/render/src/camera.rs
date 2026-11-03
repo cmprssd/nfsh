@@ -62,12 +62,21 @@ impl Camera {
         [forward, right, up]
     }
 
+    /// The tangents of half the view's width and height: at distance d ahead, the
+    /// screen spans 2 d tx across and 2 d ty up.
+    pub fn tangents(&self) -> [f32; 2] {
+        let ty = (self.fov_y.to_radians() / 2.0).tan();
+        [
+            ty * self.width.max(1) as f32 / self.height.max(1) as f32,
+            ty,
+        ]
+    }
+
     /// The view-projection matrix, column-major (as WGSL `mat4x4` takes it): clip x
     /// right, y down, depth `z_near / distance` (1 at the near plane, 0 at infinity).
     pub fn view_proj(&self) -> [[f32; 4]; 4] {
         let [f, r, u] = self.axes();
-        let ty = (self.fov_y.to_radians() / 2.0).tan();
-        let tx = ty * self.width.max(1) as f32 / self.height.max(1) as f32;
+        let [tx, ty] = self.tangents();
         let o = self.origin;
         // Rows of the matrix acting on (x, y, z, 1).
         let rows = [
