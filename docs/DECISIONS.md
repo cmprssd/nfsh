@@ -791,3 +791,35 @@ Follows "The ground's normal maps" above, which left the far detail normals out.
 - **Left out**: the SMD maps and macro colour the same far sample is overlaid on, the
   blue mask hiding the turned copies' repeats (nfsh draws no turned copies), and the
   road sets' layers.
+
+## 2026-11-03: Culling: only what is in view is drawn
+
+Where a frame's time went on the HD 630 (1280x720, zone 495, the history views,
+median GPU time over 60 frames, headless): 30 to 32 ms whatever the view, of which
+the opaque meshes (5.08 million triangles) took about 21, asphalt 3 to 6, the
+ground (1.17 million) 3.5 to 5, cut out and decals under 1. Drawn at 64x36, with
+almost no pixels, it still took 24.5 ms: about 80% of the frame was the vertices,
+and only 20 to 58% of the triangles were in view.
+
+- **Frustum culling first, LODs after** (owner, over culling and the game's LODs
+  together). Why: it changes nothing on screen, and its saving is measured; the
+  LODs' switch distances are not read from the data yet.
+- **Per placement, by a box made once**: each instance's box in world space is the
+  union of its mesh's sections' vertices as it is placed (the sections share their
+  mesh's placements), tested against the view's left, right, top, bottom and near
+  planes each frame on the CPU; consecutive visible instances of a draw go in one
+  draw call. A box that cannot be read is always drawn. Why: one test per
+  placement (a few thousand) costs next to nothing, and the instance buffer stays as
+  it is, with nothing written per frame.
+- **The ground in 128 m blocks**, each triangle in the block of its middle, each
+  block a draw of its own. Why: as one draw the whole ground was always in view; a
+  block is about a zone tile's size.
+- Measured as above, against 0.22.1: barrels 30.5 to 12.7 ms, speedway 31.4 to
+  10.5, asphalt 32.4 to 19.8, road-edge 31.2 to 7.8, night 31.3 to 10.5. The five
+  views' shots are identical to 0.22.0's, to the pixel. The asphalt view, which
+  looks along the track at the stands, still sees 58% of the triangles: the LODs
+  are for that.
+- **Left out**: occlusion culling (what a building hides is still drawn), and the
+  CPU's time per frame, not measured (one test per placement; the draws only become
+  fewer than before, or split where a draw's visible placements are not
+  consecutive).
