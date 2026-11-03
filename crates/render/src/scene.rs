@@ -546,7 +546,12 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
     scene
 }
 
-/// Adds `ground`, already in world space, as one draw in its vertices' colours with
+/// The side of the ground's blocks, in metres: each is one draw, culled on its own.
+pub const GROUND_BLOCK: f32 = 128.0;
+
+/// Adds `ground`, already in world space, as one draw per [`GROUND_BLOCK`] square of
+/// it (each triangle in the block of its middle, in their order) in its vertices'
+/// colours with
 /// `detail` (one per layer of `ground.detail`) over them, and its map for asphalt's
 /// edges; it leaves the bounds, which are of the placements, as they are.
 pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
@@ -586,19 +591,37 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
     scene.normals.resize(scene.positions.len(), [0; 4]);
     scene.tangents.resize(scene.positions.len(), [0; 4]);
     scene.ground_map = Some(ground.map.clone());
-    scene.indices.extend_from_slice(&ground.indices);
-    scene.draws.push(Draw {
-        first_index,
-        index_count: ground.indices.len() as u32,
-        vertex_offset,
-        first_instance: scene.instances.len() as u32,
-        instance_count: 1,
-        texture: None,
-        layers: [None; 6],
-        normal_map: None,
-        shading: Shading::Ground,
-    });
-    scene.instances.push(instance(&Transform::IDENTITY));
+    let mut blocks: std::collections::BTreeMap<(i64, i64), Vec<u32>> = Default::default();
+    for t in ground.indices.as_chunks::<3>().0 {
+        let middle = |k: usize| {
+            t.iter()
+                .filter_map(|&i| ground.positions.get(i as usize))
+                .map(|p| p[k] / 3.0)
+                .sum::<f32>()
+        };
+        let block = [0, 2].map(|k| (middle(k) / GROUND_BLOCK).floor() as i64);
+        blocks
+            .entry((block[0], block[1]))
+            .or_default()
+            .extend_from_slice(t);
+    }
+    let mut first_index = first_index;
+    for indices in blocks.values() {
+        scene.indices.extend_from_slice(indices);
+        scene.draws.push(Draw {
+            first_index,
+            index_count: indices.len() as u32,
+            vertex_offset,
+            first_instance: scene.instances.len() as u32,
+            instance_count: 1,
+            texture: None,
+            layers: [None; 6],
+            normal_map: None,
+            shading: Shading::Ground,
+        });
+        scene.instances.push(instance(&Transform::IDENTITY));
+        first_index += indices.len() as u32;
+    }
 }
 
 /// Every section of the first LOD of the mesh asset `mesh`, with its material's
@@ -845,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ground_is_one_draw_in_its_vertex_colours_after_the_meshes() {
+    fn the_ground_draws_in_its_vertex_colours_after_the_meshes() {
         let zone = Zone {
             meshes: vec![mesh("a")],
             placements: vec![at(0, 5.0)],
@@ -1110,6 +1133,50 @@ mod tests {
             Some(([5; 16], Shading::Colour))
         );
         assert_eq!(look(&[("Normal", Some(1)), ("SMD", Some(2))]), None);
+    }
+
+    #[test]
+    fn the_ground_is_one_draw_per_block_each_culled_on_its_own() {
+        let mut scene = Scene::default();
+        // Four triangles: two in the block at the origin, one 200 m along x (the next
+        // block), one at -10 m on z (the block before); listed out of block order.
+        let ground = Ground {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [200.0, 0.0, 0.0],
+                [201.0, 0.0, 0.0],
+                [200.0, 0.0, 1.0],
+                [0.0, 0.0, -10.0],
+                [1.0, 0.0, -10.0],
+                [0.0, 0.0, -9.0],
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5, 2, 1, 0, 6, 7, 8],
+            ..Ground::default()
+        };
+        add_ground(&mut scene, &ground, Vec::new());
+        // In block order (x, then z), each block's triangles in their order.
+        assert_eq!(scene.indices, [6, 7, 8, 0, 1, 2, 2, 1, 0, 3, 4, 5]);
+        let ranges: Vec<_> = scene
+            .draws
+            .iter()
+            .map(|d| {
+                (
+                    d.first_index,
+                    d.index_count,
+                    d.first_instance,
+                    d.instance_count,
+                )
+            })
+            .collect();
+        assert_eq!(ranges, [(0, 3, 0, 1), (3, 6, 1, 1), (9, 3, 2, 1)]);
+        assert!(scene.draws.iter().all(|d| d.shading == Shading::Ground));
+        assert_eq!(scene.instances, [instance(&Transform::IDENTITY); 3]);
+        assert_eq!(scene.triangles(), 4);
+        // Each block's box is its own.
+        let bounds = crate::cull::instance_bounds(&scene);
+        assert_eq!(bounds[2], Some([[200.0, 0.0, 0.0], [201.0, 0.0, 1.0]]));
     }
 
     #[test]

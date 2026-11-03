@@ -2,6 +2,7 @@
 //! offscreen target for screenshots, and a zone drawn textured and lit.
 
 pub mod camera;
+pub mod cull;
 pub mod frame;
 pub mod gpu;
 pub mod resource;

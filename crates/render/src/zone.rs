@@ -1,6 +1,7 @@
 //! Draws a [`Scene`] on the GPU: its buffers and textures uploaded once, one instanced
 //! draw per mesh section, lit by a time of day's [`Light`]; opaque draws first, then
-//! the ground, cut out, then decals blended over them.
+//! the ground, cut out, then decals blended over them. Each frame draws only the
+//! placements whose box is in view ([`crate::cull`]).
 
 use std::ffi::CStr;
 use std::sync::Arc;
@@ -9,6 +10,8 @@ use ash::vk;
 use frostbite::lighting::Lighting;
 use frostbite::terrain::GroundMap;
 use frostbite::texture::{Kind, Texture, bc1_mean};
+
+use crate::cull::{self, Bounds, Frustum};
 
 use crate::Camera;
 use crate::gpu::{Error, Gpu, Result};
@@ -292,6 +295,8 @@ pub struct ZoneRenderer {
     /// scene's order, so the later of two overlapping decals is drawn over the
     /// earlier. Each with its look's offset in the looks buffer and its set.
     draws: Vec<(Draw, u32, usize)>,
+    /// Each instance's box in world space, for culling ([`cull::instance_bounds`]).
+    bounds: Vec<Option<Bounds>>,
     /// `None` when the scene draws nothing (Vulkan has no empty buffers to bind).
     buffers: Option<[Buffer; 10]>,
     /// The looks, each at a multiple of [`LOOK_STRIDE`].
@@ -350,6 +355,7 @@ impl ZoneRenderer {
             sets: Vec::new(),
             images: Vec::new(),
             draws: Vec::new(),
+            bounds: cull::instance_bounds(scene),
             buffers: None,
             looks: None,
             missing: Vec::new(),
@@ -907,8 +913,18 @@ impl ZoneRenderer {
                 &[0; 9],
             );
             d.cmd_bind_index_buffer(cmd, indices.buffer, 0, vk::IndexType::UINT32);
+            let frustum = Frustum::new(&push.view_proj);
+            let visible: Vec<bool> = self
+                .bounds
+                .iter()
+                .map(|b| b.as_ref().is_none_or(|b| frustum.sees(b)))
+                .collect();
             let (mut pipeline, mut set, mut look) = (None, None, None);
             for &(draw, offset, wanted) in &self.draws {
+                let runs = cull::runs(draw.first_instance, draw.instance_count, &visible);
+                if runs.is_empty() {
+                    continue;
+                }
                 let pass = Pass::of(&draw.shading);
                 if pipeline != Some(pass) {
                     let p = self.pipelines[pass as usize];
@@ -937,14 +953,16 @@ impl ZoneRenderer {
                     );
                     set = Some(wanted);
                 }
-                d.cmd_draw_indexed(
-                    cmd,
-                    draw.index_count,
-                    draw.instance_count,
-                    draw.first_index,
-                    draw.vertex_offset,
-                    draw.first_instance,
-                );
+                for (first_instance, instance_count) in runs {
+                    d.cmd_draw_indexed(
+                        cmd,
+                        draw.index_count,
+                        instance_count,
+                        draw.first_index,
+                        draw.vertex_offset,
+                        first_instance,
+                    );
+                }
             }
         }
     }
