@@ -4,6 +4,16 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.23.0] - 2026-11-03
+
+### Changed
+
+- `nfsh view` draws only what the camera can see: each frame it leaves out the
+  placed meshes, and the 128 m blocks of ground, that lie wholly outside the view.
+  The picture is unchanged (the history views are identical to the pixel), and on
+  an Intel HD 630 at 1280x720 a frame of the speedway takes 7.8 to 19.8 ms of GPU
+  time instead of about 31, by view: 1.6 to 4 times faster.
+
 ## [0.22.1] - 2026-11-03
 
 ### Fixed
