@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.24.0] - 2026-11-03
+
+### Changed
+
+- `nfsh view` draws each placed mesh at the level of detail the game's data gives
+  for its distance (its lod group's switch distances, times the mesh's own scale),
+  and leaves out meshes too small on screen to matter, by the same data. Far roads
+  take their baked colour, as the game draws them. On an Intel HD 630 at 1280x720
+  the speedway's views take 6.9 to 12.3 ms of GPU time instead of 7.4 to 20.2 (the
+  asphalt view 39% less); near meshes look as before, far ones are their simpler
+  versions.
+
 ## [0.23.0] - 2026-11-03
 
 ### Changed

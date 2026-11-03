@@ -1,12 +1,12 @@
-//! A zone made ready to draw, on the CPU: every placed mesh's first LOD packed into
-//! one vertex and one index buffer, its placements into one instance buffer, and one
-//! instanced draw per section, with the section's colour texture and how it is
-//! shaded.
+//! A zone made ready to draw, on the CPU: every LOD of every placed mesh packed into
+//! one vertex and one index buffer, its placements into one instance buffer (each
+//! with when its mesh's LODs take over), and one instanced draw per section, with the
+//! section's LOD, colour texture and how it is shaded.
 
 use std::collections::{BTreeMap, HashMap};
 
 use frostbite::level::{Mesh, Transform, Zone};
-use frostbite::mesh::{Geometry, Meshes};
+use frostbite::mesh::{Geometry, Meshes, Switches};
 use frostbite::terrain::{Ground, GroundMap};
 use frostbite::texture::Material;
 
@@ -22,6 +22,9 @@ pub struct Draw {
     pub vertex_offset: i32,
     pub first_instance: u32,
     pub instance_count: u32,
+    /// Which of its mesh's LODs it is part of: drawn only for the placements that
+    /// choose it ([`crate::cull::choose`]). 0 for the ground.
+    pub lod: u8,
     /// Index into [`Scene::textures`]; `None` draws plain grey.
     pub texture: Option<u32>,
     /// Asphalt's other textures ([`ASPHALT_LAYERS`]), likewise.
@@ -167,6 +170,8 @@ impl Asphalt {
 /// A mesh section and what it is drawn with.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Section {
+    /// Which of its mesh's LODs it is part of.
+    pub lod: u8,
     pub geometry: Geometry,
     /// The `TextureAsset` partition its colour comes from; `None` for none, or when
     /// the section has no texture coordinates.
@@ -180,12 +185,15 @@ pub struct Section {
 }
 
 /// The texture parameters that hold a material's colour, in the order they are
-/// looked for, and whether the colour's alpha cuts the surface out.
-const COLOUR: [(&str, bool); 4] = [
+/// looked for, and whether the colour's alpha cuts the surface out. A road's far LODs
+/// take a baked colour of the whole road (`vista_texture`, then `_DS`).
+const COLOUR: [(&str, bool); 6] = [
     ("Diffuse", false),
     ("ColorAlpha", true),
     ("Diffuse_Tiling", false),
     ("foregroundBasecolor", false),
+    ("vista_texture", false),
+    ("_DS", false),
 ];
 
 /// A vertex normal as the GPU reads it: four signed bytes, 127 being 1, the fourth
@@ -270,6 +278,8 @@ pub struct Scene {
     pub tangents: Vec<[i8; 4]>,
     pub indices: Vec<u32>,
     pub instances: Vec<Instance>,
+    /// One per instance: when its mesh's LODs take over.
+    pub lods: Vec<Lods>,
     pub draws: Vec<Draw>,
     /// The `TextureAsset` partitions the draws use, each once.
     pub textures: Vec<[u8; 16]>,
@@ -287,6 +297,40 @@ pub struct Scene {
     /// out.
     pub failed: Vec<(String, String)>,
     pub placements_left_out: usize,
+}
+
+/// A mesh as [`build`] takes it: its sections, of all its LODs, and when they take
+/// over.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Model {
+    pub sections: Vec<Section>,
+    pub switches: Switches,
+}
+
+impl Model {
+    /// Sections drawn at any distance, however small: one LOD, no switches.
+    pub fn whole(sections: Vec<Section>) -> Self {
+        Self {
+            sections,
+            switches: Switches::NEVER,
+        }
+    }
+}
+
+/// When a placement's LODs take over, and how many it has (one past its last
+/// section's LOD).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Lods {
+    pub switches: Switches,
+    pub count: u8,
+}
+
+impl Lods {
+    /// One LOD, drawn at any distance however small: the ground's.
+    pub const ONE: Self = Self {
+        switches: Switches::NEVER,
+        count: 1,
+    };
 }
 
 /// A layer drawn as detail over the ground's colour.
@@ -386,9 +430,11 @@ pub fn ground_detail(
 }
 
 impl Scene {
+    /// The triangles of every placement at its first LOD.
     pub fn triangles(&self) -> usize {
         self.draws
             .iter()
+            .filter(|d| d.lod == 0)
             .map(|d| d.index_count as usize / 3 * d.instance_count as usize)
             .sum()
     }
@@ -401,9 +447,9 @@ fn instance(t: &Transform) -> Instance {
     ]
 }
 
-/// The draws for `zone`, its meshes' sections from `load`. A mesh that fails to load,
-/// or has no triangles, is left out and listed.
-pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<Section>>) -> Scene {
+/// The draws for `zone`, its meshes from `load`. A mesh that fails to load, or has no
+/// triangles, is left out and listed.
+pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Model>) -> Scene {
     let mut scene = Scene::default();
     let mut texture_index = HashMap::new();
     let mut by_mesh: Vec<Vec<&Transform>> = vec![Vec::new(); zone.meshes.len()];
@@ -418,8 +464,8 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
         if transforms.is_empty() {
             continue;
         }
-        let sections = match load(mesh) {
-            Ok(s) => s,
+        let Model { sections, switches } = match load(mesh) {
+            Ok(m) => m,
             Err(e) => {
                 scene.failed.push((mesh.name.clone(), e.0));
                 scene.placements_left_out += transforms.len();
@@ -508,6 +554,7 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
                 vertex_offset,
                 first_instance,
                 instance_count: transforms.len() as u32,
+                lod: s.lod,
                 texture,
                 layers,
                 normal_map,
@@ -539,6 +586,12 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Vec<S
         scene
             .instances
             .extend(transforms.iter().map(|t| instance(t)));
+        let last = scene.draws[first_draw..].iter().map(|d| d.lod).max();
+        let lods = Lods {
+            switches,
+            count: last.unwrap_or(0).saturating_add(1),
+        };
+        scene.lods.resize(scene.instances.len(), lods);
     }
     if !scene.draws.is_empty() && min.iter().chain(&max).all(|v| v.is_finite()) {
         scene.bounds = Some((min, max));
@@ -614,45 +667,72 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
             vertex_offset,
             first_instance: scene.instances.len() as u32,
             instance_count: 1,
+            lod: 0,
             texture: None,
             layers: [None; 6],
             normal_map: None,
             shading: Shading::Ground,
         });
         scene.instances.push(instance(&Transform::IDENTITY));
+        scene.lods.push(Lods::ONE);
         first_index += indices.len() as u32;
     }
 }
 
-/// Every section of the first LOD of the mesh asset `mesh`, with its material's
-/// [`look`], from the store; asphalt takes the texture `noise` (the partition of
-/// [`ASPHALT_NOISE`]) where its material names none. A section whose material is out
-/// of range is drawn grey.
-pub fn first_lod(
-    meshes: &mut Meshes,
-    mesh: &Mesh,
-    noise: Option<[u8; 16]>,
-) -> frostbite::Result<Vec<Section>> {
+/// Every section of every LOD of the mesh asset `mesh`, each with its material's
+/// [`look`], from the store, and when its LODs take over; asphalt takes the texture
+/// `noise` (the partition of [`ASPHALT_NOISE`]) where its material names none. A
+/// section whose material is out of range is drawn grey. A mesh whose lod group can't
+/// be read keeps its first LOD only, drawn at any distance; one whose later LOD can't
+/// be read keeps the LODs before it.
+pub fn lods(meshes: &mut Meshes, mesh: &Mesh, noise: Option<[u8; 16]>) -> frostbite::Result<Model> {
     let set = meshes.by_partition(&mesh.partition)?;
-    let Some(lod) = set.lods.first() else {
+    if set.lods.is_empty() {
         return Err(frostbite::Error(format!("{}: no LODs", mesh.name)));
+    }
+    let switches = meshes.switches(&mesh.partition).unwrap_or(Switches::NEVER);
+    let wanted = if switches == Switches::NEVER {
+        1
+    } else {
+        set.lods.len().min(usize::from(u8::MAX))
     };
     let materials = meshes.materials(&mesh.partition)?;
+    let mut sections = Vec::new();
+    for (k, lod) in set.lods.iter().take(wanted).enumerate() {
+        match lod_sections(meshes, &materials, lod, k as u8, noise) {
+            Ok(s) => sections.extend(s),
+            Err(e) if k == 0 => return Err(e),
+            // The LODs read so far are drawn on past this one's distance.
+            Err(_) => break,
+        }
+    }
+    Ok(Model { sections, switches })
+}
+
+/// The sections of `lod`, the `k`th LOD of a mesh with `materials`.
+fn lod_sections(
+    meshes: &mut Meshes,
+    materials: &[Material],
+    lod: &frostbite::mesh::Lod,
+    k: u8,
+    noise: Option<[u8; 16]>,
+) -> frostbite::Result<Vec<Section>> {
     let data = meshes.chunk(lod)?;
     lod.sections
         .iter()
         .map(|s| {
-            let look = materials.get(s.material as usize).and_then(|m| {
+            let material = materials.get(s.material as usize);
+            let look = material.and_then(|m| {
                 let shader = m.shader.and_then(|g| meshes.store().partition_name(&g));
                 look(shader.unwrap_or_default(), m)
             });
-            let material = materials.get(s.material as usize);
             let (layers, normal_map) = match (look, material) {
                 (Some((_, Shading::Asphalt(_))), Some(m)) => (asphalt_layers(m, noise), None),
                 (Some((_, Shading::Grey { .. })), _) => ([None; 6], None),
                 _ => ([None; 6], material.and_then(|m| m.texture("Normal"))),
             };
             Ok(Section {
+                lod: k,
                 geometry: lod.section(s, &data)?,
                 texture: look.map(|l| l.0),
                 layers,
@@ -760,11 +840,11 @@ mod tests {
             ..Zone::default()
         };
         let scene = build(&zone, |m| {
-            Ok(vec![match m.name.as_str() {
+            Ok(Model::whole(vec![match m.name.as_str() {
                 "framed" => mapped(frames.clone()),
                 "plain" => mapped(None),
                 _ => no_uvs.clone(),
-            }])
+            }]))
         });
         let maps: Vec<_> = scene.draws.iter().map(|d| d.normal_map).collect();
         assert_eq!(maps, [Some(1), None, None]);
@@ -798,11 +878,11 @@ mod tests {
             ..Zone::default()
         };
         let scene = build(&zone, |m| {
-            Ok(vec![if m.name == "framed" {
+            Ok(Model::whole(vec![if m.name == "framed" {
                 framed.clone()
             } else {
                 triangle()
-            }])
+            }]))
         });
         assert_eq!(scene.normals.len(), scene.positions.len());
         assert_eq!(
@@ -825,6 +905,7 @@ mod tests {
             vertex_offset,
             first_instance,
             instance_count: instances,
+            lod: 0,
             texture: None,
             layers: [None; 6],
             normal_map: None,
@@ -843,10 +924,10 @@ mod tests {
         let scene = build(&zone, |m| {
             loaded.push(m.name.clone());
             // b has two sections, each drawn on its own, from its own first vertex.
-            Ok(match m.name.as_str() {
+            Ok(Model::whole(match m.name.as_str() {
                 "b" => vec![triangle(), triangle()],
                 _ => vec![triangle()],
-            })
+            }))
         });
         assert_eq!(loaded, ["a", "b"]);
         assert_eq!(scene.positions.len(), 9);
@@ -874,7 +955,7 @@ mod tests {
             placements: vec![at(0, 5.0)],
             ..Zone::default()
         };
-        let mut scene = build(&zone, |_| Ok(vec![triangle()]));
+        let mut scene = build(&zone, |_| Ok(Model::whole(vec![triangle()])));
         let ground = Ground {
             positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
             indices: vec![0, 2, 1, 0, 3, 2],
@@ -1032,14 +1113,14 @@ mod tests {
         };
         let scene = build(&zone, |m| match m.name.as_str() {
             "broken" => Err(frostbite::Error("no chunk".into())),
-            "empty" => Ok(vec![Section {
+            "empty" => Ok(Model::whole(vec![Section {
                 geometry: Geometry {
                     positions: vec![[0.0; 3]],
                     ..Geometry::default()
                 },
                 ..Section::default()
-            }]),
-            _ => Ok(vec![triangle()]),
+            }])),
+            _ => Ok(Model::whole(vec![triangle()])),
         });
         assert_eq!(
             scene.failed,
@@ -1069,7 +1150,7 @@ mod tests {
             colour: None,
         };
         let scene = build(&zone, |m| {
-            Ok(match m.name.as_str() {
+            Ok(Model::whole(match m.name.as_str() {
                 // A section without texture coordinates is drawn plain grey, its
                 // texture not loaded.
                 "a" => vec![textured(7, Shading::Colour), {
@@ -1082,7 +1163,7 @@ mod tests {
                     s.geometry.colours = Some(vec![[255, 146, 19, 255]; 3]);
                     s
                 }],
-            })
+            }))
         });
         assert_eq!(scene.textures, [[7; 16], [8; 16]]);
         let used: Vec<_> = scene.draws.iter().map(|d| (d.texture, d.shading)).collect();
@@ -1307,7 +1388,7 @@ mod tests {
 
     #[test]
     fn nothing_to_draw_has_no_bounds() {
-        let scene = build(&Zone::default(), |_| Ok(vec![triangle()]));
+        let scene = build(&Zone::default(), |_| Ok(Model::whole(vec![triangle()])));
         assert_eq!(scene, Scene::default());
         let c = overview(&scene, 640, 480);
         assert_eq!(c.origin, [0.0; 3]);
@@ -1328,16 +1409,22 @@ mod tests {
             .unwrap();
         let mut meshes = Meshes::new(&store).unwrap();
         let noise = texture_partition(&store, ASPHALT_NOISE);
-        let scene = build(&zone, |m| first_lod(&mut meshes, m, noise));
+        let scene = build(&zone, |m| lods(&mut meshes, m, noise));
         assert_eq!(scene.failed, []);
         // Counted on the owner's store, 2026-10-31; the textures again on 2026-11-01,
         // with the normal maps (109 of them).
         assert_eq!(zone.placements.len(), 2171);
-        assert_eq!(scene.draws.len(), 780);
-        assert_eq!(scene.textures.len(), 238);
+        let first: Vec<_> = scene.draws.iter().filter(|d| d.lod == 0).collect();
+        assert_eq!(first.len(), 780);
+        // 238 textures at the first LODs; the far roads' baked colours add 37.
+        assert_eq!(scene.textures.len(), 275);
         assert_eq!(scene.instances.len(), 2171);
-        assert_eq!(scene.positions.len(), 1_356_354);
         assert_eq!(scene.triangles(), 3_988_832);
+        // Every LOD, 2026-11-03: 6,061 LODs over the placements, and half as many
+        // vertices again as the first LODs' 1,356,354.
+        let lods = scene.lods.iter().map(|l| usize::from(l.count));
+        assert_eq!((scene.draws.len(), lods.sum::<usize>()), (2118, 6061));
+        assert_eq!(scene.positions.len(), 2_067_181);
     }
 
     /// The roads near zone 495, from the store `NFSH_STORE` points at: asphalt is
@@ -1355,10 +1442,10 @@ mod tests {
         level.add_drivable_surfaces(&mut zone, 150.0).unwrap();
         let mut meshes = Meshes::new(&store).unwrap();
         let noise = texture_partition(&store, ASPHALT_NOISE);
-        let scene = build(&zone, |m| first_lod(&mut meshes, m, noise));
+        let scene = build(&zone, |m| lods(&mut meshes, m, noise));
         assert_eq!(scene.failed, []);
         let mut count = [0; 5];
-        for d in &scene.draws {
+        for d in scene.draws.iter().filter(|d| d.lod == 0) {
             count[match d.shading {
                 Shading::Colour | Shading::Ground => 0,
                 Shading::Cutout => 1,
@@ -1370,21 +1457,22 @@ mod tests {
         let painted = scene
             .draws
             .iter()
-            .filter(|d| matches!(d.shading, Shading::Decal { colour: None, .. }))
+            .filter(|d| d.lod == 0 && matches!(d.shading, Shading::Decal { colour: None, .. }))
             .count();
         let edged = scene
             .draws
             .iter()
-            .filter(|d| matches!(d.shading, Shading::Asphalt(a) if a.edge.is_some()))
+            .filter(|d| d.lod == 0 && matches!(d.shading, Shading::Asphalt(a) if a.edge.is_some()))
             .count();
         // Counted on the owner's store, 2026-11-01: 88 asphalt sections, all with
         // their layers (the 36 with positions only are plain grey), 58 of them giving
         // way to the ground at their edges (the 30 others are the wet road's shader);
         // 130 decals, 53 of them lines coloured by their vertices; the asphalt's
-        // layers add 22 textures, and the normal maps 132.
+        // layers add 22 textures, and the normal maps 132. The far roads' baked
+        // colours (2026-11-03) add 67.
         assert_eq!(count, [1047, 20, 0, 88, 130]);
         assert_eq!(edged, 58);
         assert_eq!(painted, 53);
-        assert_eq!(scene.textures.len(), 310);
+        assert_eq!(scene.textures.len(), 377);
     }
 }

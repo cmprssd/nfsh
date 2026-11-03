@@ -799,6 +799,37 @@ vertices lie up to 2 cm outside (the stored bounds look slightly off). A survey 
 all 31,034 mesh sets in the store (not only the placed ones) found the index format,
 inline geometry and chunk byte orders described above, and no other index format.
 
+### LOD groups
+
+A mesh asset (`RigidMeshAsset`, `CompositeMeshAsset`) says when its LODs take over:
+
+| Field | Meaning |
+| --- | --- |
+| `LodGroup` | a reference to a `MeshLodGroup` instance in another partition (`lodgroups/world/…`) |
+| `LodScale` | multiplies the group's distances (1 to 3 in zone 495) |
+| `CullScale` | 1 for almost all; 0.5 and 3 seen. Taken as scaling the mesh's size in the cut below (not confirmed) |
+
+A `MeshLodGroup` has `Lod1Distance` to `Lod6Distance` (metres; from each, the LOD of
+that number is drawn instead of the one before, a mesh with fewer LODs keeping its
+last), `CullScreenArea` (0.001 to 0.02: below it a mesh is not drawn at all),
+`ShadowDistance` and a `RuntimeShortName`. Examples: `architecture_m` 50, 100, 800,
+850, 1010, 1025 and 0.001; `props_m` 15, 40, 80, 200, 250, 1025 and 0.005;
+`drivablesurfaces_road` 75, 100, 150, 200, 250, 1025 and 0.001.
+
+What the distance is measured to, and what the screen area is a share of, are not in
+the data. nfsh measures to the nearest point of the placement's box, and reads
+`CullScreenArea` as a percentage of the screen covered by the sphere around the box:
+read as a fraction, the speedway's barrels would vanish 14 m away. See
+`docs/DECISIONS.md`, "LODs".
+
+Checked on the whole city, 2026-11-03: every one of the 5,475 meshes the zones place
+names a lod group that reads, and every group's distances only grow.
+
+A road's far LODs have materials of their own: LOD 1 `rd_drv_basesurface_lod1` with a
+`vista_texture`, LOD 2 `drivablesurfaces_vistashader` with `_DS`, both the same
+`vst_…_ds` texture (BC7, sRGB): the colour of the whole road, baked, over the LOD's
+texture coordinates 0 to 1.
+
 ## Textures
 
 A `TextureAsset` ebx names its texture by res id in `Resource`. The res, type

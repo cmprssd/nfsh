@@ -1,9 +1,10 @@
-//! Frustum culling: each placement's box in world space, made once from its mesh's
+//! Culling and LODs: each placement's box in world space, made once from its mesh's
 //! vertices, tested against the camera's view each frame, so only the placements
-//! that can be seen are drawn. Conservative: a box that cannot be read (no vertices,
-//! not finite) is always drawn.
+//! that can be seen are drawn, each at the LOD its distance chooses, and none that
+//! cover too little of the screen. Conservative: a box that cannot be read (no
+//! vertices, not finite) is always drawn, at its first LOD.
 
-use crate::scene::{Instance, Scene};
+use crate::scene::{Instance, Lods, Scene};
 
 /// A box in world space: its least and greatest corner.
 pub type Bounds = [[f32; 3]; 2];
@@ -108,13 +109,49 @@ impl Frustum {
     }
 }
 
-/// The runs of consecutive visible instances among `first..first + count`, as
-/// (first instance, count); `visible` is by instance, and one past its end counts as
-/// visible.
-pub fn runs(first: u32, count: u32, visible: &[bool]) -> Vec<(u32, u32)> {
+/// Which LOD a placement with the box `b` (in world space) and `lods` is drawn at,
+/// seen from `eye` by a view whose half width and height have the tangents
+/// `tangents` ([`crate::Camera::tangents`]); `None` when it covers less of the screen
+/// than its lod group's cut. See `docs/DECISIONS.md`, "LODs".
+///
+/// The distance is to the nearest point of the box (0 inside it: a road piece is
+/// near wherever on it the camera is); the share of the screen is that of the
+/// sphere around the box, its radius times the mesh's cull scale, as if it were
+/// ahead at that distance, in percent: the cut read as a fraction would drop a
+/// barrel 14 m away. A box that cannot be read draws the first LOD.
+pub fn choose(b: Option<&Bounds>, lods: &Lods, eye: [f32; 3], tangents: [f32; 2]) -> Option<u8> {
+    let Some(b) = b else {
+        return Some(0);
+    };
+    let outside = [0, 1, 2].map(|k| (b[0][k] - eye[k]).max(eye[k] - b[1][k]).max(0.0));
+    let distance = outside.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let s = &lods.switches;
+    if s.cull_area > 0.0 {
+        let radius = (0..3)
+            .map(|k| (b[1][k] - b[0][k]).powi(2))
+            .sum::<f32>()
+            .sqrt()
+            / 2.0;
+        let radius = radius * s.cull_scale;
+        // From inside its box a mesh is drawn.
+        if distance > 0.0 {
+            let screen = 4.0 * tangents[0] * tangents[1] * distance * distance;
+            let percent = 100.0 * std::f32::consts::PI * radius * radius / screen;
+            if percent < s.cull_area {
+                return None;
+            }
+        }
+    }
+    let lod = s.lod(distance, usize::from(lods.count));
+    Some(u8::try_from(lod).unwrap_or(u8::MAX))
+}
+
+/// The runs of consecutive drawn instances among `first..first + count`, as
+/// (first instance, count); `drawn` says by instance.
+pub fn runs(first: u32, count: u32, drawn: impl Fn(u32) -> bool) -> Vec<(u32, u32)> {
     let mut out: Vec<(u32, u32)> = Vec::new();
     for i in first..first.saturating_add(count) {
-        if !visible.get(i as usize).copied().unwrap_or(true) {
+        if !drawn(i) {
             continue;
         }
         match out.last_mut() {
@@ -208,10 +245,80 @@ mod tests {
     }
 
     #[test]
-    fn runs_join_neighbouring_visible_instances() {
+    fn runs_join_neighbouring_drawn_instances() {
         let v = [true, true, false, true, false, false, true, true, true];
-        assert_eq!(runs(0, 9, &v), [(0, 2), (3, 1), (6, 3)]);
-        assert_eq!(runs(4, 2, &v), []);
-        assert_eq!(runs(7, 3, &v), [(7, 3)], "past the end counts as visible");
+        let drawn = |i: u32| v.get(i as usize).copied().unwrap_or(true);
+        assert_eq!(runs(0, 9, drawn), [(0, 2), (3, 1), (6, 3)]);
+        assert_eq!(runs(4, 2, drawn), []);
+        assert_eq!(runs(7, 3, drawn), [(7, 3)]);
+    }
+
+    /// architecture_m at LodScale 2 with its cut (0.001 of the screen), three LODs.
+    fn stand() -> Lods {
+        Lods {
+            switches: frostbite::mesh::Switches {
+                distances: [100.0, 200.0, 1600.0, 1700.0, 2020.0, 2050.0],
+                cull_area: 0.001,
+                cull_scale: 1.0,
+            },
+            count: 3,
+        }
+    }
+
+    #[test]
+    fn the_distance_to_the_box_chooses_the_lod() {
+        let t = camera().tangents();
+        let lods = stand();
+        // Cubes of side 2: the nearest point is 1 m nearer than the middle.
+        let at = |z: f32| Some(cube([0.0, 0.0, z]));
+        assert_eq!(choose(at(10.0).as_ref(), &lods, [0.0; 3], t), Some(0));
+        assert_eq!(choose(at(100.9).as_ref(), &lods, [0.0; 3], t), Some(0));
+        assert_eq!(choose(at(101.0).as_ref(), &lods, [0.0; 3], t), Some(1));
+        // Behind or to the side counts the same: only the distance.
+        assert_eq!(choose(at(-150.0).as_ref(), &lods, [0.0; 3], t), Some(1));
+        assert_eq!(choose(at(250.0).as_ref(), &lods, [0.0; 3], t), Some(2));
+        // A road 400 m long, the camera above one end: near.
+        let road = [[-5.0, -1.0, -10.0], [5.0, 0.0, 390.0]];
+        assert_eq!(choose(Some(&road), &lods, [0.0, 2.0, 0.0], t), Some(0));
+        // The last LOD on, while the box covers enough of the screen.
+        assert_eq!(choose(at(1500.0).as_ref(), &lods, [0.0; 3], t), None);
+        let big = [[-5.0, -5.0, 1795.0], [5.0, 5.0, 1805.0]];
+        assert_eq!(choose(Some(&big), &lods, [0.0; 3], t), Some(2));
+        // A box that can't be read: the first LOD.
+        assert_eq!(choose(None, &lods, [0.0; 3], t), Some(0));
+        // One LOD and no switches: drawn whatever the distance and size.
+        let far = cube([0.0, 0.0, 1e6]);
+        assert_eq!(choose(Some(&far), &Lods::ONE, [0.0; 3], t), Some(0));
+    }
+
+    #[test]
+    fn a_box_too_small_on_screen_is_not_drawn() {
+        let c = camera();
+        let t = c.tangents();
+        let lods = stand();
+        // A cube of side 2 (radius √3) covers 100 π·3 / (4 tx ty d²) percent of the
+        // screen: the cut at 0.001 falls at d ≈ 699 m with 16:9 at 55°, d from its
+        // nearest point (the middle is 1 m further).
+        let tx_ty = t[0] * t[1];
+        let edge = (100.0 * std::f32::consts::PI * 3.0 / (4.0 * tx_ty * 0.001)).sqrt();
+        assert!((edge - 699.0).abs() < 1.0, "{edge}");
+        let at = |z: f32| cube([0.0, 0.0, z + 1.0]);
+        assert_eq!(choose(Some(&at(edge - 0.5)), &lods, [0.0; 3], t), Some(2));
+        assert_eq!(choose(Some(&at(edge + 0.5)), &lods, [0.0; 3], t), None);
+        // A cull scale of 2 doubles the size it is measured at.
+        let mut scaled = lods;
+        scaled.switches.cull_scale = 2.0;
+        assert_eq!(choose(Some(&at(edge + 0.5)), &scaled, [0.0; 3], t), Some(2));
+        // From inside the box it is drawn.
+        let mut huge = lods;
+        huge.switches.cull_area = 10.0;
+        assert_eq!(choose(Some(&cube([0.0; 3])), &huge, [0.0; 3], t), Some(0));
+        // A wider view makes the same box a smaller share of it.
+        let mut wide = c;
+        wide.fov_y = 90.0;
+        assert_eq!(
+            choose(Some(&at(edge - 0.5)), &lods, [0.0; 3], wide.tangents()),
+            None
+        );
     }
 }

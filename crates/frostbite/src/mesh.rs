@@ -6,12 +6,14 @@
 //! [`MeshSet::parse`] checks every pointer and table in the res before anything is
 //! read; [`Lod::section`] decodes one section's positions, texture coordinates, vertex
 //! colours and triangles from the LOD's chunk, checking each stream and every index.
-//! [`Meshes`] finds a mesh's res and chunks in nfsh's store.
+//! [`Meshes`] finds a mesh's res and chunks in nfsh's store, and [`Switches`] when its
+//! LODs take over (its lod group's distances).
 
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2};
 
-use crate::ebx::Partition;
+use crate::ebx::{Partition, Ref, Value};
+use crate::level::field;
 use crate::reader::{Reader, cstr_at};
 use crate::store::{Entries, Store, guid_order};
 use crate::texture::{Material, materials};
@@ -377,6 +379,80 @@ pub fn half(h: u16) -> f32 {
     }
 }
 
+/// When a mesh's LODs take over, and when it is too small to draw: its asset's
+/// `MeshLodGroup` (`Lod1Distance` to `Lod6Distance`, `CullScreenArea`) scaled by the
+/// asset's own `LodScale` and `CullScale`. See `docs/FORMATS.md`, "LOD groups".
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Switches {
+    /// From how far (metres) LOD 1, 2, … 6 is drawn instead of the one before.
+    pub distances: [f32; 6],
+    /// The percentage of the screen a mesh must cover to be drawn at all (0 draws it
+    /// however small; how it is measured is the renderer's, see `docs/FORMATS.md`);
+    /// [`Switches::cull_scale`] scales the size it is measured at.
+    pub cull_area: f32,
+    pub cull_scale: f32,
+}
+
+impl Switches {
+    /// The first LOD always, however small: a mesh whose group can't be read.
+    pub const NEVER: Self = Self {
+        distances: [f32::INFINITY; 6],
+        cull_area: 0.0,
+        cull_scale: 1.0,
+    };
+
+    /// Which of `lods` LODs is drawn at `distance` metres from the camera.
+    pub fn lod(&self, distance: f32, lods: usize) -> usize {
+        let past = self
+            .distances
+            .iter()
+            .take_while(|&&d| distance >= d)
+            .count();
+        past.min(lods.saturating_sub(1))
+    }
+
+    /// From a mesh asset's partition: its lod group from `group` (the group's
+    /// partition by GUID), else [`Switches::NEVER`] when it names none. A value that
+    /// is missing or not a finite non-negative number is an error.
+    pub fn of(asset: &Partition, group: impl FnOnce(&[u8; 16]) -> Result<Vec<u8>>) -> Result<Self> {
+        let Some(instance) = asset.instances.first() else {
+            bail!("{}: no instances", asset.name);
+        };
+        let o = asset.object(instance);
+        let number = |p: &Partition, o, name: &str| -> Result<f32> {
+            match field(p, o, name)? {
+                Some(Value::Float32(v)) if v.is_finite() && v >= 0.0 => Ok(v),
+                other => bail!("{}: {name} is {other:?}", p.name),
+            }
+        };
+        let import = match field(asset, o, "LodGroup")? {
+            Some(Value::Class(Ref::Null)) => return Ok(Self::NEVER),
+            Some(Value::Class(Ref::Import(i))) => asset.imports.get(i).copied(),
+            other => bail!("{}: LodGroup is {other:?}", asset.name),
+        };
+        let Some(import) = import else {
+            bail!("{}: LodGroup names a missing import", asset.name);
+        };
+        let lod_scale = number(asset, o, "LodScale")?;
+        let cull_scale = number(asset, o, "CullScale")?;
+        let data = group(&import.partition)?;
+        let g = Partition::parse(&data)?;
+        let Some(instance) = g.instances.iter().find(|i| i.guid == Some(import.instance)) else {
+            bail!("{}: no instance {:02x?}", g.name, import.instance);
+        };
+        let o = g.object(instance);
+        let mut distances = [0.0; 6];
+        for (k, d) in distances.iter_mut().enumerate() {
+            *d = number(&g, o, &format!("Lod{}Distance", k + 1))? * lod_scale;
+        }
+        Ok(Self {
+            distances,
+            cull_area: number(&g, o, "CullScreenArea")?,
+            cull_scale,
+        })
+    }
+}
+
 /// A mesh set res: the LODs and their sections.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshSet {
@@ -600,6 +676,23 @@ impl<'s> Meshes<'s> {
         };
         let data = self.entries.read(res)?;
         MeshSet::parse(&data).map_err(|e| crate::Error(format!("{name}: {e}")))
+    }
+
+    /// When the LODs of the mesh asset in the partition `guid` take over
+    /// ([`Switches::of`]).
+    pub fn switches(&mut self, guid: &[u8; 16]) -> Result<Switches> {
+        let data = self.partition(guid)?;
+        let p = Partition::parse(&data)?;
+        Switches::of(&p, |g| self.partition(g))
+    }
+
+    /// The bytes of the partition `guid`'s first copy.
+    fn partition(&mut self, guid: &[u8; 16]) -> Result<Vec<u8>> {
+        let copy = self.store.partitions(guid)?.next();
+        let Some((_, asset)) = copy.and_then(|at| self.store.ebx_at(at)) else {
+            bail!("no partition {guid:02x?} in the store");
+        };
+        self.entries.read(asset.location)
     }
 
     /// The chunk holding `lod`'s geometry.
@@ -895,9 +988,89 @@ mod tests {
         assert!(MeshSet::parse(&format).is_err());
     }
 
+    /// A mesh asset with `LodScale` 2 and `CullScale` 1.5 naming the lod group
+    /// `group` (a reference as stored), and that group: 50, 100, 800, 850, 1010 and
+    /// 1025 m, and a cut at 0.001.
+    fn asset_and_group(group: u32) -> (Vec<u8>, Vec<u8>) {
+        use crate::ebx::tests::{Builder, F, V};
+        let names = (1..=6).map(|k| format!("Lod{k}Distance").leak() as &'static str);
+        let names = names.chain(["CullScreenArea"]);
+        let fields: Vec<(&str, F)> = names.map(|n| (n, F::F32)).collect();
+        let values = [50.0, 100.0, 800.0, 850.0, 1010.0, 1025.0, 0.001];
+        // Two array types first: the empty array record names type 2.
+        let group_data = Builder::default()
+            .array("DataContainer[]", F::Ref)
+            .array("float[]", F::F32)
+            .ty("MeshLodGroup", true, &fields)
+            .instance("MeshLodGroup", [8; 16], values.map(V::F32).to_vec())
+            .build("lodgroups/world/architecture_m", [7; 16]);
+        let asset = Builder::default()
+            .array("DataContainer[]", F::Ref)
+            .array("float[]", F::F32)
+            .ty(
+                "RigidMeshAsset",
+                true,
+                &[
+                    ("LodGroup", F::Ref),
+                    ("LodScale", F::F32),
+                    ("CullScale", F::F32),
+                ],
+            )
+            .import([7; 16], [8; 16])
+            .instance(
+                "RigidMeshAsset",
+                [2; 16],
+                vec![V::Ref(group), V::F32(2.0), V::F32(1.5)],
+            )
+            .build("stand_mesh", [1; 16]);
+        (asset, group_data)
+    }
+
+    #[test]
+    fn switches_are_the_lod_group_s_distances_times_the_asset_s_scale() {
+        let (asset, group) = asset_and_group(0x8000_0000);
+        let p = Partition::parse(&asset).unwrap();
+        let s = Switches::of(&p, |g| {
+            assert_eq!(g, &[7; 16]);
+            Ok(group.clone())
+        })
+        .unwrap();
+        assert_eq!(s.distances, [100.0, 200.0, 1600.0, 1700.0, 2020.0, 2050.0]);
+        assert_eq!((s.cull_area, s.cull_scale), (0.001, 1.5));
+        // No group: the first LOD always, never too small.
+        let (asset, _) = asset_and_group(0);
+        let p = Partition::parse(&asset).unwrap();
+        let none = Switches::of(&p, |_| unreachable!()).unwrap();
+        assert_eq!(none, Switches::NEVER);
+        // A group that can't be read is an error, not a guess.
+        let (asset, _) = asset_and_group(0x8000_0000);
+        let p = Partition::parse(&asset).unwrap();
+        assert!(Switches::of(&p, |_| Err(crate::Error("gone".into()))).is_err());
+    }
+
+    #[test]
+    fn a_lod_is_drawn_from_its_distance_until_the_next() {
+        let s = Switches {
+            distances: [100.0, 200.0, 1600.0, 1700.0, 2020.0, 2050.0],
+            ..Switches::NEVER
+        };
+        assert_eq!(s.lod(0.0, 3), 0);
+        assert_eq!(s.lod(99.9, 3), 0);
+        assert_eq!(s.lod(100.0, 3), 1);
+        assert_eq!(s.lod(250.0, 3), 2);
+        // Past its last LOD's distance a mesh keeps its last LOD.
+        assert_eq!(s.lod(5000.0, 3), 2);
+        assert_eq!(s.lod(5000.0, 1), 0);
+        assert_eq!(s.lod(5000.0, 0), 0);
+        assert_eq!(Switches::NEVER.lod(1e9, 4), 0);
+        // NaN (a box that can't be read) draws the first.
+        assert_eq!(s.lod(f32::NAN, 3), 0);
+    }
+
     /// Reads every mesh the 232 zones of Palm City place, in the store `NFSH_STORE`
     /// points at (local-ci sets it on the Windows side): every LOD's chunk, every
-    /// section decoded, and the rules FORMATS.md gives checked on each.
+    /// section decoded, and the rules FORMATS.md gives checked on each, and each one's
+    /// LOD switches read.
     /// How many of the vertices that have triangles take a normal within 30 degrees
     /// of their triangles' (weighted by area), and of how many.
     fn frames_agreeing(g: &Geometry, frames: &[Frame]) -> (u64, u64) {
@@ -953,10 +1126,22 @@ mod tests {
         let mut formats: BTreeMap<(u8, u8), u64> = BTreeMap::new();
         let mut broken: Vec<String> = Vec::new();
         let mut outliers: Vec<String> = Vec::new();
+        let mut unsorted: Vec<String> = Vec::new();
         let (mut frames_agree, mut frames_of) = (0u64, 0u64);
         for m in &placed {
             let set = meshes.by_partition(&m.partition).unwrap();
             *count.entry("meshes").or_default() += 1;
+            match meshes.switches(&m.partition) {
+                Ok(s) if s == Switches::NEVER => {
+                    *count.entry("without a lod group").or_default() += 1
+                }
+                Ok(s) => {
+                    if !s.distances.is_sorted() {
+                        unsorted.push(format!("{}: {:?}", m.name, s.distances));
+                    }
+                }
+                Err(e) => broken.push(format!("{}: switches: {e}", m.name)),
+            }
             for lod in &set.lods {
                 *count.entry("lods").or_default() += 1;
                 let data = meshes.chunk(lod).unwrap();
@@ -1029,6 +1214,9 @@ mod tests {
             eprintln!("{b}");
         }
         assert!(broken.is_empty(), "{} broken", broken.len());
+        // Every placed mesh names a lod group whose distances only grow (2026-11-03;
+        // none without one, or the count below would list it).
+        assert!(unsorted.is_empty(), "{unsorted:#?}");
         // One section of one breakable prop has 15 used vertices up to 2 cm outside
         // its bounds, in each of its three LODs: the stored bounds, not the reading
         // (every other vertex, and the prop, are where they should be).

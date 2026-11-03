@@ -16,7 +16,7 @@ use crate::cull::{self, Bounds, Frustum};
 use crate::Camera;
 use crate::gpu::{Error, Gpu, Result};
 use crate::resource::{Buffer, DEPTH_FORMAT, Image, Mip};
-use crate::scene::{Draw, Instance, Scene, Shading};
+use crate::scene::{Draw, Instance, Lods, Scene, Shading};
 
 const VERT: (&[u8], &CStr) = (
     include_bytes!(concat!(env!("OUT_DIR"), "/zone.vs_main.spv")),
@@ -297,6 +297,8 @@ pub struct ZoneRenderer {
     draws: Vec<(Draw, u32, usize)>,
     /// Each instance's box in world space, for culling ([`cull::instance_bounds`]).
     bounds: Vec<Option<Bounds>>,
+    /// Each instance's LODs ([`Scene::lods`]), as many as its boxes.
+    lods: Vec<Lods>,
     /// `None` when the scene draws nothing (Vulkan has no empty buffers to bind).
     buffers: Option<[Buffer; 10]>,
     /// The looks, each at a multiple of [`LOOK_STRIDE`].
@@ -356,6 +358,11 @@ impl ZoneRenderer {
             images: Vec::new(),
             draws: Vec::new(),
             bounds: cull::instance_bounds(scene),
+            lods: {
+                let mut lods = scene.lods.clone();
+                lods.resize(scene.instances.len(), Lods::ONE);
+                lods
+            },
             buffers: None,
             looks: None,
             missing: Vec::new(),
@@ -913,15 +920,24 @@ impl ZoneRenderer {
                 &[0; 9],
             );
             d.cmd_bind_index_buffer(cmd, indices.buffer, 0, vk::IndexType::UINT32);
+            // Each placement's LOD, or none: out of view or too small.
             let frustum = Frustum::new(&push.view_proj);
-            let visible: Vec<bool> = self
+            let tangents = camera.tangents();
+            let chosen: Vec<Option<u8>> = self
                 .bounds
                 .iter()
-                .map(|b| b.as_ref().is_none_or(|b| frustum.sees(b)))
+                .zip(&self.lods)
+                .map(|(b, lods)| match b {
+                    Some(b) if !frustum.sees(b) => None,
+                    b => cull::choose(b.as_ref(), lods, camera.origin, tangents),
+                })
                 .collect();
             let (mut pipeline, mut set, mut look) = (None, None, None);
             for &(draw, offset, wanted) in &self.draws {
-                let runs = cull::runs(draw.first_instance, draw.instance_count, &visible);
+                // An instance past the end has no LODs to choose from: its first.
+                let drawn =
+                    |i: u32| chosen.get(i as usize).copied().unwrap_or(Some(0)) == Some(draw.lod);
+                let runs = cull::runs(draw.first_instance, draw.instance_count, drawn);
                 if runs.is_empty() {
                     continue;
                 }

@@ -823,3 +823,45 @@ and only 20 to 58% of the triangles were in view.
   CPU's time per frame, not measured (one test per placement; the draws only become
   fewer than before, or split where a draw's visible placements are not
   consecutive).
+
+## 2026-11-03: LODs
+
+The asphalt view still saw 58% of the triangles after culling, mostly 150 to 400 m
+away, all at their first LOD. The data says when each mesh's LODs take over: every
+mesh asset names a `MeshLodGroup` (28 in zone 495) with six switch distances and a
+screen-area cut, scaled by the asset's `LodScale` (see `docs/FORMATS.md`, "LOD
+groups").
+
+- **The switches are read from the data** (owner, over picking by on-screen size).
+  Why: the game's own switches, so the same LOD at the same place.
+- **The screen-area cut is applied too** (owner): a mesh covering less of the screen
+  than its group's `CullScreenArea` is not drawn.
+- **A hard switch** (owner, over a dithered cross-fade): one LOD per placement per
+  frame. Why: simplest and cheapest; a pop can show when flying.
+- **The distance is to the nearest point of the placement's box** (decided by Claude,
+  pending review). Why: measured to its middle, a 200 m road piece under the camera
+  was already past its 75 m switch and drawn at its far LOD; the game's road under the
+  car is surely its first.
+- **`CullScreenArea` is a percentage of the screen**, covered by the sphere around the
+  box at that distance, with `CullScale` scaling its radius (decided by Claude,
+  pending review). Why: read as a fraction, a barrel (`props_m`, 0.005) would vanish
+  14 m away and an armco 38 m away; as a percentage, 143 m and 381 m, a small bush
+  47 m, a palm 1.7 km.
+- **A road's far LODs are drawn with their baked colour** (`vista_texture`, `_DS`;
+  decided by Claude, pending review). Why: it is what the game draws there. It is
+  lighter than nfsh's near asphalt: the bake's mean albedo is 0.139 (linear), the
+  asphalt layers' red decoded as sRGB 0.12 to 0.14 before their tint, which nfsh
+  multiplies by `Tarmac_Tint_FG` (0.57), so the near asphalt is likely too dark (the
+  tint may not be a plain multiply); left for the asphalt.
+- **Every LOD is uploaded** (2,067,181 vertices for zone 495 instead of 1,356,354),
+  each draw tagged with its LOD; each frame each placement chooses one LOD or none,
+  and each draw takes the placements that chose its LOD. A mesh whose group can't be
+  read keeps its first LOD at any distance.
+- Measured on the HD 630 (1280x720, zone 495, 60 frames, headless) against 0.23.0,
+  alternating the two builds three times: the medians varied by up to a factor of 2
+  between rounds (the GPU was shared or changing clocks), so these are each view's
+  fastest frame over the three rounds, which matched 0.23.0's recorded medians on
+  main: barrels 12.1 to 9.2 ms, speedway 10.5 to 7.1, asphalt 20.2 to 12.3,
+  road-edge 7.4 to 7.4, night 10.5 to 6.9. Pixels differing by more than 16 of 255
+  from 0.23.0's shots: barrels 1.5%, speedway 11.8% (the far track, now its baked
+  colour), asphalt 1.0%, road-edge 0%, night 11.3% (by more than 64: 0.5%).
