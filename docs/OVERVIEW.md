@@ -54,7 +54,7 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
-3 crates in one Cargo workspace, 19,112 lines of Rust (sources and tests), 164 tests.
+3 crates in one Cargo workspace, 19,121 lines of Rust (sources and tests), 164 tests.
 <!-- /progress -->
 
 ```mermaid
@@ -62,7 +62,7 @@ flowchart BT
     fb["<b>frostbite</b><br/>layout.toc, .toc, .sb,<br/>DbObject, Patch over Data,<br/>cas blocks, nfsh's store,<br/>ebx partitions, level graph,<br/>mesh geometry, textures,<br/>time-of-day lighting, terrain"]
     oo["oo2core_6_win64.dll<br/>(the install's own,<br/>loaded at run time)"]
     render["<b>render</b> (nfsh-render)<br/>Vulkan 1.3 via ash:<br/>device, swapchain, frames,<br/>a zone textured and lit"]
-    app["<b>nfsh</b><br/>the commands:<br/>nfsh inventory, nfsh verify,<br/>nfsh import, nfsh reindex,<br/>nfsh ebx, nfsh level,<br/>nfsh mesh, nfsh texture,<br/>nfsh view (window, fly camera)"]
+    app["<b>nfsh</b><br/>the commands:<br/>nfsh inventory, nfsh verify,<br/>nfsh import, nfsh reindex,<br/>nfsh ebx, nfsh level,<br/>nfsh mesh, nfsh texture,<br/>nfsh sizes, nfsh sizes-trial,<br/>nfsh view (window, fly camera)"]
     oo --> fb
     fb --> render
     fb --> app
@@ -73,7 +73,7 @@ flowchart BT
 | Crate | Rust lines | Tests | What it does |
 |------|------:|------:|------|
 | `frostbite` | 11,273 | 98 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store, with every ebx's partition GUID; reads ebx partitions (types, instances, fields, arrays, references); walks a level's sub-levels and what each zone places (meshes in world space); reads mesh sets and decodes their geometry (LODs, sections, positions, texture coordinates, tangent frames, triangles), and when each mesh's LODs take over (its lod group's distances and screen-area cut); reads texture headers and their pixels (block-compressed mips, layers), and what each material names (its shader, textures and vector parameters); reads a time of day's sun, sky and exposure from its visual environment; reads the terrain's quadtree of tiles, their heightfields, colours and pages, and builds the ground's mesh under an area, with normals from its heights, coloured and weighted by its layers, with a map of the same colour and weights for what lies over it; reads the terrain's layer tree (which layers each tile's pages are for), the level's shader database (each shader permutation's parameter block, the textures it binds and its program) and so each terrain layer's own diffuse maps; reads a shader program's instructions far enough to find the scale each terrain layer's diffuse is drawn at, and the far detail its programs overlay on its diffuse and normal maps; averages a BC1 texture's colour |
-| `nfsh` | 2,266 | 15 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store, `reindex` lists its partition GUIDs, `ebx` prints a partition as text, `level` prints Palm City's bundles or one zone's placements, `mesh` prints a mesh's LODs and writes one as an .obj, `texture` prints a texture and writes it as a .dds, `view` flies through one zone in a window, textured and lit at midday or tealnight (or writes a screenshot) |
+| `nfsh` | 2,275 | 15 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store, `reindex` lists its partition GUIDs, `ebx` prints a partition as text, `level` prints Palm City's bundles or one zone's placements, `mesh` prints a mesh's LODs and writes one as an .obj, `texture` prints a texture and writes it as a .dds, `view` flies through one zone in a window, textured and lit at midday or tealnight (or writes a screenshot) |
 | `render` | 5,573 | 51 | the Vulkan renderer (`nfsh-render`, Vulkan 1.3 through `ash`): device bring-up, a window's swapchain and frame loop with GPU timing, an offscreen target read back for screenshots and tests; packs a zone's placed meshes (every LOD) into one vertex, index and instance buffer and draws them with one instanced draw per section, each frame only the placements whose box is in view, each at the LOD its distance chooses from its lod group and none that cover too little of the screen, each with its colour texture uploaded block-compressed as stored (grey when one can't be read), road asphalt as its clean and damaged layers blended by the road's mask with its detail colours over them, giving way to the ground at its edges as its shoulder texture says (up to eight textures a draw, and the ground's map of its colour, detail weights and normals) and road lines, cracks and tyre marks blended over it as decals, lit by the time of day's sun and sky, exposed and tonemapped, with each mesh's own normals bent by its normal map, and asphalt's by its layers' (the triangle's where it has none); the ground under the zone as one more draw per 128 m block (culled likewise), in its tiles' colours with up to eight of its layers' diffuse maps (one texture array) laid over them as detail, weighted by each layer's share of the tiles' pages, and its normals (from its heights, smooth across its tiles' edges) bent by those layers' normal maps (another array; also under asphalt where it gives way to the ground), each layer's far detail map overlaid on both at its own scale and strength (a third array) |
 <!-- /progress -->
 
@@ -115,7 +115,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 40 decision entries, 10 chosen by the owner, 18 made by Claude for review.
+  So far: 41 decision entries, 10 chosen by the owner, 19 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -187,6 +187,16 @@ minutes with no game files. How the level was chosen, with the sample measured, 
 [DECISIONS.md](DECISIONS.md). The 0.3.0 packs were about 70 MiB above the 29.28 GiB of
 live bytes because some distinct entries overlap in the archives; each is still stored
 whole.
+
+### What the store's bytes are
+
+`nfsh sizes` reads every entry and works out who owns each chunk;
+[SIZES.md](SIZES.md) has the tables. Measured 2026-11-06: of the 27.92 GiB of packs,
+textures are 42%, audio 21%, meshes 14%, video 7%, and 10% is chunks nothing names. A
+25 GB Blu-ray holds 23.28 GiB, and the store fits one with no loss of quality once
+identical bytes are stored once and the unnamed chunks are dropped (22.85 GiB of packs).
+Both those savings are not built yet, and whether to drop the unnamed chunks and the
+other languages' voices is the owner's call.
 
 ## Where it is going
 

@@ -1,8 +1,8 @@
-//! nfsh: a new engine for Need for Speed: Heat. For now it has nine commands: an
+//! nfsh: a new engine for Need for Speed: Heat. For now it has ten commands: an
 //! inventory of the owner's install, a check that every entry of the install or of a
 //! store decompresses, the import into nfsh's own store, the store's partition GUIDs
 //! listed again, an ebx partition printed as text, Palm City's level graph, one
-//! mesh's geometry, one texture, and a window to fly through one zone.
+//! mesh's geometry, one texture, what a store's bytes are, and a window to fly through one zone.
 
 mod ebx;
 mod fly;
@@ -10,6 +10,7 @@ mod import;
 mod inventory;
 mod level;
 mod mesh;
+mod sizes;
 mod texture;
 mod verify;
 mod view;
@@ -44,6 +45,12 @@ usage: nfsh mesh STORE NAME [OBJ]
 usage: nfsh texture STORE NAME [DDS]
   The texture asset NAME (a TextureAsset ebx) from the store in the folder STORE:
   its kind, size, format and mips; written to the file DDS as a .dds when given.
+usage: nfsh sizes STORE
+  What the store in the folder STORE holds, by kind, and what streaming it takes,
+  as Markdown: reads every entry, once.
+usage: nfsh sizes-trial STORE
+  Recompresses a sample of the texture and mesh chunks with their fields gathered, and
+  compares with what they store now. Nothing is written.
 usage: nfsh view STORE ZONE [--shot PNG] [--vsync] [--night] [--camera X,Y,Z,YAW,PITCH]
   Palm City's zone ZONE (as nfsh level takes it), the roads near it and the ground
   under them from the store in the folder STORE, textured and lit, in a window: mouse
@@ -114,6 +121,8 @@ fn main() -> ExitCode {
                 0,
             )
         }),
+        ("sizes", Some(store), None) => sizes::run(&store).map(|text| (text, 0)),
+        ("sizes-trial", Some(store), None) => sizes::trial(&store).map(|text| (text, 0)),
         ("ebx", Some(store), Some(name)) => ebx::run(&store, name).map(|text| (text, 0)),
         ("level", Some(store), zone) => {
             level::run(&store, zone.map(String::as_str)).map(|text| (text, 0))

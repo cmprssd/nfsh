@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.25.0] - 2026-11-06
+
+### Added
+
+- `nfsh sizes STORE` reports what a store's bytes are: by kind, textures by format and
+  size, meshes by LOD, identical bytes, chunks nothing names, and what streaming Palm
+  City takes. It reads every entry, about 16 minutes on the owner's PC.
+- `nfsh sizes-trial STORE` recompresses a sample of the textures and meshes with their
+  fields gathered and compares the sizes, writing nothing.
+- `docs/SIZES.md`: the results. The game can fit a 25 GB Blu-ray without losing
+  quality; none of those savings are built yet.
+
 ## [0.24.1] - 2026-11-06
 
 ### Fixed

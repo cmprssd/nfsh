@@ -885,3 +885,22 @@ Supersedes "Asphalt is its clean layer only" on reading the red as sRGB-encoded.
 - **Not known**: whether the whole picture is too bright. The road and its bake now
   agree under nfsh's light; there is no baseline from the original to compare the
   light itself against.
+
+## 2026-11-06: Measuring the store (decided by Claude, pending review)
+
+The method; the results and what they allow are in [SIZES.md](SIZES.md). The store's
+format is unchanged: none of the savings is built yet.
+
+- **Sizes are counted per stored location**, so the tables add up to the packs (27.92 GiB,
+  matching the files), and each saving is applied in turn with identical entries keeping
+  one copy while any is needed, so no byte is counted twice.
+- **A chunk's owner is whatever names it**, found by searching every ebx and res for chunk
+  ids at every byte offset. Why every offset: at multiples of four the terrain's tile
+  records were missed, 180 MiB of them.
+- **"Nothing names it" is not called unused.** It is reported separately, with the evidence
+  for and against, and removing those chunks waits for the owner.
+- **The drives are a model, not a replay**: straight lines at about 400 km/h, ignoring
+  roads, because the game's own streaming distances are in a `GridResource` not read yet.
+  The check `cmprssd`'s rules ask for, a recorded path at the disc's throttled speed,
+  still has to be built.
+
