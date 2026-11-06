@@ -115,7 +115,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 41 decision entries, 10 chosen by the owner, 19 made by Claude for review.
+  So far: 42 decision entries, 10 chosen by the owner, 19 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -195,8 +195,9 @@ whole.
 textures are 42%, audio 21%, meshes 14%, video 7%, and 10% is chunks nothing names. A
 25 GB Blu-ray holds 23.28 GiB, and the store fits one with no loss of quality once
 identical bytes are stored once and the unnamed chunks are dropped (22.85 GiB of packs).
-Both those savings are not built yet, and whether to drop the unnamed chunks and the
-other languages' voices is the owner's call.
+Both those savings are not built yet, and whether to drop the unnamed chunks is the owner's
+call. The proposal for languages is one complete disc, with the player choosing what to copy
+([DECISIONS.md](DECISIONS.md), "Choosing what gets installed"); it is pending review.
 
 ## Where it is going
 

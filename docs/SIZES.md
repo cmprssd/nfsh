@@ -19,6 +19,8 @@ nfsh sizes-trial D:\nfsh-store (about 3 minutes)
 - **Two savings are the owner's call**: the chunks nothing names, and the other languages.
   Either one is enough, along with storing identical bytes once, though the margin is thin:
   0.27 GiB with the chunks dropped, before the disc's own file system.
+  How languages would be chosen at install, with one complete disc, is proposed in
+  [DECISIONS.md](DECISIONS.md) ("Choosing what gets installed").
 - **Blu-ray speed looks sufficient for the city's zones, but that isn't proven.** Reading
   2 km ahead takes 8.7 MiB/s at worst, under a 6x drive's slowest 10.3 MiB/s. Seeks, cars
   and missions are not in that number.

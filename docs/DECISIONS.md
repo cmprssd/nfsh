@@ -904,3 +904,93 @@ format is unchanged: none of the savings is built yet.
   The check `cmprssd`'s rules ask for, a recorded path at the disc's throttled speed,
   still has to be built.
 
+
+## 2026-11-06: Choosing what gets installed, and what goes on the disc (proposed by Claude, pending review)
+
+Nothing here is built. The owner's request: the installer lets each player choose what gets
+installed, such as only the English voice-over when the game is in English, so each setting
+makes the install smaller. The question it raises: does the disc hold everything to choose
+from, or should a second, smaller disc hold the setup most people want? Sizes are from
+[SIZES.md](SIZES.md) and include the store's index unless they say otherwise; "about" marks
+sums of its separately measured rows.
+
+**Recommendation: one complete disc, and the choice made when copying.** No second disc.
+
+- **The disc is the source; the choice is the copy.** Everyone gets the same screen, which
+  lists each option with its size and the running total. Play from the disc and nothing has
+  to be chosen: language is a setting in the game, and nothing is copied except the cache.
+- **A smaller disc saves nothing.** There is no size between a dual-layer DVD (7.92 GiB) and
+  a BD-25 (23.28 GiB), and both setups need the BD-25:
+
+  | Setup | Size | Disc |
+  |---|---:|---|
+  | Every language | 23.01 GiB; about 22.35 with block fields gathered | BD-25 |
+  | One language | 19.40 GiB; about 18.40 with movie tracks rewritten and block fields gathered | BD-25 |
+  | One language, the top mip of every texture and all movie video gone | about 8.8 GiB | still over a dual-layer DVD, and no longer the same look |
+
+  A smaller image also fills only the inner, slower part of the disc, so it is no faster.
+- **A disc for "most people" isn't something that can exist.** Org rule: each owner burns
+  their own disc from their own install, and it is never published. So there is no stock
+  disc to tailor to an audience, and each owner's own burn already fits that owner.
+- **The burner uses the same screen, defaulting to everything.** Free space on a disc is worth
+  nothing, and keeping every language lets anyone in the household change their mind. Trimming
+  is there for when the complete set doesn't fit.
+- **The screen preselects the language of Windows, then English.** Most people then just press
+  on. It serves a Spanish player as well as an English one, which a fixed English setup wouldn't.
+- **The choice can change later.** Adding or removing a language copies or deletes one file,
+  from the disc or the install, with no new import. A trimmed install isn't a dead end.
+
+### The data's shape
+
+The store is split into **parts**, each its own pack files, listed in a small manifest with
+their sizes and checksums. The installer is then only a copy of the chosen files.
+
+- **Base**, plus **one part per language**. An entry goes in a language's part only if that
+  language alone uses it; anything shared, even by two languages, stays in base. Storing
+  identical bytes once decides this, so it is built together with that.
+- **A check instead of trust:** every entry that base plus any one language refers to must be
+  found in those parts. A test runs this for each language, because a missing chunk would
+  otherwise show up only as a crash or silence mid-game. `nfsh verify` checks the installed
+  parts only, and the game offers only the languages installed.
+- **On the disc, the language parts go on the inner tracks and the world on the outer ones.**
+  A 6x drive reads about 10.3 MiB/s at the centre and 25.7 at the edge (specifications, not
+  measured). Voices need little speed and the city's zones need a lot, so a full disc gives
+  the world its fastest tracks. The cost is a seek when a voice is needed mid-drive, so the
+  org's throttled check has to include voices, and the chosen language may have to live in the
+  local cache.
+- **Copying:** 19.40 GiB takes between 13 and 32 minutes at those speeds; not measured.
+
+### Which settings are worth offering
+
+| Setting | Saves | Proposal |
+|---|---:|---|
+| Voice language | about 0.50 to 0.66 GiB per language (voices 316 to 474 MiB, about 147 of cinematics, about 51 of movies; assuming each language has an equal share); 3.95 GiB from all to one | Offer |
+| Text language | at most 0.54 GiB (all of "everything else"); not measured | Measure first; keep all if small. Separate from voice, as subtitles need it |
+| Top mip of the 4096 textures | at most about 1.03 GiB; an estimate | Only as the owner's A/B with a comparison, since it loses quality. Not built until chosen |
+| Top mip of every texture | about 8.16 GiB | No: `SIZES.md` already rules it out |
+| Graphics settings | nothing | Chosen at run time from the same data, except the mips above |
+| Movies, characters, cars, one time of day | | No: it is the same game, and the rest is needed |
+
+### What has to be found out first
+
+These decide how many bytes a language part can really hold:
+
+- **Is English needed by the other languages?** 217 MiB of English sit directly in `content/`,
+  with no language folder, and may be what the game falls back to. Until that's known, this
+  217 MiB stays in base and only `en/` (199 MiB) is removable. The installer can't offer "no
+  English" for less than that.
+- **Which of a cinematic's 8 audio chunks is which language?** Until then its 1.01 GiB saving
+  isn't available, so one language is about 20.41 GiB, which still fits the BD-25.
+- **Movie tracks** need a WebM rewrite for 0.34 GiB. They can stay whole at first, as the
+  saving isn't needed to fit.
+- **Do other owners' installs hold all 8 languages?** Only this install has been read. The
+  screen lists what it finds rather than a fixed list.
+
+### What it leaves open
+
+The chunks nothing names (2.72 GiB) are not a player's choice, as nobody could judge them, and
+parts don't remove the need to settle them. With them, every language comes to 25.73 GiB, 2.45
+over a BD-25. Proposal: leave them out of the disc and the install; the import can run again
+from the install. So the original install should not be offered for removal until the original's
+chunk reads, or nfsh playing the game, show they are unused. If they turn out to be needed, the
+choices are a BD-50 or a disc burned without four or five of the languages.
