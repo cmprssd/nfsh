@@ -55,8 +55,8 @@ pub enum Shading {
     Ground,
     /// Blended over what is drawn under it, after everything opaque: the opacity is
     /// the texture's channels weighted by `select`, times `opacity` and the vertex
-    /// colour's red; the colour is `colour`, or else the texture's red times the
-    /// vertex colour (road lines, white or yellow).
+    /// colour's red; the colour is the texture's red times `colour`, or else times
+    /// the vertex colour (road lines, white or yellow).
     Decal {
         select: [f32; 4],
         opacity: f32,
@@ -65,7 +65,7 @@ pub enum Shading {
 }
 
 /// A road's asphalt (see `docs/FORMATS.md`, "Road materials"): a clean and a
-/// damaged layer, each a grey (its diffuse's red, sRGB-encoded) tinted and tiled,
+/// damaged layer, each a grey (its diffuse's red, as it stands) tinted and tiled,
 /// blended by the road's mask; five detail colours laid over them; the wheel paths
 /// tinted. Each value is its material's, or else its shader's default.
 #[derive(Debug, Clone, Copy, PartialEq)]

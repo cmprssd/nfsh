@@ -336,14 +336,18 @@ colour in `xyz`). The roads near zone 495 use six road shaders (counted 2026-11-
 
 The road textures are **unorm, with their channels packed**, not sRGB colour: the
 asphalt's `drv_set5_clean_d` (4096², BC7) has a grey in red (mean 86 of 255), another
-grey in green, a sparse mask in blue and alpha unused. Read as sRGB-encoded, the red
-is about 0.09, times the tint 0.57 is 0.05, the same as the material's `detailColor1`
-(0.053). A decal's texture holds its shape in one channel, which `alphaSelector`
+grey in green, a sparse mask in blue and alpha unused. **The grey is linear as it
+stands** (worked out on 2026-11-06): both layer diffuses of all 88 asphalt materials in zone 495 are
+`BC1_UNORM` or `BC7_UNORM`, while most ordinary diffuses are `…_SRGB`, and the shaders' programs
+multiply the sample by its tint with no decoding, then write it to the G-buffer. So
+the red's mean is 0.34, times the tint 0.57 is 0.19, before the detail colours.
+A decal's texture holds its shape in one channel, which `alphaSelector`
 picks: (1, 0, 0, 0) for cracks and tyre marks (red), (0, 1, 0, 0) for road lines
-(green, the stripes); `Opacity` scales it (tyre marks 0.4), and `lineColor`, where
-set, is the colour (cracks 0.214, tyre marks 0.003, arrows 0.716). Road lines set no
-`lineColor`: their texture's red is near white (214) and their vertex colour makes
-them white or yellow.
+(green, the stripes); `Opacity` scales it (tyre marks 0.4). Its colour is the
+texture's red times `lineColor` (0.214 for cracks, 0.003 for tyre marks, 0.716 for arrows, a
+default of 1), in 27 of the 29 decal programs writing a colour; the other two are not read.
+Road lines set no `lineColor`: their texture's red is near white (214) and their
+vertex colour makes them white or yellow.
 
 **Asphalt** (`rd_drv_blendwithterrain`, `rd_drv_basesurface_wetness`; worked out on
 2026-11-01 from the material parameters, the textures and the shaders' programs).

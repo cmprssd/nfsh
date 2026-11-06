@@ -82,7 +82,7 @@ struct Look {
     select: [f32; 4],
     /// …times `opacity[0]`.
     opacity: [f32; 4],
-    /// A decal's colour; `w` is 1 when it is set, else the texture's red times the
+    /// What a decal's texture's red is multiplied by: this when `w` is 1, else the
     /// vertex colour.
     colour: [f32; 4],
     /// The ground's: each detail layer's scale (0 for none)…
