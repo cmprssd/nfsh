@@ -4,6 +4,15 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.24.1] - 2026-11-06
+
+### Fixed
+
+- `nfsh view` draws near roads at their true brightness, so they no longer turn
+  abruptly lighter about 75 m away, where the far roads' baked colour takes over.
+  The road's greys were being decoded as sRGB, which the game doesn't do, and made
+  them 4 to 5 times too dark. Cracks and road markings follow the same fix.
+
 ## [0.24.0] - 2026-11-03
 
 ### Changed

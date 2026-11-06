@@ -865,3 +865,23 @@ groups").
   road-edge 7.4 to 7.4, night 10.5 to 6.9. Pixels differing by more than 16 of 255
   from 0.23.0's shots: barrels 1.5%, speedway 11.8% (the far track, now its baked
   colour), asphalt 1.0%, road-edge 0%, night 11.3% (by more than 64: 0.5%).
+
+## 2026-11-06: The road textures' greys are linear
+
+Follows "LODs" above, whose far-roads bullet left the near asphalt too dark.
+Supersedes "Asphalt is its clean layer only" on reading the red as sRGB-encoded.
+
+- **The asphalt's and decals' greys go in as they stand**, not decoded as sRGB. Why:
+  the textures are unorm (both layer diffuses of all 88 asphalt materials in zone 495;
+  ordinary diffuses are mostly sRGB, so the format is a deliberate difference), and the
+  programs that draw the layers (64 of `rd_drv_blendwithterrain`'s 66, 32 of
+  `rd_drv_basesurface_wetness`'s 34; the others are not read) multiply the sample by the
+  tint with no decoding. The earlier match with `detailColor1` (0.05) was a coincidence.
+- **A decal's colour is its texture's red times `lineColor`**, not `lineColor` alone.
+  Why: the program's own multiply, with `lineColor`'s default 1 in the same register.
+- Measured on the speedway view (median luminance of the shot, after the tonemap):
+  the near road was 0.06 to 0.08 against the far road's baked 0.32; it is now 0.27 to
+  0.29. The rest, 10 to 15%, is not worked out; the seam no longer shows.
+- **Not known**: whether the whole picture is too bright. The road and its bake now
+  agree under nfsh's light; there is no baseline from the original to compare the
+  light itself against.

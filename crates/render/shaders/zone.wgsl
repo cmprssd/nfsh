@@ -22,13 +22,13 @@ var<immediate> push: Push;
 
 // How a draw's colour comes from its texture (zone.rs, Look).
 struct Look {
-    // Multiplies the colour; w = 1: the texture's red as grey (sRGB-encoded).
+    // Multiplies the colour; w = 1: the texture's red as grey.
     tint: vec4<f32>,
     // A decal's opacity: the texture's channels weighted by this, times opacity.x.
     select: vec4<f32>,
     opacity: vec4<f32>,
-    // A decal's colour when w = 1, else the texture's red (sRGB-encoded) times the
-    // vertex colour.
+    // What a decal's texture's red is multiplied by: this when w = 1, else the vertex
+    // colour.
     colour: vec4<f32>,
     // The ground's: each detail layer's scale (0: none), then the inverse of its
     // average colour, with 1 in w where it has a normal map; its far detail's scale
@@ -182,14 +182,14 @@ fn shade(world: vec3<f32>, mesh: vec4<f32>, albedo: vec3<f32>, alpha: f32) -> ve
     return vec4(filmic(light), alpha);
 }
 
-// An sRGB-encoded value, linear: the road textures pack a grey into the red channel
-// of a unorm texture, which the sampler doesn't decode.
+// An sRGB-encoded value, linear: the ground's tile colours (the road textures' greys
+// are linear as they are, unorm, and go in as they stand).
 fn linear(x: f32) -> f32 {
     return select(pow((x + 0.055) / 1.055, 2.4), x / 12.92, x <= 0.04045);
 }
 
 fn albedo(c: vec4<f32>) -> vec3<f32> {
-    return select(c.rgb, vec3(linear(c.r)), look.tint.w > 0.5) * look.tint.rgb;
+    return select(c.rgb, vec3(c.r), look.tint.w > 0.5) * look.tint.rgb;
 }
 
 @fragment
@@ -212,7 +212,7 @@ fn fs_cutout(in: Out) -> @location(0) vec4<f32> {
 fn fs_decal(in: Out) -> @location(0) vec4<f32> {
     let c = textureSample(colour, filtered, in.uv);
     let alpha = saturate(dot(c, look.select)) * look.opacity.x * in.vertex_colour.r;
-    let paint = select(linear(c.r) * in.vertex_colour.rgb, look.colour.rgb, look.colour.w > 0.5);
+    let paint = c.r * select(in.vertex_colour.rgb, look.colour.rgb, look.colour.w > 0.5);
     return shade(in.world, mapped(in), paint, alpha);
 }
 
@@ -246,7 +246,7 @@ fn fs_asphalt(in: Out) -> @location(0) vec4<f32> {
     let height = damaged_n.b;
     let mask = textureSample(road_mask, filtered, in.uv2);
     let s = blend(height * mask.r, look.blend.x, look.blend.y);
-    var c = mix(linear(damaged.r) * look.tint_bg.rgb, linear(clean.r) * look.tint.rgb, s);
+    var c = mix(damaged.r * look.tint_bg.rgb, clean.r * look.tint.rgb, s);
     c = overlay(c, look.detail[0].rgb, damaged.b * in.vertex_colour.g);
     c = overlay(c, look.detail[1].rgb, clean.b * in.vertex_colour.b);
     let n = textureSample(noise, filtered, in.uv).rgb * in.vertex_colour2.rgb;
