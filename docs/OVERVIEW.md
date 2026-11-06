@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-11-06 (40 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-11-06 (41 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -115,7 +115,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 41 decision entries, 10 chosen by the owner, 19 made by Claude for review.
+  So far: 42 decision entries, 10 chosen by the owner, 19 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -133,15 +133,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-41 commits, 40 merged PRs from 2026-10-30 to 2026-11-06, on 6 working days: 29 feat, 5
-docs, 5 fix, 1 ci. About 29,628 lines added and 1,709 removed; 67 tracked files.
+42 commits, 41 merged PRs from 2026-10-30 to 2026-11-06, on 6 working days: 29 feat, 6
+docs, 5 fix, 1 ci. About 29,720 lines added and 1,709 removed; 67 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
     x-axis ["Oct 30", "Oct 31", "Nov 1", "Nov 2", "Nov 3", "Nov 6"]
     y-axis "PRs" 0 --> 17
-    bar [1, 13, 15, 6, 3, 2]
+    bar [1, 13, 15, 6, 3, 3]
 ```
 <!-- /progress -->
 
@@ -195,8 +195,9 @@ whole.
 textures are 42%, audio 21%, meshes 14%, video 7%, and 10% is chunks nothing names. A
 25 GB Blu-ray holds 23.28 GiB, and the store fits one with no loss of quality once
 identical bytes are stored once and the unnamed chunks are dropped (22.85 GiB of packs).
-Both those savings are not built yet, and whether to drop the unnamed chunks and the
-other languages' voices is the owner's call.
+Both those savings are not built yet, and whether to drop the unnamed chunks is the owner's
+call. The proposal for languages is one complete disc, with the player choosing what to copy
+([DECISIONS.md](DECISIONS.md), "Choosing what gets installed"); it is pending review.
 
 ## Where it is going
 
