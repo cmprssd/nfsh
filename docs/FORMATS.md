@@ -969,13 +969,30 @@ index.nfsh        the superbundles, their bundles and chunks (below)
 pack_NN.nfsh      stored entries, back to back, NN from 00
 ```
 
-A pack holds each distinct entry the patched tables point at once, in archive order,
-as one [zstd](https://www.rfc-editor.org/rfc/rfc8878) frame of the entry's decompressed
+A pack holds each distinct content the patched tables point at once, in archive order,
+as [zstd](https://www.rfc-editor.org/rfc/rfc8878) frames of the entry's decompressed
 bytes (what Heat's block chain decompresses to, see "Stored blocks"): level 19, with
-the decompressed size and the content checksum in the frame. ebx frames are compressed
+the decompressed size and the content checksum in each frame. ebx frames are compressed
 with the index's dictionary and name its id in their header; the others use none. A
-location covers exactly one frame. A pack is closed when the next frame would take it
-past 1 GiB. The `Data/` bytes the patch replaced are not copied.
+location covers one or more whole frames, and an entry is their contents one after
+another. A pack is closed when the next entry would take it past 1 GiB. The `Data/`
+bytes the patch replaced are not copied.
+
+What is not stored as the install lists it:
+
+- **Identical content is stored once.** Every entry holding it has the same location.
+- **A bundle's copy of a chunk's end** (logical offset above 0), when it is exactly that
+  part of the whole chunk, has the whole chunk's location. Its bytes are then the
+  `bundle_chunk_size` bytes from the 64 KiB boundary at or before the logical offset; a
+  location that decompresses to more than that size is read this way.
+- **A chunk no ebx or res names and no bundle lists** is left out, and so is its record.
+- **A texture's chunk** of exactly its mips is split into a frame per tier: the top mip,
+  second, third, and the rest. A texture always keeps its smallest mip, in the last frame,
+  so one of few mips has no frames for the tiers before it.
+
+Every frame has a part and a tier (below). A chunk or an ebx is in a language's part
+only if a localized wave of that language needs it and nothing else does; anything shared
+goes in the base, so the base and any one language find every chunk they name.
 
 The index is big-endian like Heat's tables. A string or byte run is a u32 length and
 the bytes; a list is a u32 count and the items; a location is the pack (u8), the
@@ -983,7 +1000,7 @@ offset in it and the size (u32 each), and must lie inside the pack.
 
 | field | |
 |-------|--|
-| magic, version | `NFSHSTOR`, u32 3 (version 2 had no partition GUIDs and is still read; version 1 kept Heat's Oodle blocks) |
+| magic, version | `NFSHSTOR`, u32 4 (versions 3, without the last two lists, and 2, without the partitions either, are still read; version 1 kept Heat's Oodle blocks) |
 | packs | list of u64 sizes (checked against the files on open) |
 | dictionary | byte run: the ebx frames' zstd dictionary, empty for none |
 | superbundles | list: name, bundles, chunks |
@@ -993,8 +1010,14 @@ offset in it and the size (u32 each), and must lie inside the pack.
 | bundle chunk | id (16 bytes), SHA-1, logical offset, logical size (u32), location |
 | superbundle chunk | id, layer, location |
 | partitions | after the superbundles: list of each ebx's partition GUID (16 bytes, from its header), in the order the superbundles list their ebx; empty for none, else one per ebx |
+| parts | list of names: `base`, then the languages `en`, `de`, `es`, `fr`, `it`, `jp`, `pl`, `ru` |
+| frames | list of every frame in pack order: size (u32), part (u8, an index into parts), tier (u8) |
 
-Nothing may follow the partition list. The import lists the GUIDs at the end, by
+A frame's place follows from those before it, so the frames must fill each pack exactly;
+this is checked when the index is read. The tiers: 0 whole, 1 a texture's top mip, 2 second,
+3 third, 4 its other mips, and 16 and up a mesh's LOD, from LOD 0.
+
+Nothing may follow the frames. The import lists the GUIDs at the end, by
 reading every ebx back from the packs; `nfsh reindex` does the same for a version 2
 store, in about 90 seconds. The index is written after the packs, under
 a temporary name renamed at the end, so a store without `index.nfsh` is incomplete.

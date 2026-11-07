@@ -1420,6 +1420,8 @@ pub(crate) mod tests {
             .flat_map(|b| &b.bundle.ebx)
             .map(|e| e.location)
             .collect();
+        // The tables list each of the 725,119, but a store keeps identical ones once.
+        assert!(locations.len() > 700_000, "only {} ebx", locations.len());
         locations.sort_unstable_by_key(|l| (l.cas, l.offset));
         locations.dedup();
         let censuses = in_parallel(
@@ -1439,7 +1441,7 @@ pub(crate) mod tests {
         eprintln!("{total:#?}");
         assert_eq!(total.partitions, locations.len() as u64);
         assert!(
-            total.partitions > 700_000,
+            total.partitions > 200_000,
             "only {} partitions",
             total.partitions
         );

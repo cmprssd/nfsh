@@ -6,15 +6,17 @@
 //! bundle stores the chunk's blocks that cover its logical range (see
 //! [`bundle_chunk_size`]); a chunk only in a `.toc` has no size in the tables and must
 //! just decompress. Entries shared by several bundles are read once, in archive
-//! order.
+//! order. In a store, a bundle's copy of a chunk's end may be read from the whole chunk,
+//! so it only has to be at least that long; the store's parts are then checked too.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use frostbite::cas::{Archives, MAX_BLOCK};
+use frostbite::cas::Archives;
 use frostbite::install::{Install, Superbundle};
 use frostbite::oodle::Oodle;
+use frostbite::sb::bundle_chunk_size;
 use frostbite::store::{self, Store};
 use frostbite::{Location, Result};
 
@@ -75,11 +77,14 @@ pub struct Counts {
 pub struct Report {
     pub kinds: BTreeMap<Kind, Counts>,
     pub failures: Vec<String>,
+    /// For a store, whether its parts find what they refer to.
+    pub parts: Option<store::PartsCheck>,
 }
 
 impl Report {
     pub fn failed(&self) -> u64 {
-        self.kinds.values().map(|c| c.failed).sum()
+        let parts = self.parts.as_ref().map_or(0, |p| p.failures.len() as u64);
+        self.kinds.values().map(|c| c.failed).sum::<u64>() + parts
     }
 
     fn fail(&mut self, kind: Kind, message: String) {
@@ -107,6 +112,10 @@ impl Report {
                 let _ = writeln!(out, "- {f}");
             }
         }
+        if let Some(parts) = &self.parts {
+            out.push('\n');
+            out.push_str(&parts.markdown());
+        }
         out
     }
 }
@@ -121,7 +130,7 @@ fn add(entries: &mut BTreeMap<Location, Entry>, l: Location, kind: Kind, name: &
 }
 
 /// Every distinct stored entry the superbundles list, with what it must decompress to.
-fn entries(superbundles: &[Superbundle]) -> BTreeMap<Location, Entry> {
+fn entries(superbundles: &[Superbundle], store: bool) -> BTreeMap<Location, Entry> {
     let mut out = BTreeMap::new();
     for sb in superbundles {
         for b in sb.bundles.iter().map(|b| &b.bundle) {
@@ -135,7 +144,11 @@ fn entries(superbundles: &[Superbundle]) -> BTreeMap<Location, Entry> {
                 add(&mut out, a.location, Kind::Res, &a.name, e);
             }
             for c in &b.chunks {
-                let e = Expect::Exactly(bundle_chunk_size(c.logical_offset, c.logical_size));
+                let size = bundle_chunk_size(c.logical_offset, c.logical_size);
+                let e = match store && c.logical_offset > 0 {
+                    true => Expect::AtLeast(size),
+                    false => Expect::Exactly(size),
+                };
                 add(&mut out, c.location, Kind::Chunk, &hex(&c.id), e);
             }
         }
@@ -153,15 +166,6 @@ fn entries(superbundles: &[Superbundle]) -> BTreeMap<Location, Entry> {
     out
 }
 
-/// A bundle's copy of a chunk holds the chunk's whole blocks from the one containing
-/// the logical offset to the end of the logical range (blocks are [`MAX_BLOCK`]
-/// decompressed), so its size is that range widened back to a block boundary.
-pub fn bundle_chunk_size(logical_offset: u32, logical_size: u32) -> u64 {
-    let block = MAX_BLOCK as u64;
-    let offset = u64::from(logical_offset);
-    offset % block + u64::from(logical_size)
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -169,10 +173,11 @@ fn hex(bytes: &[u8]) -> String {
 /// Checks the superbundles' entries, decompressed by `read`, in archive order.
 fn check(
     superbundles: &[Superbundle],
+    store: bool,
     mut read: impl FnMut(Location) -> Result<Vec<u8>>,
 ) -> Report {
     let mut report = Report::default();
-    for (location, entry) in entries(superbundles) {
+    for (location, entry) in entries(superbundles, store) {
         let c = report.kinds.entry(entry.kind).or_default();
         c.entries += 1;
         c.stored += u64::from(location.size);
@@ -198,7 +203,9 @@ pub fn run(path: &Path) -> Result<Report> {
     if path.join(store::INDEX).is_file() {
         let store = Store::open(path)?;
         let mut entries = store.entries()?;
-        return Ok(check(&store.superbundles, |l| entries.read(l)));
+        let mut report = check(&store.superbundles, true, |l| entries.read(l));
+        report.parts = Some(store::check_parts(&store)?);
+        return Ok(report);
     }
     let install = Install::open(path)?;
     let oodle = Oodle::load(path)?;
@@ -207,7 +214,7 @@ pub fn run(path: &Path) -> Result<Report> {
         superbundles.extend(install.superbundle(name)?);
     }
     let mut archives = Archives::new(&install);
-    Ok(check(&superbundles, |l| archives.read(l, &oodle)))
+    Ok(check(&superbundles, false, |l| archives.read(l, &oodle)))
 }
 
 #[cfg(test)]

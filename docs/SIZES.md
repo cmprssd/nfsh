@@ -1,7 +1,8 @@
 # What the store's bytes are
 
 Measured on the owner's install with `nfsh sizes` and `nfsh sizes-trial` on 2026-11-06,
-on the store made by nfsh 0.4.0. Sizes are stored bytes unless they say otherwise. To
+on the store made by nfsh 0.4.0, except [the store as built](#the-store-as-built), made by
+nfsh 0.26.0 on 2026-11-07. Sizes are stored bytes unless they say otherwise. To
 refresh, on the Windows side, which reads `D:` much faster:
 
 ```
@@ -11,11 +12,11 @@ nfsh sizes-trial D:\nfsh-store (about 5 minutes)
 
 ## In short
 
-- **The store fits a 25 GB Blu-ray with no loss of quality.** A BD-25 holds 23.28 GiB.
-  The packs are 27.92 GiB and the index 0.16 GiB. Storing identical bytes once and
-  dropping the chunks nothing names leaves 22.85 GiB of packs, 23.01 GiB with today's
-  index, every language kept.
-- **Nothing here is built yet.** The numbers say what a new store would hold.
+- **The store fits a 25 GB Blu-ray with no loss of quality, and is built.** A BD-25 holds
+  23.28 GiB. nfsh 0.26.0's store is 23.08 GiB: 22.92 GiB of packs and a 0.16 GiB index,
+  every language kept, every texture's chunk split into a frame per tier. It was 28.07 GiB.
+- **The rest of this page measured the 0.4.0 store** and says what a new store would hold;
+  the gathered block fields and everything that loses quality are not built.
 - **Two savings are the owner's call**: the chunks nothing names, and the other languages.
   Either one is enough, along with storing identical bytes once, though the margin is thin:
   0.27 GiB with the chunks dropped, before the disc's own file system.
@@ -24,6 +25,64 @@ nfsh sizes-trial D:\nfsh-store (about 5 minutes)
 - **Blu-ray speed looks sufficient for the city's zones, but that isn't proven.** Reading
   2 km ahead takes 8.7 MiB/s at worst, under a 6x drive's slowest 10.3 MiB/s. Seeks, cars
   and missions are not in that number.
+
+## The store as built
+
+`nfsh import` from nfsh 0.26.0, 2026-11-07, 106 minutes, every entry checked byte for byte
+against the install; `nfsh verify` then read it all back with no failures.
+
+| | Size |
+|---|---:|
+| Packs (24) | 22.92 GiB |
+| Index | 162.39 MiB |
+| **Store** | **23.08 GiB** |
+| A BD-25 holds | 23.28 GiB |
+
+Not stored again, in the install's stored bytes:
+
+| What | Entries | Size |
+|---|---:|---:|
+| Identical to another entry | 725,842 | 1.81 GiB |
+| A chunk's end, read from the whole chunk | 66,474 | 1.05 GiB |
+| Chunks nothing names | 15,908 | 2.86 GiB |
+
+By part: the base and one part per language. The base plus any one language holds
+everything they refer to (`nfsh verify` checks it): of 945,550 references between
+partitions, 24 go from the base to a language, all from the per-language voice-over
+loaders (`Audio/VO/LoadVoiceOver_XX`), which are only used with their language; none goes
+from one language to another, and 5 go to partitions no table lists, as in the install.
+
+| Part | Size |
+|---|---:|
+| Base | 19.90 GiB |
+| de | 474.75 MiB |
+| es | 451.07 MiB |
+| fr | 425.27 MiB |
+| en | 414.70 MiB |
+| jp | 338.36 MiB |
+| ru | 337.71 MiB |
+| it | 332.25 MiB |
+| pl | 317.51 MiB |
+
+By tier, what the player can choose to copy or leave on the disc:
+
+| Tier | Size |
+|---|---:|
+| Whole entries (ebx, res, audio, video, other chunks) | 8.84 GiB |
+| Textures' top mip | 6.91 GiB |
+| Second mip | 1.89 GiB |
+| Third mip | 535.79 MiB |
+| The other mips | 1.14 GiB |
+| Mesh LOD 0 | 1.71 GiB |
+| Mesh LOD 1 | 1.04 GiB |
+| Mesh LOD 2 | 591.16 MiB |
+| Mesh LOD 3 | 235.72 MiB |
+| Mesh LOD 4 | 62.04 MiB |
+| Mesh LOD 5 | 3.12 MiB |
+
+The margin is 0.20 GiB before the disc's own file system. Voice-over in a folder that names
+no language counts as English; the cinematics' audio, whose languages are not worked out,
+stays in the base.
 
 ## By kind
 

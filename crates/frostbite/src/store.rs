@@ -1,8 +1,10 @@
 //! nfsh's own copy of an install's data, a *store*: the entries the patched tables
 //! still point at, recompressed into a few packs (`pack_NN.nfsh`), and one index
 //! (`index.nfsh`) holding the superbundles with their bundles and chunks. The dead
-//! `Data/` bytes the patch replaced are left behind. Each entry is one zstd frame (see
+//! `Data/` bytes the patch replaced are left behind. An entry is zstd frames (see
 //! [`crate::frames`]), so a store reads anywhere, without the install's Oodle library.
+//! What the store keeps of them, and how, is [`crate::plan`]'s decision; every frame is
+//! tagged in the index with its part (the base, or one language) and tier.
 //!
 //! In a store, the archive a [`Location`] names is a pack: [`CasRef::cas`] is the pack
 //! number, with `patch` false and `package` 0. The index is our own format (see
@@ -11,6 +13,7 @@
 //! every ebx.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -20,16 +23,19 @@ use crate::cas::{Archives, Decoder};
 use crate::ebx::Partition;
 use crate::frames::{self, FrameDecoder, FrameEncoder};
 use crate::install::{BundleEntry, ChunkEntry, Install, Layer, Superbundle};
+use crate::mesh::MeshSet;
+use crate::plan::{self, Fate, Finder, Listing};
 use crate::reader::Reader;
-use crate::sb::{Asset, Bundle, Chunk, Res};
+use crate::sb::{Asset, Bundle, Chunk, Res, bundle_chunk_size, res_type_hash};
+use crate::texture::{self, Texture};
 use crate::toc::TocChunk;
 use crate::{CasRef, Location, Result, bail};
 
 pub const INDEX: &str = "index.nfsh";
 const MAGIC: &[u8; 8] = b"NFSHSTOR";
-const VERSION: u32 = 3;
-/// The version before the partition GUIDs, still read: such a store has none until
-/// [`reindex`] adds them.
+const VERSION: u32 = 4;
+/// The oldest version still read: such a store has no partition GUIDs until [`reindex`]
+/// adds them. Version 3 added the GUIDs, and version 4 the frames' table and parts.
 const VERSION_WITHOUT_GUIDS: u32 = 2;
 
 /// A pack is closed once the next entry would take it past this size, so packs stay
@@ -70,6 +76,21 @@ pub struct Store {
     /// Every ebx's partition GUID with where it is listed, sorted by GUID; empty for
     /// a store not indexed yet.
     by_guid: Vec<([u8; 16], EbxRef)>,
+    /// The name of each part; empty for a store made before them.
+    pub parts: Vec<String>,
+    /// Every frame, in the packs' order; empty for a store made before parts.
+    pub frames: Vec<Frame>,
+}
+
+/// One zstd frame of a pack, with what it is for. A pack holds frames back to back, so
+/// a frame's place follows from those before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub size: u32,
+    /// An index into [`Store::parts`].
+    pub part: u8,
+    /// See [`plan::tier`].
+    pub tier: u8,
 }
 
 /// Where an ebx is listed in a store: indices into [`Store::superbundles`], its
@@ -142,7 +163,42 @@ impl Store {
             packs: index.packs,
             dictionary: index.dictionary,
             by_guid,
+            parts: index.parts,
+            frames: index.frames,
         })
+    }
+
+    /// Each part's stored bytes in each tier.
+    pub fn part_sizes(&self) -> BTreeMap<(u8, u8), u64> {
+        let mut sizes = BTreeMap::new();
+        for f in &self.frames {
+            *sizes.entry((f.part, f.tier)).or_default() += u64::from(f.size);
+        }
+        sizes
+    }
+
+    /// The part of the frame at `location`'s start, given [`Self::frame_starts`].
+    fn part_at(&self, starts: &[(u8, u32)], location: Location) -> Option<u8> {
+        let at = (location.cas.cas, location.offset);
+        let n = starts.binary_search(&at).ok()?;
+        Some(self.frames[n].part)
+    }
+
+    /// Where each frame starts, as (pack, offset), sorted because the frames are in the
+    /// packs' order.
+    fn frame_starts(&self) -> Vec<(u8, u32)> {
+        let mut starts = Vec::with_capacity(self.frames.len());
+        let (mut pack, mut offset, mut packs) = (0u8, 0u64, self.packs.iter());
+        let mut size = packs.next().copied().unwrap_or(0);
+        for f in &self.frames {
+            while offset >= size {
+                (pack, offset) = (pack.wrapping_add(1), 0);
+                size = packs.next().copied().unwrap_or(u64::MAX);
+            }
+            starts.push((pack, offset as u32));
+            offset += u64::from(f.size);
+        }
+        starts
     }
 
     /// Whether the index lists the partition GUIDs (see [`reindex`]).
@@ -263,6 +319,25 @@ impl Entries<'_> {
         self.frames
             .decode(&frame)
             .map_err(|e| crate::Error(format!("{location:?}: {e}")))
+    }
+
+    /// What the bundle's `chunk` holds: its whole blocks over its logical range. In a
+    /// store, a chunk's end may be read from the whole chunk it is the end of.
+    pub fn read_chunk(&mut self, chunk: &Chunk) -> Result<Vec<u8>> {
+        let mut data = self.read(chunk.location)?;
+        let size = bundle_chunk_size(chunk.logical_offset, chunk.logical_size) as usize;
+        if data.len() > size && chunk.logical_offset > 0 {
+            let from = (chunk.logical_offset & !0xFFFF) as usize;
+            let Some(part) = data.get(from..from + size) else {
+                bail!(
+                    "chunk {:02x?}: {size} bytes at {from:#x} of {}",
+                    chunk.id,
+                    data.len()
+                );
+            };
+            data = part.to_vec();
+        }
+        Ok(data)
     }
 }
 
@@ -408,15 +483,21 @@ pub struct Imported {
     /// The index's size, the dictionary included.
     pub index: u64,
     pub dictionary: u64,
+    /// What wasn't stored again, in the install's stored bytes.
+    pub saved: plan::Summary,
+    /// Each part's stored bytes, by name, with its bytes in each tier.
+    pub parts: Vec<(String, u64)>,
+    pub tiers: Vec<(String, u64)>,
 }
 
-/// Copies the superbundles `names` of `install` into a store in `dir`: every distinct
-/// entry they point at is decompressed with `decoder` (the install's Oodle) and written
-/// as one frame, on every core. Then it reopens the store and checks that it lists the
-/// same superbundles and that every entry reads back as the install's, byte for byte.
+/// Copies the superbundles `names` of `install` into a store in `dir`. Every distinct
+/// entry they point at is read once with `decoder` (the install's Oodle) to decide what
+/// to keep ([`plan`]); what is kept is written as its frames, on every core. Then it
+/// reopens the store and checks that it lists the same superbundles, less the chunks
+/// left out, and that every other entry reads back as the install's, byte for byte.
 /// `dir` may be missing, empty, or an earlier store, which is replaced; anything else
 /// in it is refused. The index is written last, so an import that stops early leaves
-/// no index behind. `progress` hears of each pack written and of the check.
+/// no index behind. `progress` hears of each step and each pack written.
 pub fn import(
     install: &Install,
     decoder: &(dyn Decoder + Sync),
@@ -429,27 +510,42 @@ pub fn import(
     for name in names {
         superbundles.extend(install.superbundle(name)?);
     }
-    // Every distinct entry, in archive order, and whether it is an ebx.
-    let mut entries = BTreeMap::new();
-    for sb in &mut superbundles {
-        each_location(sb, &mut |l| {
-            entries.entry(*l).or_insert(false);
-        });
-        for a in sb.bundles.iter().flat_map(|b| &b.bundle.ebx) {
-            entries.insert(a.location, true);
-        }
-    }
-    let entries: Vec<(Location, bool)> = entries.into_iter().collect();
-    let dictionary = train_dictionary(install, decoder, &entries)?;
+    let listing = Listing::new(&superbundles);
+    let finder = Finder::new(&listing.ids);
+    progress(&format!("reading {} entries", listing.entries.len()));
+    let scans = in_parallel(
+        &listing.entries,
+        || Ok(Archives::new(install)),
+        |archives, entry| {
+            let data = read(archives, entry.location, decoder)?;
+            Ok(plan::scan(entry, &data, &listing, &finder))
+        },
+    )?;
+    let fates = plan::decide(&listing, &scans);
+    let saved = plan::summary(&listing, &fates);
+    progress(&format!("{saved:?}"));
+
+    // Every entry kept, in archive order, and whether it is an ebx.
+    let kept: Vec<(usize, Location, bool)> = fates
+        .iter()
+        .enumerate()
+        .filter_map(|(n, f)| match f {
+            Fate::Keep(k) => Some((n, listing.entries[n].location, k.ebx)),
+            _ => None,
+        })
+        .collect();
+    let samples: Vec<(Location, bool)> = kept.iter().map(|k| (k.1, k.2)).collect();
+    let dictionary = train_dictionary(install, decoder, &samples)?;
     let prepared = frames::prepare(&dictionary);
 
-    let total: u64 = entries.iter().map(|e| u64::from(e.0.size)).sum();
+    let total: u64 = kept.iter().map(|k| u64::from(k.1.size)).sum();
     let (mut done, mut packer) = (0, Packer::new(PACK_LIMIT));
-    let mut placed = BTreeMap::new();
+    let mut placed: Vec<Option<Location>> = vec![None; fates.len()];
     let mut packs: Vec<u64> = Vec::new();
+    let mut table: Vec<Frame> = Vec::new();
     let mut out: Option<(PathBuf, BufWriter<File>)> = None;
-    for batch in batches(&entries, |e| e.0.size.into(), BATCH) {
-        let frames = in_parallel(
+    for batch in batches(&kept, |k| k.1.size.into(), BATCH) {
+        let written = in_parallel(
             batch,
             || {
                 Ok((
@@ -457,11 +553,28 @@ pub fn import(
                     FrameEncoder::new(prepared.as_ref())?,
                 ))
             },
-            |(archives, encoder), &(l, ebx)| encoder.encode(&read(archives, l, decoder)?, ebx),
+            |(archives, encoder), &(n, l, ebx)| {
+                let data = read(archives, l, decoder)?;
+                let Fate::Keep(keep) = &fates[n] else {
+                    bail!("{l:?} is not kept");
+                };
+                let mut stored = Vec::new();
+                let mut frames = Vec::new();
+                for (range, tier) in keep.pieces() {
+                    let frame = encoder.encode(&data[range], ebx)?;
+                    frames.push(Frame {
+                        size: frame.len() as u32,
+                        part: keep.part,
+                        tier,
+                    });
+                    stored.extend(frame);
+                }
+                Ok((stored, frames))
+            },
         )?;
-        for (&(from, _), frame) in batch.iter().zip(frames) {
-            let Ok(size) = u32::try_from(frame.len()) else {
-                bail!("{from:?}: a frame of {} bytes", frame.len());
+        for (&(n, from, _), (stored, frames)) in batch.iter().zip(written) {
+            let Ok(size) = u32::try_from(stored.len()) else {
+                bail!("{from:?}: {} stored bytes", stored.len());
             };
             let to = packer.place(size)?;
             if usize::from(to.cas.cas) == packs.len() {
@@ -481,10 +594,11 @@ pub fn import(
             let (Some((path, file)), Some(len)) = (&mut out, packs.last_mut()) else {
                 bail!("{from:?} is placed before the first pack");
             };
-            file.write_all(&frame).map_err(|e| io_error(path, e))?;
-            *len += frame.len() as u64;
+            file.write_all(&stored).map_err(|e| io_error(path, e))?;
+            *len += stored.len() as u64;
             done += u64::from(from.size);
-            placed.insert(from, to);
+            table.extend(frames);
+            placed[n] = Some(to);
         }
     }
     if let Some((path, file)) = out {
@@ -492,14 +606,33 @@ pub fn import(
         progress(&format!("{} written (100%)", path.display()));
     }
 
+    // Where every entry listed is read from now, by where it was; none for those left
+    // out, which leave the tables too.
+    let moved: HashMap<Location, Location> = listing
+        .entries
+        .iter()
+        .zip(&fates)
+        .enumerate()
+        .filter_map(|(n, (e, fate))| {
+            let holder = match fate {
+                Fate::Keep(_) => n,
+                Fate::Same(w) | Fate::InWhole(w) => *w as usize,
+                Fate::Dropped => return None,
+            };
+            Some((e.location, placed[holder]?))
+        })
+        .collect();
     for sb in &mut superbundles {
-        each_location(sb, &mut |l| *l = placed[l]);
+        sb.chunks.retain(|c| moved.contains_key(&c.chunk.location));
+        each_location(sb, &mut |l| *l = moved[l]);
     }
     let index = Index {
         packs,
         dictionary,
         superbundles,
         partitions: Vec::new(),
+        parts: plan::part_names(),
+        frames: table,
     };
     let path = dir.join(INDEX);
     write_index(dir, &index)?;
@@ -509,13 +642,33 @@ pub fn import(
     if store.superbundles != index.superbundles || store.dictionary != index.dictionary {
         bail!("{}: the index reads back differently", path.display());
     }
-    let pairs: Vec<(Location, Location)> = placed.into_iter().collect();
+    // Every entry against what the store now reads for it, a chunk's end from the whole
+    // chunk where it is read from there.
+    let pairs: Vec<Copied> = listing
+        .entries
+        .iter()
+        .zip(&fates)
+        .filter_map(|(e, fate)| {
+            let to = *moved.get(&e.location)?;
+            let tail = matches!(fate, Fate::InWhole(_)).then_some(e.tail).flatten();
+            Some((e.location, to, tail))
+        })
+        .collect();
     for batch in batches(&pairs, |p| p.0.size.into(), BATCH) {
         in_parallel(
             batch,
             || Ok((Archives::new(install), store.entries()?)),
-            |(source, copy), &(from, to)| {
-                if read(source, from, decoder)? != copy.read(to)? {
+            |(source, copy), &(from, to, tail)| {
+                let theirs = read(source, from, decoder)?;
+                let ours = copy.read(to)?;
+                let same = match tail {
+                    Some((at, len)) => {
+                        let (at, len) = (at as usize, len as usize);
+                        ours.get(at..at + len) == Some(&theirs[..])
+                    }
+                    None => ours == theirs,
+                };
+                if !same {
                     bail!("{from:?}: the copy at {to:?} differs");
                 }
                 Ok(())
@@ -524,14 +677,208 @@ pub fn import(
     }
     progress("listing the partition GUIDs");
     let index_size = reindex(dir)?;
+    let (mut parts, mut tiers) = (BTreeMap::new(), BTreeMap::new());
+    for (&(part, tier), &bytes) in &store.part_sizes() {
+        *parts.entry(part).or_insert(0) += bytes;
+        *tiers.entry(tier).or_insert(0) += bytes;
+    }
+    let names = plan::part_names();
     Ok(Imported {
         superbundles: store.superbundles.len(),
         bundles: store.superbundles.iter().map(|s| s.bundles.len()).sum(),
-        entries: pairs.len(),
+        entries: kept.len(),
         packs: store.packs,
         index: index_size,
         dictionary: store.dictionary.len() as u64,
+        saved,
+        parts: parts
+            .into_iter()
+            .map(|(p, b)| (names[usize::from(p)].clone(), b))
+            .collect(),
+        tiers: tiers
+            .into_iter()
+            .map(|(t, b)| (plan::tier::name(t), b))
+            .collect(),
     })
+}
+
+/// An entry of the install, where the store reads it from, and for a chunk's end read
+/// from the whole chunk, its start and length there.
+type Copied = (Location, Location, Option<(u32, u32)>);
+
+/// What a store's parts refer to, so that the base and any one language are enough.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PartsCheck {
+    /// The ebx and res read.
+    pub entries: u64,
+    /// The chunks those name, counting each entry's once.
+    pub names: u64,
+    /// An ebx's references to another partition, by where they lead.
+    pub references: u64,
+    pub base_to_language: u64,
+    pub language_to_other: u64,
+    /// To a partition the store doesn't have, as the install doesn't either.
+    pub to_nothing: u64,
+    pub failures: Vec<String>,
+    pub failed: u64,
+}
+
+impl PartsCheck {
+    fn fail(&mut self, message: String) {
+        self.failed += 1;
+        if self.failures.len() < 20 {
+            self.failures.push(message);
+        }
+    }
+
+    pub fn markdown(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "Parts: {} ebx and res name {} chunks, {} failed. Of {} references to other \
+             partitions, {} go from the base to a language, {} from a language to another, \
+             {} to a partition no table lists.",
+            self.entries,
+            self.names,
+            self.failed,
+            self.references,
+            self.base_to_language,
+            self.language_to_other,
+            self.to_nothing,
+        );
+        for f in &self.failures {
+            let _ = writeln!(out, "- {f}");
+        }
+        out
+    }
+}
+
+/// Checks that the base and any one language find everything they refer to: a chunk an
+/// entry names must be in the base or in that entry's own part, and a texture or a mesh
+/// must find its chunks at all. Every ebx and res is read once.
+pub fn check_parts(store: &Store) -> Result<PartsCheck> {
+    let mut report = PartsCheck::default();
+    if store.frames.is_empty() {
+        return Ok(report);
+    }
+    let starts = store.frame_starts();
+    let whole = store.whole_chunks();
+    // Every chunk the tables list, with where one of its entries is.
+    let mut ids: HashMap<[u8; 16], u32> = HashMap::new();
+    let mut listed: Vec<Location> = Vec::new();
+    let mut add = |id: [u8; 16], l: Location| {
+        let next = ids.len() as u32;
+        let n = *ids.entry(id).or_insert(next);
+        if n == next {
+            listed.push(l);
+        }
+    };
+    for (&id, &l) in &whole {
+        add(id, l);
+    }
+    for b in store.superbundles.iter().flat_map(|s| &s.bundles) {
+        for c in &b.bundle.chunks {
+            add(c.id, c.location);
+        }
+    }
+    let finder = Finder::new(&ids);
+    let mut wanted: BTreeMap<Location, plan::Kind> = BTreeMap::new();
+    for (_, a) in each_ebx(&store.superbundles) {
+        wanted.insert(a.location, plan::Kind::Ebx);
+    }
+    for b in store.superbundles.iter().flat_map(|s| &s.bundles) {
+        for r in &b.bundle.res {
+            wanted.insert(r.asset.location, plan::Kind::Res(r.res_type));
+        }
+    }
+    let wanted: Vec<(Location, plan::Kind)> = wanted.into_iter().collect();
+    struct Found {
+        names: Vec<u32>,
+        /// What must be there, whatever the tables' other chunks are.
+        needs: Vec<[u8; 16]>,
+        imports: Vec<[u8; 16]>,
+    }
+    let found = in_parallel(
+        &wanted,
+        || store.entries(),
+        |entries, &(l, kind)| {
+            let data = entries.read(l)?;
+            let mut f = Found {
+                names: Vec::new(),
+                needs: Vec::new(),
+                imports: Vec::new(),
+            };
+            match kind {
+                plan::Kind::Res(texture::TEXTURE) => {
+                    if let Ok(t) = Texture::parse(&data) {
+                        f.needs.push(t.chunk);
+                        f.names.extend(ids.get(&t.chunk).copied());
+                    }
+                }
+                plan::Kind::Ebx => {
+                    f.names = finder.scan(&data);
+                    if let Ok(p) = Partition::parse(&data) {
+                        f.imports = p.imports.iter().map(|i| i.partition).collect();
+                        f.imports.sort_unstable();
+                        f.imports.dedup();
+                    }
+                }
+                _ => {
+                    f.names = finder.scan(&data);
+                    if kind == plan::Kind::Res(res_type_hash("MeshSet"))
+                        && let Ok(m) = MeshSet::parse(&data)
+                    {
+                        f.needs = m.lods.iter().filter_map(|l| l.chunk).collect();
+                    }
+                }
+            }
+            Ok(f)
+        },
+    )?;
+    for (&(l, _), f) in wanted.iter().zip(found) {
+        report.entries += 1;
+        let Some(part) = store.part_at(&starts, l) else {
+            report.fail(format!("{l:?} is not at the start of a frame"));
+            continue;
+        };
+        for id in f.needs {
+            if !ids.contains_key(&id) {
+                report.fail(format!("{l:?} needs chunk {id:02x?}, which is not listed"));
+            }
+        }
+        for n in f.names {
+            report.names += 1;
+            let target = listed[n as usize];
+            match store.part_at(&starts, target) {
+                Some(p) if p == plan::BASE || p == part => {}
+                Some(p) => report.fail(format!(
+                    "{l:?} in part {part} names a chunk in part {p}, at {target:?}"
+                )),
+                None => report.fail(format!("{target:?} is not at the start of a frame")),
+            }
+        }
+        for guid in f.imports {
+            report.references += 1;
+            let target = store.by_guid.partition_point(|(g, _)| *g < guid);
+            let at = store.by_guid.get(target).filter(|(g, _)| *g == guid);
+            let Some((asset_at, target)) = at.and_then(|&(_, e)| Some((e, store.ebx_at(e)?.1)))
+            else {
+                report.to_nothing += 1;
+                continue;
+            };
+            let _ = asset_at;
+            match store.part_at(&starts, target.location) {
+                Some(p) if p == plan::BASE || p == part => {}
+                Some(_) if part == plan::BASE => report.base_to_language += 1,
+                Some(_) => report.language_to_other += 1,
+                None => report.fail(format!(
+                    "{:?} is not at the start of a frame",
+                    target.location
+                )),
+            }
+        }
+    }
+    Ok(report)
 }
 
 /// Writes `index` as the index of the store in `dir`, under a temporary name renamed
@@ -576,6 +923,8 @@ pub fn reindex(dir: &Path) -> Result<u64> {
         superbundles,
         packs,
         dictionary,
+        parts,
+        frames,
         ..
     } = store;
     write_index(
@@ -585,6 +934,8 @@ pub fn reindex(dir: &Path) -> Result<u64> {
             dictionary,
             superbundles,
             partitions,
+            parts,
+            frames,
         },
     )
 }
@@ -671,6 +1022,10 @@ pub struct Index {
     /// Each ebx's partition GUID, in the order the superbundles list them; empty for
     /// none.
     pub partitions: Vec<[u8; 16]>,
+    /// The name of each part; empty for a store without parts.
+    pub parts: Vec<String>,
+    /// Every frame, in the packs' order; empty for a store without parts.
+    pub frames: Vec<Frame>,
 }
 
 pub fn encode(index: &Index) -> Vec<u8> {
@@ -714,6 +1069,14 @@ pub fn encode(index: &Index) -> Vec<u8> {
     }
     w.count(&index.partitions);
     index.partitions.iter().for_each(|g| w.raw(g));
+    w.count(&index.parts);
+    index.parts.iter().for_each(|p| w.bytes(p.as_bytes()));
+    w.count(&index.frames);
+    for f in &index.frames {
+        w.u32(f.size);
+        w.u8(f.part);
+        w.u8(f.tier);
+    }
     w.0
 }
 
@@ -826,9 +1189,9 @@ pub fn decode(bytes: &[u8]) -> Result<Index> {
         bail!("not an nfsh store index");
     }
     let version = r.u32_be()?;
-    if version != VERSION && version != VERSION_WITHOUT_GUIDS {
+    if !(VERSION_WITHOUT_GUIDS..=VERSION).contains(&version) {
         bail!(
-            "store version {version}; this nfsh reads versions {VERSION_WITHOUT_GUIDS} and {VERSION}"
+            "store version {version}; this nfsh reads versions {VERSION_WITHOUT_GUIDS} to {VERSION}"
         );
     }
     let mut i = IndexReader {
@@ -843,9 +1206,24 @@ pub fn decode(bytes: &[u8]) -> Result<Index> {
     let dictionary = i.r.bytes(len)?.to_vec();
     let superbundles = i.list(IndexReader::superbundle)?;
     let partitions = match version {
-        VERSION => i.list(|i| i.r.array())?,
-        _ => Vec::new(),
+        VERSION_WITHOUT_GUIDS => Vec::new(),
+        _ => i.list(|i| i.r.array())?,
     };
+    let (parts, frames) = match version {
+        VERSION => {
+            let parts = i.list(IndexReader::string)?;
+            let frames = i.list(|i| {
+                Ok(Frame {
+                    size: i.r.u32_be()?,
+                    part: i.r.u8()?,
+                    tier: i.r.u8()?,
+                })
+            })?;
+            (parts, frames)
+        }
+        _ => (Vec::new(), Vec::new()),
+    };
+    check_frames(&i.packs, &parts, &frames)?;
     let ebx = each_ebx(&superbundles).count();
     if !partitions.is_empty() && partitions.len() != ebx {
         bail!("{} partition GUIDs for {ebx} ebx", partitions.len());
@@ -858,7 +1236,37 @@ pub fn decode(bytes: &[u8]) -> Result<Index> {
         dictionary,
         superbundles,
         partitions,
+        parts,
+        frames,
     })
+}
+
+/// A store's frames must fill its packs exactly, each pack's starting at its start, and
+/// name a part that exists. A store with no frames has no parts at all.
+fn check_frames(packs: &[u64], parts: &[String], frames: &[Frame]) -> Result<()> {
+    if frames.is_empty() {
+        return Ok(());
+    }
+    let mut frame = frames.iter();
+    for (n, &size) in packs.iter().enumerate() {
+        let mut sum = 0;
+        while sum < size {
+            let Some(f) = frame.next() else {
+                bail!("the frames end in pack {n}");
+            };
+            if usize::from(f.part) >= parts.len() {
+                bail!("a frame of part {}, of {} parts", f.part, parts.len());
+            }
+            sum += u64::from(f.size);
+        }
+        if sum != size {
+            bail!("the frames of pack {n} take {sum} bytes, the pack {size}");
+        }
+    }
+    if frame.next().is_some() {
+        bail!("more frames than the packs hold");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -930,7 +1338,73 @@ mod tests {
             dictionary: b"dict".to_vec(),
             superbundles: sample(),
             partitions: vec![[8; 16]],
+            parts: Vec::new(),
+            frames: Vec::new(),
         }
+    }
+
+    fn frame(size: u32, part: u8, tier: u8) -> Frame {
+        Frame { size, part, tier }
+    }
+
+    #[test]
+    fn frames_read_back_and_must_fill_the_packs() {
+        let mut framed = index(vec![30, 35]);
+        framed.parts = vec!["base".into(), "de".into()];
+        framed.frames = vec![
+            frame(10, 0, plan::tier::TOP),
+            frame(20, 0, plan::tier::REST),
+            frame(35, 1, plan::tier::WHOLE),
+        ];
+        assert_eq!(decode(&encode(&framed)), Ok(framed.clone()));
+        let mut short = framed.clone();
+        short.frames.pop();
+        assert!(
+            decode(&encode(&short))
+                .unwrap_err()
+                .0
+                .contains("end in pack 1")
+        );
+        let mut more = framed.clone();
+        more.frames.push(frame(1, 0, 0));
+        assert!(
+            decode(&encode(&more))
+                .unwrap_err()
+                .0
+                .contains("more frames")
+        );
+        let mut over = framed.clone();
+        over.frames[1].size = 25;
+        assert!(decode(&encode(&over)).unwrap_err().0.contains("pack 0"));
+        let mut unknown = framed.clone();
+        unknown.frames[2].part = 2;
+        assert!(
+            decode(&encode(&unknown))
+                .unwrap_err()
+                .0
+                .contains("of part 2")
+        );
+    }
+
+    #[test]
+    fn a_frame_is_found_by_where_it_starts_in_its_pack() {
+        let dir = std::env::temp_dir().join(format!("nfsh-frames-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(pack_name(0)), [0; 30]).unwrap();
+        std::fs::write(dir.join(pack_name(1)), [0; 35]).unwrap();
+        let mut framed = index(vec![30, 35]);
+        framed.parts = vec!["base".into(), "de".into()];
+        framed.frames = vec![frame(10, 0, 1), frame(20, 0, 4), frame(35, 1, 0)];
+        std::fs::write(dir.join(INDEX), encode(&framed)).unwrap();
+        let store = Store::open(&dir).unwrap();
+        let starts = store.frame_starts();
+        assert_eq!(starts, [(0, 0), (0, 10), (1, 0)]);
+        assert_eq!(store.part_at(&starts, at(1, 0, 35)), Some(1));
+        assert_eq!(store.part_at(&starts, at(0, 10, 20)), Some(0));
+        assert_eq!(store.part_at(&starts, at(0, 5, 5)), None);
+        assert_eq!(store.part_sizes()[&(1, 0)], 35);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -970,9 +1444,19 @@ mod tests {
         let mut old = index(vec![30, 35]);
         old.partitions.clear();
         let mut bytes = encode(&old);
-        // Version 2 ended after the superbundles: drop the empty GUID list.
-        bytes.truncate(bytes.len() - 4);
+        // Version 2 ended after the superbundles: drop the empty lists after them.
+        bytes.truncate(bytes.len() - 12);
         bytes[11] = 2;
+        assert_eq!(decode(&bytes), Ok(old));
+    }
+
+    #[test]
+    fn a_version_3_index_reads_without_parts() {
+        let old = index(vec![30, 35]);
+        let mut bytes = encode(&old);
+        // Version 3 ended after the GUIDs: drop the empty lists after them.
+        bytes.truncate(bytes.len() - 8);
+        bytes[11] = 3;
         assert_eq!(decode(&bytes), Ok(old));
     }
 
@@ -1051,6 +1535,8 @@ mod tests {
                 dictionary,
                 superbundles: sb,
                 partitions: Vec::new(),
+                parts: Vec::new(),
+                frames: Vec::new(),
             }),
         )
         .unwrap();
@@ -1058,8 +1544,12 @@ mod tests {
         let mut entries = store.entries().unwrap();
         assert_eq!(entries.read(at(0, 0, e)).unwrap(), samples[3]);
         assert_eq!(entries.read(at(0, e, c)).unwrap(), [7; 5000]);
-        // A location that isn't one whole frame is an error, as is one past the pack.
-        assert!(entries.read(at(0, 0, e + c)).is_err());
+        // Frames back to back read as one entry.
+        let both = entries.read(at(0, 0, e + c)).unwrap();
+        assert_eq!(both, [samples[3].clone(), vec![7; 5000]].concat());
+        // A location that isn't whole frames is an error, as is one past the pack.
+        assert!(entries.read(at(0, 0, e + 1)).is_err());
+        assert!(entries.read(at(0, 0, e - 1)).is_err());
         assert!(entries.read(at(0, e, c + 1)).is_err());
         assert!(entries.read(at(1, 0, 4)).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1090,6 +1580,8 @@ mod tests {
             dictionary: Vec::new(),
             superbundles: sb,
             partitions: Vec::new(),
+            parts: Vec::new(),
+            frames: Vec::new(),
         };
         std::fs::write(dir.join(INDEX), encode(&old)).unwrap();
         let store = Store::open(&dir).unwrap();
@@ -1168,6 +1660,71 @@ mod tests {
             Some("listing the partition GUIDs")
         );
         assert!(store.has_guids());
+        // What it keeps fills the packs, and the parts find what they refer to, but for
+        // chunks in the superbundles this one store leaves out.
+        assert_eq!(store.parts[0], "base");
+        assert_eq!(
+            store.frames.iter().map(|f| u64::from(f.size)).sum::<u64>(),
+            store.packs.iter().sum::<u64>()
+        );
+        let parts = check_parts(&store).unwrap();
+        let wrong = parts.failures.iter().filter(|f| !f.contains("not listed"));
+        assert_eq!(wrong.collect::<Vec<_>>(), Vec::<&String>::new());
+        assert!(parts.entries > 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The tail of a chunk read from the whole chunk it is the end of.
+    #[test]
+    fn a_chunks_end_reads_from_the_whole_chunk() {
+        let dir = std::env::temp_dir().join(format!("nfsh-tail-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let data: Vec<u8> = (0..0x2_0100u32).map(|i| (i % 251) as u8).collect();
+        let mut encoder = FrameEncoder::new(None).unwrap();
+        let whole = [
+            encoder.encode(&data[..0x1_0000], false).unwrap(),
+            encoder.encode(&data[0x1_0000..], false).unwrap(),
+        ]
+        .concat();
+        std::fs::write(dir.join(pack_name(0)), &whole).unwrap();
+        let mut sb = sample();
+        let location = at(0, 0, whole.len() as u32);
+        let bundle = &mut sb[0].bundles[0].bundle;
+        bundle.ebx.clear();
+        bundle.res.clear();
+        let tail = |logical_offset, logical_size| Chunk {
+            id: [4; 16],
+            sha1: [0; 20],
+            logical_offset,
+            logical_size,
+            location,
+        };
+        bundle.chunks = vec![tail(0, data.len() as u32)];
+        sb[0].chunks.clear();
+        let packs = vec![whole.len() as u64];
+        std::fs::write(
+            dir.join(INDEX),
+            encode(&Index {
+                packs,
+                dictionary: Vec::new(),
+                superbundles: sb,
+                partitions: Vec::new(),
+                parts: Vec::new(),
+                frames: Vec::new(),
+            }),
+        )
+        .unwrap();
+        let store = Store::open(&dir).unwrap();
+        let mut entries = store.entries().unwrap();
+        assert_eq!(entries.read_chunk(&tail(0, 0x2_0100)).unwrap(), data);
+        // From 0x10100, the whole blocks from 0x10000 to its end.
+        assert_eq!(
+            entries.read_chunk(&tail(0x1_0100, 0x1_0000)).unwrap(),
+            &data[0x1_0000..]
+        );
+        // A range the chunk doesn't have.
+        assert!(entries.read_chunk(&tail(0x3_0000, 100)).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -23,11 +23,13 @@ const USAGE: &str = "usage: nfsh inventory [INSTALL]
   Lists what a Need for Speed: Heat install holds, as Markdown on stdout.
 usage: nfsh verify [INSTALL | STORE]
   Decompresses every entry of an install or an nfsh store and checks its size
-  (an install only on Windows: it uses the install's own Oodle library).
+  (an install only on Windows: it uses the install's own Oodle library). For a store,
+  also checks that the base and any one language find every chunk they name.
 usage: nfsh import [INSTALL] STORE
   Recompresses the data the install still uses into nfsh's own store in the folder
-  STORE (created if missing; an earlier store there is replaced), checks the copy,
-  and prints its size. Windows only, like verifying an install.
+  STORE (created if missing; an earlier store there is replaced): identical content
+  once, chunks nothing names left out, every frame tagged with its part and tier.
+  Checks the copy and prints its size. Windows only, like verifying an install.
 usage: nfsh reindex STORE
   Lists every ebx's partition GUID in the index of the store in the folder STORE
   (the import does it; this adds them to a store made before nfsh 0.6.0).

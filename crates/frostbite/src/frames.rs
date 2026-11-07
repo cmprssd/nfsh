@@ -1,5 +1,6 @@
-//! How nfsh's store keeps an entry: one zstd frame of the entry's decompressed bytes, at
-//! level [`LEVEL`], with the decompressed size and a checksum in the frame. ebx frames
+//! How nfsh's store keeps an entry: zstd frames of the entry's decompressed bytes, back
+//! to back (one, unless a texture's chunk is split by tier; see [`crate::plan`]), at
+//! level [`LEVEL`], with the decompressed size and a checksum in each. ebx frames
 //! use the store's dictionary, trained on a sample of the install's ebx at import: ebx
 //! are small and share their structure, so it makes them about 15% smaller, and does
 //! nothing for the rest. A frame names its dictionary by id, so a reader needs no list
@@ -60,7 +61,7 @@ impl<'d> FrameEncoder<'d> {
         Ok(Self { plain, ebx })
     }
 
-    /// One entry's frame; `ebx` frames use the dictionary, if there is one.
+    /// A frame of `data`; `ebx` frames use the dictionary, if there is one.
     pub fn encode(&mut self, data: &[u8], ebx: bool) -> Result<Vec<u8>> {
         let c = match &mut self.ebx {
             Some(c) if ebx => c,
@@ -92,27 +93,48 @@ impl FrameDecoder {
         Ok(Self { plain, dictionary })
     }
 
-    /// The entry in `frame`, which must be exactly one whole frame.
-    pub fn decode(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
-        let size = match zstd_safe::get_frame_content_size(frame) {
-            Ok(Some(size)) if size <= MAX_ENTRY => size as usize,
-            Ok(Some(size)) => bail!("a frame of {size} bytes; at most {MAX_ENTRY}"),
-            _ => bail!("not a zstd frame with its size"),
-        };
-        if zstd_safe::find_frame_compressed_size(frame) != Ok(frame.len()) {
-            bail!("the {} bytes are not exactly one frame", frame.len());
+    /// The entry in `stored`, which must be exactly one or more whole frames.
+    pub fn decode(&mut self, stored: &[u8]) -> Result<Vec<u8>> {
+        let mut frames = Vec::new();
+        let mut rest = stored;
+        let mut total = 0u64;
+        while !rest.is_empty() || frames.is_empty() {
+            let size = match zstd_safe::get_frame_content_size(rest) {
+                Ok(Some(size)) => size,
+                _ => bail!("not a zstd frame with its size"),
+            };
+            total += size;
+            if total > MAX_ENTRY {
+                bail!("an entry of {total} bytes; at most {MAX_ENTRY}");
+            }
+            let Ok(len) = zstd_safe::find_frame_compressed_size(rest) else {
+                bail!("the {} bytes are not whole frames", stored.len());
+            };
+            if len == 0 || len > rest.len() {
+                bail!("the {} bytes are not whole frames", stored.len());
+            }
+            let (frame, after) = rest.split_at(len);
+            frames.push((frame, size as usize));
+            rest = after;
         }
-        let d = match (
-            zstd_safe::get_dict_id_from_frame(frame),
-            &mut self.dictionary,
-        ) {
-            (None, _) => &mut self.plain,
-            (Some(id), Some((ours, d))) if id.get() == *ours => d,
-            (Some(id), _) => bail!("the frame needs dictionary {id}, not the store's"),
-        };
-        let out = d.decompress(frame, size).map_err(zstd_error)?;
-        if out.len() != size {
-            bail!("the frame decompressed to {} of {size} bytes", out.len());
+        let mut out = vec![0; total as usize];
+        let mut pos = 0;
+        for (frame, size) in frames {
+            let d = match (
+                zstd_safe::get_dict_id_from_frame(frame),
+                &mut self.dictionary,
+            ) {
+                (None, _) => &mut self.plain,
+                (Some(id), Some((ours, d))) if id.get() == *ours => d,
+                (Some(id), _) => bail!("the frame needs dictionary {id}, not the store's"),
+            };
+            let done = d
+                .decompress_to_buffer(frame, &mut out[pos..pos + size])
+                .map_err(zstd_error)?;
+            if done != size {
+                bail!("the frame decompressed to {done} of {size} bytes");
+            }
+            pos += size;
         }
         Ok(out)
     }
@@ -175,9 +197,13 @@ mod tests {
         for len in [0, 4, 10, frame.len() - 1] {
             assert!(dec.decode(&frame[..len]).is_err(), "truncated to {len}");
         }
+        // Frames back to back are one entry; anything else after a frame is damage.
         let mut longer = frame.clone();
         longer.extend(&frame);
-        assert!(dec.decode(&longer).is_err());
+        assert_eq!(dec.decode(&longer).unwrap(), [&entry[..], &entry].concat());
+        let mut trailing = frame.clone();
+        trailing.extend(b"junk");
+        assert!(dec.decode(&trailing).is_err());
         // A flipped payload byte fails the checksum, if not the decoder.
         let mut flipped = frame.clone();
         let mid = flipped.len() / 2;

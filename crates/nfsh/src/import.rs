@@ -40,12 +40,35 @@ pub fn markdown(i: &Imported) -> String {
     for (name, count, bytes) in rows {
         let _ = writeln!(out, "| {name} | {count} | {bytes} | {} |", size(bytes));
     }
+    let s = &i.saved;
+    let _ = writeln!(out, "\nNot stored again, in the install's stored bytes:\n");
+    let _ = writeln!(out, "| what | entries | size |\n|------|------:|-----:|");
+    let rows = [
+        ("identical to another entry", s.same),
+        ("a chunk's end, read from the whole chunk", s.in_whole),
+        ("chunks nothing names", s.dropped),
+    ];
+    for (what, saved) in rows {
+        let _ = writeln!(
+            out,
+            "| {what} | {} | {} |",
+            saved.entries,
+            size(saved.stored)
+        );
+    }
+    for (title, rows) in [("part", &i.parts), ("tier", &i.tiers)] {
+        let _ = writeln!(out, "\n| {title} | size |\n|------|-----:|");
+        for (name, bytes) in rows {
+            let _ = writeln!(out, "| {name} | {} |", size(*bytes));
+        }
+    }
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use frostbite::plan::{Saved, Summary};
 
     #[test]
     fn markdown_totals_packs_and_index() {
@@ -56,6 +79,16 @@ mod tests {
             packs: vec![1 << 30, 1 << 29],
             index: 1 << 20,
             dictionary: 256 << 10,
+            saved: Summary {
+                same: Saved {
+                    entries: 4,
+                    stored: 1 << 20,
+                },
+                in_whole: Saved::default(),
+                dropped: Saved::default(),
+            },
+            parts: vec![("base".into(), 1 << 30)],
+            tiers: vec![("whole".into(), 1 << 30)],
         };
         assert_eq!(
             markdown(&imported),
@@ -65,7 +98,19 @@ mod tests {
              |------|------:|------:|-----:|\n\
              | packs | 2 | 1610612736 | 1.50 GiB |\n\
              | index | 1 | 1048576 | 1.00 MiB |\n\
-             | store | 3 | 1611661312 | 1.50 GiB |\n"
+             | store | 3 | 1611661312 | 1.50 GiB |\n\n\
+             Not stored again, in the install's stored bytes:\n\n\
+             | what | entries | size |\n\
+             |------|------:|-----:|\n\
+             | identical to another entry | 4 | 1.00 MiB |\n\
+             | a chunk's end, read from the whole chunk | 0 | 0.00 MiB |\n\
+             | chunks nothing names | 0 | 0.00 MiB |\n\n\
+             | part | size |\n\
+             |------|-----:|\n\
+             | base | 1.00 GiB |\n\n\
+             | tier | size |\n\
+             |------|-----:|\n\
+             | whole | 1.00 GiB |\n"
         );
     }
 }
