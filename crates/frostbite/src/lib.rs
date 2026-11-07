@@ -13,6 +13,7 @@ pub mod level;
 pub mod lighting;
 pub mod mesh;
 pub mod oodle;
+pub mod plan;
 pub mod reader;
 pub mod sb;
 pub mod shaderdb;

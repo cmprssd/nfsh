@@ -832,6 +832,8 @@ mod tests {
                 chunks: Vec::new(),
             }],
             partitions: Vec::new(),
+            parts: Vec::new(),
+            frames: Vec::new(),
         };
         std::fs::write(dir.join(INDEX), encode(&index)).unwrap();
         reindex(&dir).unwrap();

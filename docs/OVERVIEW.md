@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-11-07 (43 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-11-07 (44 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -54,7 +54,7 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
-3 crates in one Cargo workspace, 20,784 lines of Rust (sources and tests), 170 tests.
+3 crates in one Cargo workspace, 22,446 lines of Rust (sources and tests), 186 tests.
 <!-- /progress -->
 
 ```mermaid
@@ -72,15 +72,15 @@ flowchart BT
 <!-- progress:crates -->
 | Crate | Rust lines | Tests | What it does |
 |------|------:|------:|------|
-| `frostbite` | 11,303 | 99 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store, with every ebx's partition GUID; reads ebx partitions (types, instances, fields, arrays, references); walks a level's sub-levels and what each zone places (meshes in world space); reads mesh sets and decodes their geometry (LODs, sections, positions, texture coordinates, tangent frames, triangles), and when each mesh's LODs take over (its lod group's distances and screen-area cut); reads texture headers and their pixels (block-compressed mips, layers), and what each material names (its shader, textures and vector parameters); reads a time of day's sun, sky and exposure from its visual environment; reads the terrain's quadtree of tiles, their heightfields, colours and pages, and builds the ground's mesh under an area, with normals from its heights, coloured and weighted by its layers, with a map of the same colour and weights for what lies over it; reads the terrain's layer tree (which layers each tile's pages are for), the level's shader database (each shader permutation's parameter block, the textures it binds and its program) and so each terrain layer's own diffuse maps; reads a shader program's instructions far enough to find the scale each terrain layer's diffuse is drawn at, and the far detail its programs overlay on its diffuse and normal maps; averages a BC1 texture's colour |
-| `nfsh` | 3,908 | 20 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store, `reindex` lists its partition GUIDs, `ebx` prints a partition as text, `level` prints Palm City's bundles or one zone's placements, `mesh` prints a mesh's LODs and writes one as an .obj, `texture` prints a texture and writes it as a .dds, `view` flies through one zone in a window, textured and lit at midday or tealnight (or writes a screenshot) |
+| `frostbite` | 12,970 | 115 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store, with every ebx's partition GUID; reads ebx partitions (types, instances, fields, arrays, references); walks a level's sub-levels and what each zone places (meshes in world space); reads mesh sets and decodes their geometry (LODs, sections, positions, texture coordinates, tangent frames, triangles), and when each mesh's LODs take over (its lod group's distances and screen-area cut); reads texture headers and their pixels (block-compressed mips, layers), and what each material names (its shader, textures and vector parameters); reads a time of day's sun, sky and exposure from its visual environment; reads the terrain's quadtree of tiles, their heightfields, colours and pages, and builds the ground's mesh under an area, with normals from its heights, coloured and weighted by its layers, with a map of the same colour and weights for what lies over it; reads the terrain's layer tree (which layers each tile's pages are for), the level's shader database (each shader permutation's parameter block, the textures it binds and its program) and so each terrain layer's own diffuse maps; reads a shader program's instructions far enough to find the scale each terrain layer's diffuse is drawn at, and the far detail its programs overlay on its diffuse and normal maps; averages a BC1 texture's colour |
+| `nfsh` | 3,903 | 20 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store, `reindex` lists its partition GUIDs, `ebx` prints a partition as text, `level` prints Palm City's bundles or one zone's placements, `mesh` prints a mesh's LODs and writes one as an .obj, `texture` prints a texture and writes it as a .dds, `view` flies through one zone in a window, textured and lit at midday or tealnight (or writes a screenshot) |
 | `render` | 5,573 | 51 | the Vulkan renderer (`nfsh-render`, Vulkan 1.3 through `ash`): device bring-up, a window's swapchain and frame loop with GPU timing, an offscreen target read back for screenshots and tests; packs a zone's placed meshes (every LOD) into one vertex, index and instance buffer and draws them with one instanced draw per section, each frame only the placements whose box is in view, each at the LOD its distance chooses from its lod group and none that cover too little of the screen, each with its colour texture uploaded block-compressed as stored (grey when one can't be read), road asphalt as its clean and damaged layers blended by the road's mask with its detail colours over them, giving way to the ground at its edges as its shoulder texture says (up to eight textures a draw, and the ground's map of its colour, detail weights and normals) and road lines, cracks and tyre marks blended over it as decals, lit by the time of day's sun and sky, exposed and tonemapped, with each mesh's own normals bent by its normal map, and asphalt's by its layers' (the triangle's where it has none); the ground under the zone as one more draw per 128 m block (culled likewise), in its tiles' colours with up to eight of its layers' diffuse maps (one texture array) laid over them as detail, weighted by each layer's share of the tiles' pages, and its normals (from its heights, smooth across its tiles' edges) bent by those layers' normal maps (another array; also under asphalt where it gives way to the ground), each layer's far detail map overlaid on both at its own scale and strength (a third array) |
 <!-- /progress -->
 
 Every reader checks bounds and returns an error on malformed input, so a damaged or
 unexpected file is reported, never a crash. The tests that read the real install and
 the store run on the Windows side, where local-ci passes `NFSH_INSTALL` and `NFSH_STORE`;
-the store tests read every value of all 725,119 ebx partitions and walk all 232 zones of
+the store tests read every value of all 725,119 ebx (221,974 distinct partitions) and walk all 232 zones of
 Palm City (259,999 placed meshes, every reference resolved), then read the geometry of
 every mesh placed there (5,475 meshes, 48.8 million triangles in all their LODs) and
 every texture their materials name (8,015 textures, 4.7 GiB of pixels). The renderer's
@@ -115,7 +115,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 44 decision entries, 10 chosen by the owner, 20 made by Claude for review.
+  So far: 45 decision entries, 10 chosen by the owner, 21 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -133,15 +133,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-44 commits, 43 merged PRs from 2026-10-30 to 2026-11-07, on 7 working days: 30 feat, 7
-docs, 5 fix, 1 ci. About 30,022 lines added and 1,721 removed; 67 tracked files.
+45 commits, 44 merged PRs from 2026-10-30 to 2026-11-07, on 7 working days: 31 feat, 7
+docs, 5 fix, 1 ci. About 31,982 lines added and 1,894 removed; 68 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
     x-axis ["Oct 30", "Oct 31", "Nov 1", "Nov 2", "Nov 3", "Nov 6", "Nov 7"]
     y-axis "PRs" 0 --> 17
-    bar [1, 13, 15, 6, 3, 3, 2]
+    bar [1, 13, 15, 6, 3, 3, 3]
 ```
 <!-- /progress -->
 
@@ -179,7 +179,8 @@ owner's install, 2026-10-31:
 |-------|------:|------:|------:|-------:|
 | cas archives (the install) | | | 33.15 GiB | |
 | 0.3.0: live entries copied, Oodle blocks kept | 30, 29.35 GiB | 148 MiB | 29.49 GiB | 27 min |
-| **0.4.0: recompressed with zstd** | 29, 27.92 GiB | 148 MiB | **28.07 GiB** | 117 min |
+| 0.4.0: recompressed with zstd | 29, 27.92 GiB | 148 MiB | 28.07 GiB | 117 min |
+| **0.26.0: identical content once, unnamed chunks dropped, a frame per tier** | 24, 22.92 GiB | 162 MiB | **23.08 GiB** | 106 min |
 
 zstd ends up 4.8% smaller than Oodle (the sample predicted about the same size) and
 makes the store readable anywhere: `nfsh verify` decodes all 65.4 GiB from it in 5
@@ -193,12 +194,13 @@ whole.
 `nfsh sizes` reads every entry and works out who owns each chunk;
 [SIZES.md](SIZES.md) has the tables. Measured 2026-11-06: of the 27.92 GiB of packs,
 textures are 42%, audio 21%, meshes 14%, video 7%, and 10% is chunks nothing names. A
-25 GB Blu-ray holds 23.28 GiB, and the store fits one with no loss of quality once
-identical bytes are stored once and the unnamed chunks are dropped (22.85 GiB of packs).
-Neither saving is built yet. The owner has settled on one complete disc, with the player
-choosing what to copy, down to a bare minimum of about 3 GiB, and on deleting the unnamed
-chunks once they are shown to be unneeded ([DECISIONS.md](DECISIONS.md), "One disc, stripping
-down").
+25 GB Blu-ray holds 23.28 GiB. Since 0.26.0 the store fits one with no loss of quality:
+identical content is stored once, a bundle's copy of a chunk's end is read from the whole
+chunk, and the chunks nothing names are left out. Every frame in the index is tagged with
+its part (the base, or one of 8 languages, 0.32 to 0.47 GiB each) and its tier (a texture's
+top, second and third mip and the rest, a mesh's LODs), so the player can choose what to
+copy off the disc, down to a bare minimum of about 4 GiB ([DECISIONS.md](DECISIONS.md),
+"One disc, stripping down" and "A frame per tier").
 
 ## Where it is going
 

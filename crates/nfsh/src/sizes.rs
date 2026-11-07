@@ -18,8 +18,9 @@ use frostbite::ebx::Partition;
 use frostbite::install::Layer;
 use frostbite::level::{Level, bundle_key};
 use frostbite::mesh::MeshSet;
+use frostbite::plan::{CINEMATIC, Finder, language};
 use frostbite::sb::res_type_hash;
-use frostbite::store::{Store, guid_order, in_parallel, toc_chunk_id};
+use frostbite::store::{Store, in_parallel, toc_chunk_id};
 use frostbite::texture::{self, Texture};
 
 use crate::level::{ROOT, SUPERBUNDLE};
@@ -31,9 +32,6 @@ const MIXED: u32 = u32::MAX;
 
 /// The voice-over folders that are not English.
 const OTHER_LANGUAGES: [&str; 7] = ["de", "es", "fr", "it", "jp", "pl", "ru"];
-
-/// The end of the label of a cinematic's audio, whose assets hold 8 chunks each.
-const CINEMATIC: &str = "cinematics: every language in one asset";
 
 /// Cars at their fastest, about 400 km/h, in km/s: what turns MiB/km into MiB/s.
 const TOP_SPEED: f64 = 0.111;
@@ -199,25 +197,6 @@ fn group(key: &str) -> String {
     key.split('/').take(2).collect::<Vec<_>>().join("/")
 }
 
-/// A localized wave's language: the path segment after `content`, by how the names go.
-fn language(name: &str) -> String {
-    let lower = name.to_ascii_lowercase();
-    let mut parts = lower.split('/');
-    while let Some(part) = parts.next() {
-        if part == "content" {
-            // `content/<file>`, with no folder for it, is the English of those lines.
-            return match (parts.next(), parts.next()) {
-                (Some(folder), Some(_)) => folder.to_owned(),
-                _ => "content, no language folder".to_owned(),
-            };
-        }
-    }
-    if lower.starts_with("audio/cinematics/") {
-        return CINEMATIC.to_owned();
-    }
-    "other".to_owned()
-}
-
 /// Whether `same` holds for each pair of entries' bytes.
 fn compare(
     store: &Store,
@@ -252,44 +231,6 @@ fn pattern(name: &str) -> String {
         }
     }
     out
-}
-
-struct Finder {
-    ids: HashMap<[u8; 16], u32>,
-    /// Whether any id starts with these three bytes: most positions end here.
-    first: Vec<bool>,
-}
-
-impl Finder {
-    fn new(ids: &HashMap<[u8; 16], u32>) -> Self {
-        let mut both = HashMap::with_capacity(ids.len() * 2);
-        let mut first = vec![false; 1 << 24];
-        for (&id, &n) in ids {
-            for id in [id, guid_order(id)] {
-                both.insert(id, n);
-                first[usize::from(id[0]) << 16 | usize::from(id[1]) << 8 | usize::from(id[2])] =
-                    true;
-            }
-        }
-        Self { ids: both, first }
-    }
-
-    /// Every chunk id in `data`, at any offset: records can leave them unaligned.
-    fn scan(&self, data: &[u8]) -> Vec<u32> {
-        let mut found = Vec::new();
-        for at in 0..data.len().saturating_sub(15) {
-            let w = &data[at..at + 16];
-            if self.first[usize::from(w[0]) << 16 | usize::from(w[1]) << 8 | usize::from(w[2])] {
-                let id: [u8; 16] = w.try_into().unwrap_or_default();
-                if let Some(&n) = self.ids.get(&id) {
-                    found.push(n);
-                }
-            }
-        }
-        found.sort_unstable();
-        found.dedup();
-        found
-    }
 }
 
 /// The entries a bundle needs: its own, the whole chunks it lists, what those name.
@@ -1600,7 +1541,7 @@ mod tests {
         data.extend(id);
         assert_eq!(finder.scan(&data), [7]);
         let mut data = vec![0xEE; 5];
-        data.extend(guid_order(id));
+        data.extend(frostbite::store::guid_order(id));
         data.extend(id);
         assert_eq!(finder.scan(&data), [7], "one chunk, found once");
         assert!(finder.scan(&id[..15]).is_empty());

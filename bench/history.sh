@@ -6,7 +6,8 @@
 # the Windows GPU, headless: no window opens. Shots already rendered are skipped, so a
 # new release costs one build; the build folder and worktree are removed at the end.
 # PNGs go to %USERPROFILE%\.nfsh\history\<tag>\<view>.png (game imagery: never
-# committed). Reads the store at NFSH_STORE (default D:\nfsh-store).
+# committed). Reads the store at NFSH_STORE (default D:\nfsh-store). Releases before
+# 0.26.0 can't read a store made since: a view added later is "not drawn" by them.
 # Usage: bench/history.sh
 set -uo pipefail
 cd "$(dirname "$0")"

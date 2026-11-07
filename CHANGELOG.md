@@ -4,6 +4,23 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.26.0] - 2026-11-07
+
+### Changed
+
+- `nfsh import` writes a smaller store: 23.08 GiB instead of 28.07, which fits a 25 GB
+  Blu-ray with every language kept and nothing lost. Identical content is stored once, a
+  bundle's copy of a chunk's end is read from the whole chunk, and the chunks nothing names
+  are left out. Every entry is still checked byte for byte against the install.
+- Each texture's chunk is stored as a frame per tier (top mip, second, third, the rest) and
+  each frame in the index is tagged with its part (the base or a language) and its tier, so
+  a later install can choose what to copy. The import reports the size of each part and tier.
+- The store's index is version 4. Releases before 0.26.0 can't read a store made by this
+  one; this one still reads older stores. Re-import to get the smaller store.
+- `nfsh verify` on a store also checks that the base plus each language finds everything it
+  refers to.
+- `nfsh sizes-trial` measures a frame per tier, with the tiers' sizes by texture size.
+
 ## [0.25.0] - 2026-11-06
 
 ### Added

@@ -1144,3 +1144,28 @@ tier"): splitting a texture's chunk costs +0.65%, so the store does it.
   the rest of that table's rows follow: one language 18.4 GiB, then without the top mip 11.5,
   second 9.6, third 9.1, meshes' LOD 0 and 1 6.3, cutscene video 4.8, voices 4.2, music 3.8.
   The gathered block fields still come off that.
+
+## 2026-11-07: The smaller store, as built (decided by Claude, pending review)
+
+nfsh 0.26.0 builds the store "One disc, stripping down" describes: 23.08 GiB, under a BD-25's
+23.28 GiB ([SIZES.md](SIZES.md), "The store as built"). Choices made while building it:
+
+- **Which part an entry belongs to.** A localized wave goes in its folder's language, and one
+  in a folder naming no language in English. A sentence group whose waves are all one
+  language goes in that language. A wave that any other base partition imports goes in the
+  base, because the base must find everything it refers to. A wave's res of the same name
+  follows the wave. Content that different parts share is stored once, in the base. Why: the
+  base plus any one language must be complete, and these rules are what make `nfsh verify`'s
+  part check pass with every language kept apart.
+- **24 references from the base to a language are allowed.** They all come from the
+  per-language voice-over loaders (`Audio/VO/LoadVoiceOver_XX`), which the game uses only
+  with their language. Moving them into their language would change nothing the player sees,
+  so they stay in the base, and `nfsh verify` reports them without failing.
+- **A bundle's copy of a chunk's end is read from the whole chunk** wherever the whole chunk
+  ends with exactly those bytes (66,474 of them, 1.05 GiB), as SIZES.md proposed. The small
+  mips sit in the chunk's last frame, so reading them doesn't decode the top mip.
+- **The chunks nothing names are left out of the store,** as "Deleting the chunks nothing
+  names" says for the next store. The install stays, so they can come back with a re-import.
+- **Releases before 0.26.0 can't read the new store,** whose index is version 4. 0.26.0 still
+  reads the old one. `bench/history.sh` keeps the views old releases already drew; a view
+  added later is "not drawn" by them.

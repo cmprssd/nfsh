@@ -868,7 +868,7 @@ mod tests {
                 assert_eq!(u64::from(tail.logical_offset), t.tail_offset(), "{name}");
                 assert_eq!(end, t.chunk_bytes(), "{name}");
                 // The bundle's entry starts at the 0x10000 boundary before the offset.
-                let stored = entries.read(tail.location).unwrap();
+                let stored = entries.read_chunk(tail).unwrap();
                 let from = tail.logical_offset as usize & !0xFFFF;
                 assert_eq!(stored[..], pixels[from..], "{name}");
             }

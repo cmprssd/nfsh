@@ -43,6 +43,13 @@ pub struct Chunk {
     pub location: Location,
 }
 
+/// A bundle's copy of a chunk holds the chunk's whole blocks from the one containing
+/// the logical offset to the end of the logical range (blocks are 64 KiB decompressed),
+/// so its size is that range widened back to a block boundary.
+pub fn bundle_chunk_size(logical_offset: u32, logical_size: u32) -> u64 {
+    u64::from(logical_offset & 0xFFFF) + u64::from(logical_size)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Bundle {
     pub ebx: Vec<Asset>,
