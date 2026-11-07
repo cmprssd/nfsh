@@ -994,3 +994,140 @@ over a BD-25. Proposal: leave them out of the disc and the install; the import c
 from the install. So the original install should not be offered for removal until the original's
 chunk reads, or nfsh playing the game, show they are unused. If they turn out to be needed, the
 choices are a BD-50 or a disc burned without four or five of the languages.
+
+## 2026-11-07: One disc, stripping down to the bare minimum (decided by the owner)
+
+Settles "Choosing what gets installed" above, and replaces its table of settings: the
+owner wants far more offered than that table did.
+
+- **One complete disc.** Approved as proposed.
+- **A lot of configurability, down to the true bare minimum.** Why: a player with a very
+  weak PC should be able to run the game with nothing they don't need. The settings with
+  the biggest effect on size and FPS, and the easiest to understand, are the easy ones to
+  reach; the rest go in an advanced section.
+- **Screenshots, FPS and size for each choice in the advanced section.** Why: so a player
+  can see what a cut costs before making it.
+- **The chunks nothing names are deleted, not kept aside, if they aren't needed at all.**
+  Why: zero bloat. The store never holds them and no way back is built. The steps are below.
+
+The rest of this entry is Claude's design, pending review. **It looks feasible**, with the
+limits stated below. Figures marked "about" are sums and shares of [SIZES.md](SIZES.md), not
+measurements of a store built this way.
+
+### Why it isn't the industry's habit
+
+Parts of it are common: Steam's per-language downloads, optional high-resolution texture
+packs, and the minimal, typical and full installs of older PC games. Choosing this finely is
+rare mostly for reasons of cost: every combination is a configuration to test across many
+machines, and patches have to work on all of them. Two of those don't apply here: Heat is
+finished, so there are no patches, and nothing online checks the files. The test burden
+does apply, and is handled below.
+
+### Size and FPS are mostly different settings
+
+| What it changes | Disk | FPS | Memory |
+|---|---|---|---|
+| Voices, cutscene video, music | large | none | little |
+| Texture detail | large | little, unless memory runs out | large |
+| Mesh detail | medium | medium | medium |
+| Resolution, draw distance, effects | none | large | some |
+
+So a choice belongs in one of two places:
+
+- **Run-time settings, in the game**, for anything that needs no data removed: no reason to
+  fix it at install, and it can change at any moment.
+- **Install settings** only for what removes data. Changing one later means copying from
+  the disc or the install again.
+
+Texture and mesh detail are in both: the game can avoid using the data without it being
+removed, and the installer removes it to save disk.
+
+### The settings
+
+**Easy, on the first screen:** the languages, one **Look** choice (original, reduced,
+minimum) that sets everything below, and a test of this PC. The default is the original look.
+
+**Advanced, on data:**
+
+| Setting | Saves | Left after each row, about |
+|---|---:|---:|
+| One language, everything lossless | | 18.4 GiB |
+| Top mip of every texture | about 8.16 GiB | 10.2 GiB |
+| Second mip | about 2.0 GiB | 8.2 GiB |
+| Third mip | about 0.5 GiB | 7.7 GiB |
+| Meshes' LOD 0 and 1 | 2.82 GiB | 4.9 GiB |
+| Cutscene video | 1.46 GiB | 3.4 GiB |
+| All voices (the one language's voices, cinematics and movie audio) | about 0.6 GiB | 2.8 GiB |
+| Music | 0.37 GiB | 2.4 GiB |
+
+**The bare minimum is therefore about 3 GiB**, against the install's 34.45: the last figure
+plus most of the 0.66 GiB of gathered block fields, which shrink as textures go. It would
+look far from the original, with 4096 textures at 512 and 2048 at 256. Whether it works is
+not known until each cut is tried: dropping voices needs subtitles, and removing a video
+means skipping it.
+
+**Not offered:** anything the game's rules need, such as collision, missions and cars,
+because a save or a mission could then refer to something absent.
+
+### Screenshots, FPS and size
+
+- **Size: exact.** The manifest holds each part's size, so nothing needs estimating.
+- **Screenshots: rendered by nfsh on the PC that builds the disc,** from fixed views at each
+  setting's levels, and kept on the disc only. Game imagery stays out of the public repo. The
+  tool exists: `bench/history.sh` already renders fixed views headless. The progress page's
+  100 images take 16.6 MB, so 150 would be about 25 MB. One image per level of one setting,
+  never one for every combination, which would be impossible.
+- **FPS: measured on the player's PC, not estimated.** A table of FPS from one PC would be
+  wrong for every other. A **Test this setup** button loads a small fixed scene with the
+  exact settings chosen, draws it for a few seconds, and shows the frame time and that very
+  picture. It tests the real combination, so no table of combinations is needed. The first
+  screen runs it for the three Look choices. Until that test has run, the screen shows no FPS.
+- **The limit:** a fixed scene measures the graphics card. Traffic, physics and streaming only
+  count once there is a recorded drive through a playable game, so it reads as "about".
+
+### Where it's hard
+
+- **The game doesn't exist yet.** nfsh flies through one zone, with no driving, traffic or
+  missions, and has few effects to turn off. So the FPS half can't be built now. **Each new
+  rendering feature ships with its off switch and its test**, so the settings grow with it.
+- **Testing every combination is impossible, so the data must make most of them safe.** Every
+  cut only shortens a chain the engine already walks: fewer mips, fewer LODs, no voice line.
+  The engine treats everything cuttable as possibly absent. A recorded path then runs with each
+  setting alone at its lowest, all lowest, all highest, and pairs of settings, not all of their
+  combinations. It must not crash under any of them.
+- **It can't be tested on a truly weak PC.** Only the owner's PC is available, and its HD 630
+  is the weakest GPU here. The engine can imitate weaker hardware with memory limits and low
+  resolutions; a real one could still behave differently, and that won't be known.
+- **Vulkan 1.3 sets the floor,** whatever the settings: `crates/render/src/gpu.rs` refuses
+  anything older, which rules out older GPUs and drivers. Removing data can't help them. Going
+  lower means rewriting rendering for dynamic rendering and synchronization2 and is left for
+  later: the brief's minimum stays the HD 630 and Steam Deck class.
+- **The store's format has to allow it now.** See below. It is the only part with a deadline.
+
+### The store's format
+
+The tiers above would need texture mips and mesh LODs in parts, as well as languages. But
+keeping a texture's mips in different places on the disc would add seeks, the very thing that
+makes a disc stutter. So:
+
+- **Every frame in the index is tagged with its part and tier,** and a texture's chunk is
+  stored as a frame per tier: top mip, second, third, the rest. This extends the two frames of
+  [SIZES.md](SIZES.md).
+- **The disc's order and the install's are independent.** The disc is laid out for reading in
+  sequence. The copy reads the frames the player chose and writes one file per part, so adding
+  or removing a tier later is a matter of whole files.
+- **To measure first:** what splitting chunks into more frames costs. `SIZES.md` expects
+  little from two frames, and more frames compress worse. Extend `nfsh sizes-trial` before
+  building. The trial also gives the second and third mips' real sizes in place of the
+  estimates above.
+
+### Deleting the chunks nothing names
+
+- **Before the first disc is burned,** because a BD-R can't be changed afterwards.
+- **What would count as proof:** the search for their ids is done; then a trace of the
+  original's file reads, mapped to chunks, while the owner plays. A read proves a chunk is used
+  and it stays. No read over one session can't prove the opposite, so this needs a long session
+  covering the game's parts, and is then still strong evidence, not certainty. What remains is
+  covered by the install, or by Steam downloading it again: a mistake costs a re-import and a
+  new disc, not the data.
+- **Until then** the next store leaves them out, and the original install stays.
