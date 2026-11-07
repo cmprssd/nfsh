@@ -50,6 +50,7 @@ usage: nfsh sizes STORE
   as Markdown: reads every entry, once.
 usage: nfsh sizes-trial STORE
   Recompresses a sample of the texture and mesh chunks with their fields gathered, and
+  the textures split into a frame per tier (top mip, second, third, the rest), and
   compares with what they store now. Nothing is written.
 usage: nfsh view STORE ZONE [--shot PNG] [--vsync] [--night] [--camera X,Y,Z,YAW,PITCH]
   Palm City's zone ZONE (as nfsh level takes it), the roads near it and the ground

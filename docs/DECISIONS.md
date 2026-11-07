@@ -1131,3 +1131,16 @@ makes a disc stutter. So:
   covered by the install, or by Steam downloading it again: a mistake costs a re-import and a
   new disc, not the data.
 - **Until then** the next store leaves them out, and the original install stays.
+
+## 2026-11-07: A frame per tier, measured (decided by Claude, pending review)
+
+The trial "One disc, stripping down" asked for is in [SIZES.md](SIZES.md) ("A frame per
+tier"): splitting a texture's chunk costs +0.65%, so the store does it.
+
+- **A texture always keeps its smallest mip.** Its last frame is never in a tier that can be
+  cut, so a texture of few mips has empty tiers before it. Why: otherwise cutting the top mip
+  would remove every one-mip texture altogether.
+- **The bare minimum is nearer 4 GiB than 3.** The top mip saves about 6.9 GiB, not 8.16, and
+  the rest of that table's rows follow: one language 18.4 GiB, then without the top mip 11.5,
+  second 9.6, third 9.1, meshes' LOD 0 and 1 6.3, cutscene video 4.8, voices 4.2, music 3.8.
+  The gathered block fields still come off that.

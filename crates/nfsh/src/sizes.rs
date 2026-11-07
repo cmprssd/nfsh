@@ -1339,6 +1339,18 @@ struct Trial {
     after: u64,
 }
 
+/// What a chunk of `format` stores split into a frame per tier, largest mips first.
+#[derive(Default)]
+struct Tiers {
+    chunks: u64,
+    raw: [u64; TIERS],
+    stored: [u64; TIERS],
+    now: u64,
+}
+
+/// The tiers: the top mip, the second, the third, the rest.
+const TIERS: usize = 4;
+
 /// `nfsh sizes-trial STORE`: recompresses every `EVERY`th texture and mesh chunk at the
 /// store's own level with their fields gathered, and compares. Nothing is written.
 pub fn trial(dir: &Path) -> Result<String> {
@@ -1356,7 +1368,7 @@ pub fn trial(dir: &Path) -> Result<String> {
     res.sort_unstable_by_key(|r| r.0);
     res.dedup();
     enum Sample {
-        Texture(String, Location),
+        Texture(Box<Texture>, Location),
         Mesh(Box<frostbite::mesh::Lod>, Location),
     }
     let found = in_parallel(
@@ -1367,9 +1379,10 @@ pub fn trial(dir: &Path) -> Result<String> {
             let mut out = Vec::new();
             if kind == texture::TEXTURE {
                 if let Ok(t) = Texture::parse(&data)
-                    && let (Some(&at), Some(f)) = (whole.get(&t.chunk), t.format())
+                    && let Some(&at) = whole.get(&t.chunk)
+                    && t.format().is_some()
                 {
-                    out.push((t.chunk, Sample::Texture(f.name.to_owned(), at)));
+                    out.push((t.chunk, Sample::Texture(Box::new(t), at)));
                 }
             } else if let Ok(m) = MeshSet::parse(&data) {
                 for lod in m.lods {
@@ -1406,15 +1419,34 @@ pub fn trial(dir: &Path) -> Result<String> {
             ))
         },
         |(reader, encoder), s| {
-            let (label, at, moved) = match s {
-                Sample::Texture(format, at) => {
+            let (label, at, moved, split) = match s {
+                Sample::Texture(t, at) => {
                     let data = reader.read(*at)?;
+                    let format = t.format().map_or("", |f| f.name);
                     let moved = block_fields(format).map(|(b, f)| gather(&data, b, f));
-                    (format.clone(), *at, moved.unwrap_or(data))
+                    let mut split = ([0; TIERS], [0; TIERS]);
+                    // A chunk that isn't exactly its mips has no tiers to cut at.
+                    let cuts = (data.len() as u64 == t.chunk_bytes()).then(|| t.tier_cuts());
+                    let cuts = cuts.unwrap_or([0; TIERS - 1]).map(|c| c as usize);
+                    let mut from = 0;
+                    for (tier, to) in cuts.into_iter().chain([data.len()]).enumerate() {
+                        if to > from {
+                            let frame = encoder.encode(&data[from..to], false)?;
+                            split.0[tier] = (to - from) as u64;
+                            split.1[tier] = frame.len() as u64;
+                        }
+                        from = to;
+                    }
+                    (
+                        format.to_owned(),
+                        *at,
+                        moved.unwrap_or(data),
+                        Some((t.side(), split)),
+                    )
                 }
                 Sample::Mesh(lod, at) => {
                     let data = reader.read(*at)?;
-                    ("mesh".to_owned(), *at, gather_mesh(&data, lod))
+                    ("mesh".to_owned(), *at, gather_mesh(&data, lod), None)
                 }
             };
             let frame = encoder.encode(&moved, false)?;
@@ -1423,16 +1455,27 @@ pub fn trial(dir: &Path) -> Result<String> {
                 moved.len() as u64,
                 u64::from(at.size),
                 frame.len() as u64,
+                split,
             ))
         },
     )?;
     let mut sums: BTreeMap<String, Trial> = BTreeMap::new();
-    for (label, raw, now, after) in results {
+    let mut tiers: BTreeMap<u32, Tiers> = BTreeMap::new();
+    for (label, raw, now, after, split) in results {
         let t = sums.entry(label).or_default();
         t.chunks += 1;
         t.raw += raw;
         t.now += now;
         t.after += after;
+        if let Some((side, (raws, stored))) = split {
+            let t = tiers.entry(side.next_power_of_two().max(256)).or_default();
+            t.chunks += 1;
+            t.now += now;
+            for i in 0..TIERS {
+                t.raw[i] += raws[i];
+                t.stored[i] += stored[i];
+            }
+        }
     }
     let mut out = String::from(
         "| Kind | Chunks sampled | Decompressed | Stored now | Fields gathered | Change |\n\
@@ -1449,7 +1492,51 @@ pub fn trial(dir: &Path) -> Result<String> {
             (t.after as f64 / t.now.max(1) as f64 - 1.0) * 100.0
         );
     }
+    let _ = writeln!(
+        out,
+        "\nTextures split into a frame per tier, by largest side (stored bytes):\n\n\
+         | Largest side | Chunks sampled | One frame | Top mip | Second | Third | Rest | \
+         Split | Change |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+    );
+    let mut all = Tiers::default();
+    for (side, t) in &tiers {
+        all.chunks += t.chunks;
+        all.now += t.now;
+        for i in 0..TIERS {
+            all.raw[i] += t.raw[i];
+            all.stored[i] += t.stored[i];
+        }
+        let label = match side {
+            256 => "up to 256".to_owned(),
+            side => format!("up to {side}"),
+        };
+        let _ = writeln!(out, "{}", tier_row(&label, t));
+    }
+    let _ = writeln!(out, "{}", tier_row("all", &all));
+    let _ = writeln!(
+        out,
+        "\nDecompressed, all: top {}, second {}, third {}, rest {}.",
+        mib(all.raw[0]),
+        mib(all.raw[1]),
+        mib(all.raw[2]),
+        mib(all.raw[3]),
+    );
     Ok(out)
+}
+
+fn tier_row(label: &str, t: &Tiers) -> String {
+    let split: u64 = t.stored.iter().sum();
+    format!(
+        "| {label} | {} | {} | {} | {} | {} | {} | {} | {:+.2}% |",
+        t.chunks,
+        mib(t.now),
+        mib(t.stored[0]),
+        mib(t.stored[1]),
+        mib(t.stored[2]),
+        mib(t.stored[3]),
+        mib(split),
+        (split as f64 / t.now.max(1) as f64 - 1.0) * 100.0
+    )
 }
 
 #[cfg(test)]

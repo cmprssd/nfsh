@@ -6,7 +6,7 @@ refresh, on the Windows side, which reads `D:` much faster:
 
 ```
 nfsh sizes D:\nfsh-store       (reads all 65 GiB; about 16 minutes on 4 cores)
-nfsh sizes-trial D:\nfsh-store (about 3 minutes)
+nfsh sizes-trial D:\nfsh-store (about 5 minutes)
 ```
 
 ## In short
@@ -162,6 +162,28 @@ Applied to today's sizes by format, that is about 0.66 GiB. It would add one ste
 reading, undoing the gathering. Meshes get worse in this simple form, so a mesh-specific
 codec would need its own trial.
 
+### A frame per tier
+
+The same sample of textures, each chunk split into a frame per tier (top mip, second, third,
+the rest), at the store's level. A texture always keeps its smallest mip, so one with few
+mips has its smallest in the last tier and the tiers before it empty.
+
+| Largest side | Chunks sampled | One frame | Top mip | Second | Third | Rest | Split | Change |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| up to 256 | 203 | 2.3 MiB | 1.5 MiB | 0.4 MiB | 0.1 MiB | 0.3 MiB | 2.4 MiB | +1.82% |
+| up to 512 | 315 | 34.1 MiB | 20.2 MiB | 5.8 MiB | 1.7 MiB | 6.7 MiB | 34.3 MiB | +0.73% |
+| up to 1024 | 196 | 59.4 MiB | 38.1 MiB | 10.4 MiB | 2.9 MiB | 8.4 MiB | 59.9 MiB | +0.79% |
+| up to 2048 | 166 | 174.6 MiB | 122.7 MiB | 33.9 MiB | 9.4 MiB | 9.8 MiB | 175.8 MiB | +0.68% |
+| up to 4096 | 26 | 46.1 MiB | 24.6 MiB | 6.6 MiB | 1.8 MiB | 13.1 MiB | 46.2 MiB | +0.23% |
+| All | 906 | 316.5 MiB | 207.1 MiB | 57.2 MiB | 15.9 MiB | 38.3 MiB | 318.6 MiB | +0.65% |
+
+- **Splitting costs little:** +0.65%, about 70 MiB on the 10,810 MiB of textures' chunks.
+- **Tiers' shares of the stored bytes:** top 65.0%, second 18.0%, third 5.0%, rest 12.0%.
+  Applied to those chunks (10.56 GiB), about 6.9, 1.9, 0.5 and 1.3 GiB. This is a sample of
+  906 chunks, so these are estimates too, but better ones than a share of raw bytes.
+- **Cutting the top mip saves less than the table below's estimate,** because a texture of
+  one mip can't lose it: non-power-of-two sizes such as 2560 have only one.
+
 ## What would lose quality
 
 Not needed to fit a BD-25, so nothing was compared. Each would be the owner's A/B choice
@@ -172,7 +194,7 @@ with a measured size and a comparison.
 | The largest mip of the 1,109 textures of 4096 | about 1.03 GiB | An estimate, by the mip's share of raw bytes |
 | Re-encoding video | part of 1.46 GiB | Generation loss |
 | Re-encoding audio | part of 5.8 GiB | Already compressed, so generation loss |
-| The largest mip of every texture | about 8.16 GiB | Visibly softer close up; not worth considering |
+| The largest mip of every texture | about 6.9 GiB | Visibly softer close up; the sample above, keeping every texture's smallest mip |
 
 ## Streaming from a disc
 
