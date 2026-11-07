@@ -268,6 +268,20 @@ impl Texture {
         }
     }
 
+    /// Where a chunk of exactly this texture's mips is cut into a frame per tier: the
+    /// second tier, the third and the last start here. The last tier always holds the
+    /// smallest mip, because a texture can lose mips but not all of them, so a texture
+    /// of few mips has empty tiers before it.
+    pub fn tier_cuts(&self) -> [u64; 3] {
+        let last = self.offset(self.mips().saturating_sub(1));
+        std::array::from_fn(|i| self.offset((i + 1).min(self.mips())).min(last))
+    }
+
+    /// The largest side of the top mip.
+    pub fn side(&self) -> u32 {
+        u32::from(self.width.max(self.height))
+    }
+
     /// Where the mips a bundle stores start in the chunk: after the streamed ones.
     pub fn tail_offset(&self) -> u64 {
         self.offset(usize::from(self.streamed))
@@ -575,6 +589,22 @@ mod tests {
         assert_eq!(t.mip(1, 0), Some(64..80));
         assert_eq!(t.mip(4, 0), None);
         assert_eq!(t.mip(0, 1), None);
+    }
+
+    #[test]
+    fn tiers_cut_a_chunk_at_its_mips_and_keep_the_smallest() {
+        let cuts = |mips: &[u32]| {
+            let t = Texture::parse(&header(0, 0x37, (16, 8), 1, mips)).unwrap();
+            t.tier_cuts()
+        };
+        assert_eq!(cuts(&[64, 16, 8, 8, 8]), [64, 80, 88]);
+        assert_eq!(cuts(&[64, 16, 8, 8]), [64, 80, 88]);
+        // Fewer mips: the tiers before the last are what is empty.
+        assert_eq!(cuts(&[64, 16, 8]), [64, 80, 80]);
+        assert_eq!(cuts(&[64, 16]), [64, 64, 64]);
+        assert_eq!(cuts(&[64]), [0, 0, 0]);
+        let array = Texture::parse(&header(3, 0x42, (8, 8), 3, &[64, 16, 16, 16])).unwrap();
+        assert_eq!(array.tier_cuts(), [192, 240, 288]);
     }
 
     #[test]
