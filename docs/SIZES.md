@@ -21,7 +21,9 @@ nfsh sizes-trial D:\nfsh-store (about 5 minutes)
   Either one is enough, along with storing identical bytes once, though the margin is thin:
   0.27 GiB with the chunks dropped, before the disc's own file system.
   The owner has settled on one complete disc with the choice made at install, down to a
-  bare minimum of about 3 GiB: [DECISIONS.md](DECISIONS.md) ("One disc, stripping down").
+  bare minimum: [DECISIONS.md](DECISIONS.md) ("One disc, stripping down").
+- **The install is built:** base plus English is 20.46 GiB with every tier, and 8.49 GiB at
+  the bare minimum that can be cut today ([Installs](#installs)).
 - **Blu-ray speed looks sufficient for the city's zones, but that isn't proven.** Reading
   2 km ahead takes 8.7 MiB/s at worst, under a 6x drive's slowest 10.3 MiB/s. Seeks, cars
   and missions are not in that number.
@@ -83,6 +85,40 @@ By tier, what the player can choose to copy or leave on the disc:
 The margin is 0.20 GiB before the disc's own file system. Voice-over in a folder that names
 no language counts as English; the cinematics' audio, whose languages are not worked out,
 stays in the base.
+
+## Installs
+
+`nfsh install` from nfsh 0.27.0, 2026-11-09, from the store above, with English as the one
+language. `nfsh verify` read each back with no failures, counting the entries it leaves
+out apart, and the history views render from both.
+
+| File | Every tier | Bare minimum |
+|---|---:|---:|
+| `base.nfsh` (never cut) | 7.16 GiB | 7.16 GiB |
+| `base.mip0.nfsh`, textures' top mip | 6.91 GiB | |
+| `base.mip1.nfsh`, second mip | 1.89 GiB | |
+| `base.mip2.nfsh`, third mip | 535.79 MiB | |
+| `base.lod0.nfsh`, mesh LOD 0 | 1.63 GiB | |
+| `base.lod1.nfsh`, mesh LOD 1 | 1.02 GiB | |
+| `base.lod2.nfsh` | 577.92 MiB | 577.92 MiB |
+| `base.lod3.nfsh` | 206.67 MiB | 206.67 MiB |
+| `base.lod4.nfsh` | 6.79 MiB | 6.79 MiB |
+| `en.nfsh` | 414.70 MiB | 414.70 MiB |
+| **Install**, with index and placement | **20.46 GiB** | **8.49 GiB** |
+| Copy time on the owner's PC, `D:` to `D:` | 13.5 min | 9.1 min |
+
+- **Every tier, base plus English:** the speedway's five history views draw identically to
+  the store's, pixel for pixel.
+- **The bare minimum** (`--bare-minimum`: the top three mips and the meshes' LOD 0 and 1
+  cut) is softer and coarser: the speedway's zone draws 1.2 million triangles instead of
+  6.4, and its textures take 11.7 MiB of the GPU instead of 694. No texture or mesh is
+  drawn grey or missing.
+- **Both are larger than "A frame per tier" estimated:** 18.4 GiB for one language with
+  everything, and 6.3 GiB after the same cuts (4 GiB with cutscene video, voices and music
+  also off, which aren't tiers yet). The 2.06 GiB gap in the whole install carries through;
+  where the estimate went wrong is not worked out. Mesh chunks that are some mesh's last
+  LOD stay: the cut LOD tiers hold 2.65 GiB here, against 2.75 tagged in the store.
+- **Mesh LOD 5's 3.12 MiB** are last LODs, so they are in `base.nfsh`.
 
 ## By kind
 

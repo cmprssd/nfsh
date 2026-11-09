@@ -277,6 +277,25 @@ impl Texture {
         std::array::from_fn(|i| self.offset((i + 1).min(self.mips())).min(last))
     }
 
+    /// The texture without its first `n` mips (fewer than it has): the next mip is its
+    /// top, a volume's depth halving with it as its width and height do.
+    pub fn without_top(&self, n: usize) -> Self {
+        let n = n.min(self.mips().saturating_sub(1));
+        let (width, height) = self.mip_extent(n);
+        let layers = match self.kind {
+            Kind::Volume => self.slices(n),
+            _ => self.layers,
+        };
+        Self {
+            width: width as u16,
+            height: height as u16,
+            layers,
+            mip_sizes: self.mip_sizes[n..].to_vec(),
+            streamed: self.streamed.saturating_sub(n as u8),
+            ..self.clone()
+        }
+    }
+
     /// The largest side of the top mip.
     pub fn side(&self) -> u32 {
         u32::from(self.width.max(self.height))
@@ -514,13 +533,27 @@ impl<'s> Textures<'s> {
         Texture::parse(&data).map_err(|e| crate::Error(format!("{name}: {e}")))
     }
 
-    /// The chunk holding `texture`'s pixels, checked to be exactly its mips.
-    pub fn pixels(&mut self, texture: &Texture) -> Result<Vec<u8>> {
+    /// The chunk holding `texture`'s pixels, checked to be exactly its mips, with the
+    /// texture they are: an install that left out its top mips gives the smaller
+    /// texture its other mips make ([`Texture::without_top`]).
+    pub fn pixels(&mut self, texture: &Texture) -> Result<(Texture, Vec<u8>)> {
         let id = texture.chunk;
         let Some(&location) = self.chunks.get(&id) else {
             bail!("no whole chunk {id:02x?} in the store");
         };
-        let data = self.entries.read(location)?;
+        let (data, cut) = self.entries.read_end(location)?;
+        let texture = match cut {
+            false => texture.clone(),
+            true => (1..texture.mips())
+                .map(|n| texture.without_top(n))
+                .find(|t| t.chunk_bytes() == data.len() as u64)
+                .ok_or_else(|| {
+                    crate::Error(format!(
+                        "chunk {id:02x?}: {} bytes kept, not the end of the texture's mips",
+                        data.len()
+                    ))
+                })?,
+        };
         if data.len() as u64 != texture.chunk_bytes() {
             bail!(
                 "chunk {id:02x?} of {} bytes, the texture's mips take {}",
@@ -528,7 +561,7 @@ impl<'s> Textures<'s> {
                 texture.chunk_bytes()
             );
         }
-        Ok(data)
+        Ok((texture, data))
     }
 }
 
@@ -605,6 +638,31 @@ mod tests {
         assert_eq!(cuts(&[64]), [0, 0, 0]);
         let array = Texture::parse(&header(3, 0x42, (8, 8), 3, &[64, 16, 16, 16])).unwrap();
         assert_eq!(array.tier_cuts(), [192, 240, 288]);
+    }
+
+    #[test]
+    fn a_texture_without_its_top_mips_is_the_smaller_one_they_leave() {
+        let t = Texture::parse(&header(0, 0x37, (16, 8), 1, &[64, 16, 8, 8])).unwrap();
+        let s = t.without_top(1);
+        assert_eq!(
+            (s.width, s.height, s.mip_sizes.clone()),
+            (8, 4, vec![16, 8, 8])
+        );
+        assert_eq!(
+            (s.chunk_bytes(), s.streamed, s.mip(0, 0)),
+            (32, 0, Some(0..16))
+        );
+        // Never past its smallest mip.
+        assert_eq!(t.without_top(9).mip_sizes, [8]);
+        let array = Texture::parse(&header(3, 0x42, (8, 8), 3, &[64, 16, 16, 16])).unwrap();
+        let a = array.without_top(2);
+        assert_eq!((a.width, a.layers, a.chunk_bytes()), (2, 3, 96));
+        let volume = Texture::parse(&header(2, 0x3E, (8, 8), 4, &[128, 16, 8])).unwrap();
+        let v = volume.without_top(1);
+        assert_eq!(
+            (v.width, v.layers, v.chunk_bytes(), v.mip(0, 1)),
+            (4, 2, 24, Some(8..16))
+        );
     }
 
     #[test]
@@ -858,7 +916,7 @@ mod tests {
                 .entry((format, format!("{:?}", t.kind)))
                 .or_default() += 1;
             *count.entry("textures").or_default() += 1;
-            let pixels = textures
+            let (_, pixels) = textures
                 .pixels(&t)
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             *count.entry("bytes").or_default() += pixels.len() as u64;

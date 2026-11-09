@@ -1169,3 +1169,36 @@ nfsh 0.26.0 builds the store "One disc, stripping down" describes: 23.08 GiB, un
 - **Releases before 0.26.0 can't read the new store,** whose index is version 4. 0.26.0 still
   reads the old one. `bench/history.sh` keeps the views old releases already drew; a view
   added later is "not drawn" by them.
+
+## 2026-11-09: The copy step, `nfsh install` (decided by Claude, pending review)
+
+The copy "One disc, stripping down" asks for: `nfsh install STORE DEST` copies the
+frames a player keeps into one file per part and tier ([FORMATS.md](FORMATS.md), "nfsh's
+installs"). Every command reads an install as it does a store. Choices made while
+building it:
+
+- **The install keeps the store's index unchanged, plus a placement.** Its locations still
+  name the store's packs; `install.nfsh` says where each frame went, or that it was left
+  out. Why: no second index format to keep in step, and an install's index is the
+  store's byte for byte, so nothing about entries can differ between them.
+- **One file per part and tier, not split at 1 GiB.** Offsets in the placement are 64-bit.
+  Why: adding or removing a tier is then adding or removing whole files, as decided, and
+  the files only go to the player's own drive.
+- **A mesh keeps its last LOD**, as a texture keeps its smallest mip. The store tags a mesh
+  chunk with its best LOD, so a mesh with one LOD would lose it to a LOD 0 cut; the install
+  reads every mesh set again and never cuts a chunk that is some mesh's last LOD. Why: a
+  cut must make things coarser, never make them vanish. Re-importing to tag them right
+  would take 106 minutes for the same result.
+- **What a cut leaves is drawn in its place.** A texture without its top mips is read as
+  the smaller texture its other mips make; a mesh without its first LODs draws the first it
+  has at their distances too. A LOD the store can't read for another reason (inline
+  geometry) still fails as before, so a store draws exactly what it did.
+- **`--bare-minimum` cuts the top three mips and the meshes' LOD 0 and 1**, the data rows
+  of the settings table that are tiers today. Cutscene video, voices and music are not
+  tiers yet, so they can't be cut; they stay in the bare minimum's size below.
+- **An install is copied from a store only, not from another install.** Why: the store is
+  what the disc will hold; an install missing frames can't give them to another.
+
+Measured ([SIZES.md](SIZES.md), "Installs"): base plus English is 20.46 GiB with every
+tier and draws the history views exactly as the store does; at the bare minimum it is
+8.49 GiB, softer and coarser, with nothing drawn grey.

@@ -323,6 +323,9 @@ impl Model {
 pub struct Lods {
     pub switches: Switches,
     pub count: u8,
+    /// Its first section's LOD: an install can leave out the ones before, which
+    /// this one is drawn in place of.
+    pub first: u8,
 }
 
 impl Lods {
@@ -330,6 +333,7 @@ impl Lods {
     pub const ONE: Self = Self {
         switches: Switches::NEVER,
         count: 1,
+        first: 0,
     };
 }
 
@@ -586,10 +590,11 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Model
         scene
             .instances
             .extend(transforms.iter().map(|t| instance(t)));
-        let last = scene.draws[first_draw..].iter().map(|d| d.lod).max();
+        let drawn = || scene.draws[first_draw..].iter().map(|d| d.lod);
         let lods = Lods {
             switches,
-            count: last.unwrap_or(0).saturating_add(1),
+            count: drawn().max().unwrap_or(0).saturating_add(1),
+            first: drawn().min().unwrap_or(0),
         };
         scene.lods.resize(scene.instances.len(), lods);
     }
@@ -691,6 +696,7 @@ pub fn lods(meshes: &mut Meshes, mesh: &Mesh, noise: Option<[u8; 16]>) -> frostb
         return Err(frostbite::Error(format!("{}: no LODs", mesh.name)));
     }
     let switches = meshes.switches(&mesh.partition).unwrap_or(Switches::NEVER);
+    // A mesh whose lod group can't be read draws one LOD.
     let wanted = if switches == Switches::NEVER {
         1
     } else {
@@ -698,13 +704,29 @@ pub fn lods(meshes: &mut Meshes, mesh: &Mesh, noise: Option<[u8; 16]>) -> frostb
     };
     let materials = meshes.materials(&mesh.partition)?;
     let mut sections = Vec::new();
-    for (k, lod) in set.lods.iter().take(wanted).enumerate() {
+    let mut read = 0;
+    for (k, lod) in set.lods.iter().take(u8::MAX.into()).enumerate() {
+        if read == wanted {
+            break;
+        }
         match lod_sections(meshes, &materials, lod, k as u8, noise) {
-            Ok(s) => sections.extend(s),
-            Err(e) if k == 0 => return Err(e),
+            Ok(s) => {
+                sections.extend(s);
+                read += 1;
+            }
+            // An install can leave out a mesh's first LODs: it is drawn from the first
+            // it has, at their distances too ([`Lods::first`]).
+            Err(_) if read == 0 && meshes.left_out(lod) => {}
+            Err(e) if read == 0 => return Err(e),
             // The LODs read so far are drawn on past this one's distance.
             Err(_) => break,
         }
+    }
+    if read == 0 {
+        return Err(frostbite::Error(format!(
+            "{}: every LOD is left out of this install",
+            mesh.name
+        )));
     }
     Ok(Model { sections, switches })
 }

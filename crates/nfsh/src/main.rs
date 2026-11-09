@@ -1,12 +1,14 @@
-//! nfsh: a new engine for Need for Speed: Heat. For now it has ten commands: an
+//! nfsh: a new engine for Need for Speed: Heat. For now it has eleven commands: an
 //! inventory of the owner's install, a check that every entry of the install or of a
-//! store decompresses, the import into nfsh's own store, the store's partition GUIDs
+//! store decompresses, the import into nfsh's own store, the copy of a store into an
+//! install of the parts and tiers a player keeps, the store's partition GUIDs
 //! listed again, an ebx partition printed as text, Palm City's level graph, one
 //! mesh's geometry, one texture, what a store's bytes are, and a window to fly through one zone.
 
 mod ebx;
 mod fly;
 mod import;
+mod install;
 mod inventory;
 mod level;
 mod mesh;
@@ -30,6 +32,14 @@ usage: nfsh import [INSTALL] STORE
   STORE (created if missing; an earlier store there is replaced): identical content
   once, chunks nothing names left out, every frame tagged with its part and tier.
   Checks the copy and prints its size. Windows only, like verifying an install.
+usage: nfsh install STORE DEST [--languages L,...] [--cut TIER,...] [--bare-minimum]
+  Copies the store in the folder STORE into an install in the folder DEST (created
+  if missing; an earlier store or install there is replaced), one file per part and
+  tier: the base, the languages L (en, de, es, fr, it, jp, pl, ru; default: every
+  one the store has), and every tier but the ones cut: mip0, mip1 and mip2 for a
+  texture's top three mips, lod0, lod1, ... for a mesh's LODs. A texture keeps its
+  smallest mip and a mesh its last LOD. --bare-minimum cuts mip0 to mip2, lod0 and
+  lod1. Every other command reads an install as it does a store.
 usage: nfsh reindex STORE
   Lists every ebx's partition GUID in the index of the store in the folder STORE
   (the import does it; this adds them to a store made before nfsh 0.6.0).
@@ -85,6 +95,15 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+    if let Some(("install", rest)) = args.split_first().map(|(c, r)| (c.as_str(), r)) {
+        let Some(options) = install::options(rest) else {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        };
+        let start = Instant::now();
+        let result = install::run(&options).map(|c| (install::markdown(&c), 0));
+        return finish("install", start, result);
     }
     let env_install = || std::env::var_os("NFSH_INSTALL").map(PathBuf::from);
     // The import's last argument is the store; the install may come before it.

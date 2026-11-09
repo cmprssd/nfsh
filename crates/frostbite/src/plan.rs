@@ -54,6 +54,27 @@ pub mod tier {
             other => format!("tier {other}"),
         }
     }
+
+    /// What names a tier that can be cut, in an install's file names and on `nfsh
+    /// install`'s command line: `mip0` to `mip2` for a texture's top three mips, `lod0`
+    /// on for a mesh's LODs; `None` for the tiers always kept.
+    pub fn slug(tier: u8) -> Option<String> {
+        match tier {
+            TOP | SECOND | THIRD => Some(format!("mip{}", tier - TOP)),
+            lod if lod >= LOD => Some(format!("lod{}", lod - LOD)),
+            _ => None,
+        }
+    }
+
+    /// The tier [`slug`] names.
+    pub fn of_slug(slug: &str) -> Option<u8> {
+        let number = |prefix: &str| slug.strip_prefix(prefix)?.parse::<u8>().ok();
+        match (number("mip"), number("lod")) {
+            (Some(n), _) if n < 3 => Some(TOP + n),
+            (_, Some(n)) if n <= 200 => Some(LOD + n),
+            _ => None,
+        }
+    }
 }
 
 /// The name of each part, indexed by a frame's part number.
@@ -875,6 +896,25 @@ mod tests {
             panic!("{:?}", fates[2]);
         };
         assert_eq!(k.frames, [(90, tier::WHOLE)]);
+    }
+
+    #[test]
+    fn cuttable_tiers_have_slugs_that_read_back() {
+        for t in [
+            tier::TOP,
+            tier::SECOND,
+            tier::THIRD,
+            tier::LOD,
+            tier::LOD + 5,
+        ] {
+            assert_eq!(tier::of_slug(&tier::slug(t).unwrap()), Some(t));
+        }
+        assert_eq!(tier::slug(tier::THIRD).as_deref(), Some("mip2"));
+        assert_eq!(tier::slug(tier::WHOLE), None);
+        assert_eq!(tier::slug(tier::REST), None);
+        assert_eq!(tier::of_slug("mip3"), None);
+        assert_eq!(tier::of_slug("lod"), None);
+        assert_eq!(tier::of_slug("whole"), None);
     }
 
     #[test]

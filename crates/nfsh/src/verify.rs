@@ -7,7 +7,10 @@
 //! [`bundle_chunk_size`]); a chunk only in a `.toc` has no size in the tables and must
 //! just decompress. Entries shared by several bundles are read once, in archive
 //! order. In a store, a bundle's copy of a chunk's end may be read from the whole chunk,
-//! so it only has to be at least that long; the store's parts are then checked too.
+//! so it only has to be at least that long; the store's parts are then checked too. An
+//! install ([`frostbite::copy`]) is checked as its store is, but for the entries it
+//! leaves out some or all of: what it keeps of them must decompress, and they are
+//! counted apart.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -70,6 +73,9 @@ pub struct Counts {
     pub entries: u64,
     pub stored: u64,
     pub decompressed: u64,
+    /// In an install, the entries it leaves out some or all of: what it keeps of them
+    /// is decompressed but can't be held to the listed size.
+    pub cut: u64,
     pub failed: u64,
 }
 
@@ -96,14 +102,14 @@ impl Report {
 
     pub fn markdown(&self) -> String {
         let mut out = String::from(
-            "| entries | count | stored | decompressed | failed |\n\
-             |---------|------:|-------:|-------------:|-------:|\n",
+            "| entries | count | stored | decompressed | left out | failed |\n\
+             |---------|------:|-------:|-------------:|---------:|-------:|\n",
         );
         for (kind, c) in &self.kinds {
             let _ = writeln!(
                 out,
-                "| {kind:?} | {} | {} | {} | {} |",
-                c.entries, c.stored, c.decompressed, c.failed
+                "| {kind:?} | {} | {} | {} | {} | {} |",
+                c.entries, c.stored, c.decompressed, c.cut, c.failed
             );
         }
         if !self.failures.is_empty() {
@@ -170,11 +176,12 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Checks the superbundles' entries, decompressed by `read`, in archive order.
+/// Checks the superbundles' entries, decompressed by `read` with whether an install
+/// left out any of them, in archive order.
 fn check(
     superbundles: &[Superbundle],
     store: bool,
-    mut read: impl FnMut(Location) -> Result<Vec<u8>>,
+    mut read: impl FnMut(Location) -> Result<(Vec<u8>, bool)>,
 ) -> Report {
     let mut report = Report::default();
     for (location, entry) in entries(superbundles, store) {
@@ -187,9 +194,14 @@ fn check(
             continue;
         };
         let result = read(location).map_err(|e| e.0);
-        let result = result.and_then(|data| {
-            report.kinds.entry(entry.kind).or_default().decompressed += data.len() as u64;
-            expect.check(data.len() as u64)
+        let result = result.and_then(|(data, cut)| {
+            let c = report.kinds.entry(entry.kind).or_default();
+            c.decompressed += data.len() as u64;
+            c.cut += u64::from(cut);
+            match cut {
+                true => Ok(()),
+                false => expect.check(data.len() as u64),
+            }
         });
         if let Err(e) = result {
             report.fail(entry.kind, format!("{:?} {}: {e}", entry.kind, entry.name));
@@ -203,7 +215,7 @@ pub fn run(path: &Path) -> Result<Report> {
     if path.join(store::INDEX).is_file() {
         let store = Store::open(path)?;
         let mut entries = store.entries()?;
-        let mut report = check(&store.superbundles, true, |l| entries.read(l));
+        let mut report = check(&store.superbundles, true, |l| entries.read_end(l));
         report.parts = Some(store::check_parts(&store)?);
         return Ok(report);
     }
@@ -214,7 +226,9 @@ pub fn run(path: &Path) -> Result<Report> {
         superbundles.extend(install.superbundle(name)?);
     }
     let mut archives = Archives::new(&install);
-    Ok(check(&superbundles, false, |l| archives.read(l, &oodle)))
+    Ok(check(&superbundles, false, |l| {
+        archives.read(l, &oodle).map(|data| (data, false))
+    }))
 }
 
 #[cfg(test)]

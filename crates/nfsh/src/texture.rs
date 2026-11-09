@@ -37,7 +37,7 @@ pub fn run(dir: &Path, name: &str, dds: Option<&Path>) -> Result<String> {
         let _ = writeln!(out, "  mip {level}: {w}×{h}, {size} bytes a layer");
     }
     if let Some(path) = dds {
-        let pixels = textures.pixels(&t)?;
+        let (t, pixels) = textures.pixels(&t)?;
         std::fs::write(path, dds_file(&t, &pixels)?)
             .map_err(|e| frostbite::Error(format!("{}: {e}", path.display())))?;
         let _ = writeln!(out, "written to {}", path.display());
