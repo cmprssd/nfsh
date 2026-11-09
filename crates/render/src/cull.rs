@@ -118,10 +118,11 @@ impl Frustum {
 /// near wherever on it the camera is); the share of the screen is that of the
 /// sphere around the box, its radius times the mesh's cull scale, as if it were
 /// ahead at that distance, in percent: the cut read as a fraction would drop a
-/// barrel 14 m away. A box that cannot be read draws the first LOD.
+/// barrel 14 m away. A box that cannot be read draws the first LOD. A LOD before
+/// [`Lods::first`] gives way to it.
 pub fn choose(b: Option<&Bounds>, lods: &Lods, eye: [f32; 3], tangents: [f32; 2]) -> Option<u8> {
     let Some(b) = b else {
-        return Some(0);
+        return Some(lods.first);
     };
     let outside = [0, 1, 2].map(|k| (b[0][k] - eye[k]).max(eye[k] - b[1][k]).max(0.0));
     let distance = outside.iter().map(|v| v * v).sum::<f32>().sqrt();
@@ -143,7 +144,7 @@ pub fn choose(b: Option<&Bounds>, lods: &Lods, eye: [f32; 3], tangents: [f32; 2]
         }
     }
     let lod = s.lod(distance, usize::from(lods.count));
-    Some(u8::try_from(lod).unwrap_or(u8::MAX))
+    Some(u8::try_from(lod).unwrap_or(u8::MAX).max(lods.first))
 }
 
 /// The runs of consecutive drawn instances among `first..first + count`, as
@@ -262,6 +263,7 @@ mod tests {
                 cull_scale: 1.0,
             },
             count: 3,
+            first: 0,
         }
     }
 
@@ -289,6 +291,19 @@ mod tests {
         // One LOD and no switches: drawn whatever the distance and size.
         let far = cube([0.0, 0.0, 1e6]);
         assert_eq!(choose(Some(&far), &Lods::ONE, [0.0; 3], t), Some(0));
+    }
+
+    #[test]
+    fn a_lod_an_install_left_out_gives_way_to_the_first_it_has() {
+        let t = camera().tangents();
+        let lods = Lods {
+            first: 1,
+            ..stand()
+        };
+        let at = |z: f32| Some(cube([0.0, 0.0, z]));
+        assert_eq!(choose(at(10.0).as_ref(), &lods, [0.0; 3], t), Some(1));
+        assert_eq!(choose(at(250.0).as_ref(), &lods, [0.0; 3], t), Some(2));
+        assert_eq!(choose(None, &lods, [0.0; 3], t), Some(1));
     }
 
     #[test]

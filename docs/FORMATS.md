@@ -1021,3 +1021,43 @@ Nothing may follow the frames. The import lists the GUIDs at the end, by
 reading every ebx back from the packs; `nfsh reindex` does the same for a version 2
 store, in about 90 seconds. The index is written after the packs, under
 a temporary name renamed at the end, so a store without `index.nfsh` is incomplete.
+
+## nfsh's installs (our own format)
+
+What `nfsh install` writes from a store: the store's frames a player keeps, one file per
+part and tier, and the store's index unchanged.
+
+```
+index.nfsh        the store's index, byte for byte; its locations still name the packs
+install.nfsh      where each of the index's frames is (below)
+base.nfsh         a part's frames that are never cut: the base, en, de, …
+base.mip0.nfsh    a part's frames of one tier that can be cut: mip0 to mip2, lod0, lod1, …
+```
+
+Each file holds its frames in the store's order, back to back, so a frame's offset follows
+from those before it in the same file. Files are not split; offsets are 64-bit.
+
+The tiers are the store's, but for meshes: a mesh chunk is in the tier of the highest LOD
+any mesh uses it as, unless it is some mesh's last LOD, which is never cut and goes in the
+part's own file with everything else that can't be. (The store tags a mesh chunk with its
+best LOD; the install reads every mesh set again to know which chunks are a last LOD.) A
+texture's other mips (tier 4) also go in the part's own file. An entry can only lose its
+first frames: a texture keeps its smallest mips, and a mesh chunk is one frame.
+
+`install.nfsh` is big-endian, as the index is:
+
+| field | |
+|-------|--|
+| magic, version | `NFSHINST`, u32 1 |
+| files | list (fewer than 255): name (letters, digits, `.`, `-` and `_` only, not starting with `.`), part (u8), tier (u8, 0 for the part's own file), size (u64) |
+| frames | byte run, one byte per frame of the index in its order: the file holding it, or 255 for a frame left out |
+
+On open every file must be there at its size, and its frames must add up to it, or the
+install doesn't open. The placement is written last, under a temporary name renamed at
+the end, so a copy cut short leaves a folder that doesn't open.
+
+Reading an entry, the frames of its location in the store are looked up in the
+placement and read from their files. When its first frames are left out, a texture's
+chunk is the end of its mips, and the texture is read as the smaller one those mips make;
+a mesh chunk left out is a LOD the mesh doesn't have, and the next LOD it has is drawn at
+its distances.

@@ -150,7 +150,7 @@ fn renderer(
     let mut textures = Textures::new(store).map_err(|e| e.to_string())?;
     let mut by_name = |name: &str| -> frostbite::Result<Loaded> {
         let texture = textures.by_name(name)?;
-        let pixels = textures.pixels(&texture)?;
+        let (texture, pixels) = textures.pixels(&texture)?;
         Ok((name.to_owned(), texture, pixels))
     };
     let detail = scene
@@ -168,7 +168,7 @@ fn renderer(
     let far_count = far.len();
     let load = |guid: &[u8; 16]| -> frostbite::Result<Loaded> {
         let (name, texture) = textures.by_partition(guid)?;
-        let pixels = textures
+        let (texture, pixels) = textures
             .pixels(&texture)
             .map_err(|e| frostbite::Error(format!("{name}: {e}")))?;
         Ok((name, texture, pixels))

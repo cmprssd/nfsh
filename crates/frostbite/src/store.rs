@@ -61,7 +61,7 @@ fn pack_ref(n: u8) -> CasRef {
     }
 }
 
-fn io_error(path: &Path, e: std::io::Error) -> crate::Error {
+pub(crate) fn io_error(path: &Path, e: std::io::Error) -> crate::Error {
     crate::Error(format!("{}: {e}", path.display()))
 }
 
@@ -80,6 +80,8 @@ pub struct Store {
     pub parts: Vec<String>,
     /// Every frame, in the packs' order; empty for a store made before parts.
     pub frames: Vec<Frame>,
+    /// For an install ([`crate::copy`]), where its frames are; `None` for a store.
+    pub placement: Option<crate::copy::Placement>,
 }
 
 /// One zstd frame of a pack, with what it is for. A pack holds frames back to back, so
@@ -141,15 +143,6 @@ impl Store {
         let path = dir.join(INDEX);
         let bytes = std::fs::read(&path).map_err(|e| io_error(&path, e))?;
         let index = decode(&bytes).map_err(|e| crate::Error(format!("{}: {e}", path.display())))?;
-        for (n, &size) in index.packs.iter().enumerate() {
-            let path = dir.join(pack_name(n as u8));
-            let len = std::fs::metadata(&path)
-                .map_err(|e| io_error(&path, e))?
-                .len();
-            if len != size {
-                bail!("{}: {len} bytes, the index says {size}", path.display());
-            }
-        }
         let mut by_guid: Vec<([u8; 16], EbxRef)> = index
             .partitions
             .iter()
@@ -157,7 +150,7 @@ impl Store {
             .map(|(&guid, (at, _))| (guid, at))
             .collect();
         by_guid.sort_unstable();
-        Ok(Self {
+        let mut store = Self {
             dir: dir.to_owned(),
             superbundles: index.superbundles,
             packs: index.packs,
@@ -165,7 +158,22 @@ impl Store {
             by_guid,
             parts: index.parts,
             frames: index.frames,
-        })
+            placement: None,
+        };
+        // An install has its own files in place of the packs.
+        store.placement = crate::copy::Placement::open(dir, &store)?;
+        if store.placement.is_none() {
+            for (n, &size) in store.packs.iter().enumerate() {
+                let path = dir.join(pack_name(n as u8));
+                let len = std::fs::metadata(&path)
+                    .map_err(|e| io_error(&path, e))?
+                    .len();
+                if len != size {
+                    bail!("{}: {len} bytes, the index says {size}", path.display());
+                }
+            }
+        }
+        Ok(store)
     }
 
     /// Each part's stored bytes in each tier.
@@ -186,7 +194,7 @@ impl Store {
 
     /// Where each frame starts, as (pack, offset), sorted because the frames are in the
     /// packs' order.
-    fn frame_starts(&self) -> Vec<(u8, u32)> {
+    pub(crate) fn frame_starts(&self) -> Vec<(u8, u32)> {
         let mut starts = Vec::with_capacity(self.frames.len());
         let (mut pack, mut offset, mut packs) = (0u8, 0u64, self.packs.iter());
         let mut size = packs.next().copied().unwrap_or(0);
@@ -301,24 +309,53 @@ impl Store {
     pub fn entries(&self) -> Result<Entries<'_>> {
         Ok(Entries {
             archives: self.archives(),
+            placed: self.placement.as_ref().map(crate::copy::Placed::new),
             frames: FrameDecoder::new(&self.dictionary)?,
         })
+    }
+
+    /// Whether the install leaves out any of the entry at `location`; never for a store.
+    pub fn is_cut(&self, location: Location) -> Result<bool> {
+        match &self.placement {
+            Some(p) => Ok(p.is_cut(location)?),
+            None => Ok(false),
+        }
     }
 }
 
 /// A store's entries, read and decompressed; one per thread.
 pub struct Entries<'a> {
     archives: Archives<'a>,
+    /// An install's files, read in place of the packs.
+    placed: Option<crate::copy::Placed<'a>>,
     frames: FrameDecoder,
 }
 
 impl Entries<'_> {
-    /// The decompressed entry at `location`.
+    /// The decompressed entry at `location`; an error when an install left out any of it.
     pub fn read(&mut self, location: Location) -> Result<Vec<u8>> {
-        let frame = self.archives.stored(location)?;
-        self.frames
+        match self.read_end(location)? {
+            (data, false) => Ok(data),
+            (_, true) => bail!("{location:?}: left out of this install"),
+        }
+    }
+
+    /// What an install keeps of the entry at `location`, decompressed: all of it, or
+    /// its end when its first frames were left out (a texture without its top mips),
+    /// with whether any were. Empty when it was left out altogether.
+    pub fn read_end(&mut self, location: Location) -> Result<(Vec<u8>, bool)> {
+        let (frame, cut) = match &mut self.placed {
+            Some(placed) => placed.stored(location)?,
+            None => (self.archives.stored(location)?, false),
+        };
+        if frame.is_empty() && cut {
+            return Ok((Vec::new(), true));
+        }
+        let data = self
+            .frames
             .decode(&frame)
-            .map_err(|e| crate::Error(format!("{location:?}: {e}")))
+            .map_err(|e| crate::Error(format!("{location:?}: {e}")))?;
+        Ok((data, cut))
     }
 
     /// What the bundle's `chunk` holds: its whole blocks over its logical range. In a
@@ -791,7 +828,14 @@ pub fn check_parts(store: &Store) -> Result<PartsCheck> {
             wanted.insert(r.asset.location, plan::Kind::Res(r.res_type));
         }
     }
-    let wanted: Vec<(Location, plan::Kind)> = wanted.into_iter().collect();
+    // An install checks what it keeps: an entry left out refers to nothing.
+    let mut kept = Vec::with_capacity(wanted.len());
+    for (l, kind) in wanted {
+        if !store.is_cut(l)? {
+            kept.push((l, kind));
+        }
+    }
+    let wanted = kept;
     struct Found {
         names: Vec<u32>,
         /// What must be there, whatever the tables' other chunks are.
@@ -940,23 +984,24 @@ pub fn reindex(dir: &Path) -> Result<u64> {
     )
 }
 
-fn finish(path: &Path, file: BufWriter<File>) -> Result<()> {
+pub(crate) fn finish(path: &Path, file: BufWriter<File>) -> Result<()> {
     let file = file
         .into_inner()
         .map_err(|e| io_error(path, e.into_error()))?;
     file.sync_all().map_err(|e| io_error(path, e))
 }
 
-/// Makes `dir` an empty folder, removing an earlier store's files; refuses if it holds
+/// Makes `dir` an empty folder, removing an earlier store's or install's files (every
+/// name ending in `.nfsh`, or `.nfsh.tmp` from a copy cut short); refuses if it holds
 /// anything else.
-fn clear(dir: &Path) -> Result<()> {
+pub(crate) fn clear(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).map_err(|e| io_error(dir, e))?;
     let mut ours = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(|e| io_error(dir, e))? {
         let path = entry.map_err(|e| io_error(dir, e))?.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let is_pack = name.starts_with("pack_") && name.ends_with(".nfsh");
-        if !(is_pack || name == INDEX || name == format!("{INDEX}.tmp")) || !path.is_file() {
+        let ours_by_name = name.ends_with(".nfsh") || name.ends_with(".nfsh.tmp");
+        if !ours_by_name || !path.is_file() {
             bail!(
                 "{}: not an nfsh store (holds {name}); refusing to write into it",
                 dir.display()
@@ -964,8 +1009,9 @@ fn clear(dir: &Path) -> Result<()> {
         }
         ours.push(path);
     }
-    // The index goes first, so a store is never left with an index and missing packs.
-    ours.sort_by_key(|p| !p.ends_with(INDEX));
+    // The index and an install's placement go first, so a store is never left with an
+    // index and missing packs.
+    ours.sort_by_key(|p| !(p.ends_with(INDEX) || p.ends_with(crate::copy::PLACEMENT)));
     for path in ours {
         std::fs::remove_file(&path).map_err(|e| io_error(&path, e))?;
     }
@@ -1672,6 +1718,118 @@ mod tests {
         assert_eq!(wrong.collect::<Vec<_>>(), Vec::<&String>::new());
         assert!(parts.entries > 0);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A store of four entries, one a texture-like chunk in two tiers, in parts base,
+    /// en and de, copied into installs.
+    #[test]
+    fn an_install_keeps_the_chosen_parts_and_tiers() {
+        use crate::copy::{Choice, copy};
+        let root = std::env::temp_dir().join(format!("nfsh-copy-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (dir, dest, all) = (root.join("store"), root.join("install"), root.join("all"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let data: [&[u8]; 5] = [
+            b"ebx of the base",
+            b"top mip",
+            b"other mips",
+            b"english",
+            b"german",
+        ];
+        let mut encoder = FrameEncoder::new(None).unwrap();
+        let stored: Vec<Vec<u8>> = data
+            .iter()
+            .map(|d| encoder.encode(d, false).unwrap())
+            .collect();
+        let tags = [
+            (plan::BASE, plan::tier::WHOLE),
+            (plan::BASE, plan::tier::TOP),
+            (plan::BASE, plan::tier::REST),
+            (1, plan::tier::WHOLE),
+            (2, plan::tier::WHOLE),
+        ];
+        let frames: Vec<Frame> = stored
+            .iter()
+            .zip(tags)
+            .map(|(f, (part, tier))| Frame {
+                size: f.len() as u32,
+                part,
+                tier,
+            })
+            .collect();
+        let pack = stored.concat();
+        std::fs::write(dir.join(pack_name(0)), &pack).unwrap();
+        let mut offset = 0;
+        let mut place = |sizes: &[usize]| {
+            let size: usize = sizes.iter().sum();
+            let l = at(0, offset, size as u32);
+            offset += size as u32;
+            l
+        };
+        let len = |n: usize| stored[n].len();
+        let (base, texture) = (place(&[len(0)]), place(&[len(1), len(2)]));
+        let (english, german) = (place(&[len(3)]), place(&[len(4)]));
+        let mut sb = sample();
+        let bundle = &mut sb[0].bundles[0].bundle;
+        bundle.ebx[0].location = base;
+        bundle.ebx.push(Asset {
+            name: "audio/vo/content/en/x".into(),
+            sha1: [0; 20],
+            original_size: data[3].len() as u32,
+            location: english,
+        });
+        bundle.res.clear();
+        bundle.chunks[0].logical_offset = 0;
+        bundle.chunks[0].location = texture;
+        sb[0].chunks[0].chunk.location = german;
+        std::fs::write(
+            dir.join(INDEX),
+            encode(&Index {
+                packs: vec![pack.len() as u64],
+                dictionary: Vec::new(),
+                superbundles: sb,
+                partitions: Vec::new(),
+                parts: plan::part_names(),
+                frames,
+            }),
+        )
+        .unwrap();
+        let store = Store::open(&dir).unwrap();
+        assert!(copy(&store, &dir, &Choice::default(), &mut |_| {}).is_err());
+
+        let choice = Choice {
+            languages: Some(vec!["en".into()]),
+            cut: vec![plan::tier::TOP],
+        };
+        let copied = copy(&store, &dest, &choice, &mut |_| {}).unwrap();
+        let names: Vec<&str> = copied.files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["base.nfsh", "en.nfsh"]);
+        assert_eq!(copied.frames_cut, 2);
+        assert_eq!(copied.bytes, (len(0) + len(2) + len(3)) as u64);
+        let install = Store::open(&dest).unwrap();
+        let mut entries = install.entries().unwrap();
+        assert_eq!(entries.read(base).unwrap(), data[0]);
+        assert_eq!(entries.read(english).unwrap(), data[3]);
+        assert!(entries.read(texture).is_err());
+        assert_eq!(entries.read_end(texture).unwrap(), (data[2].to_vec(), true));
+        assert_eq!(entries.read_end(german).unwrap(), (Vec::new(), true));
+        assert!(install.is_cut(german).unwrap() && !install.is_cut(base).unwrap());
+        assert!(copy(&install, &all, &Choice::default(), &mut |_| {}).is_err());
+
+        // Keeping everything, every entry reads as from the store.
+        let copied = copy(&store, &all, &Choice::default(), &mut |_| {}).unwrap();
+        let names: Vec<&str> = copied.files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["base.nfsh", "base.mip0.nfsh", "en.nfsh", "de.nfsh"]);
+        assert_eq!((copied.frames_cut, copied.bytes), (0, pack.len() as u64));
+        let install = Store::open(&all).unwrap();
+        let (mut from, mut to) = (store.entries().unwrap(), install.entries().unwrap());
+        for l in [base, texture, english, german] {
+            assert_eq!(to.read(l).unwrap(), from.read(l).unwrap());
+        }
+        // A file of the wrong size stops the install opening.
+        std::fs::write(all.join("de.nfsh"), b"x").unwrap();
+        assert!(Store::open(&all).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// The tail of a chunk read from the whole chunk it is the end of.

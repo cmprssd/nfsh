@@ -4,6 +4,23 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.27.0] - 2026-11-09
+
+### Added
+
+- `nfsh install STORE DEST` copies the store into an install with only what the player
+  keeps: the base, the languages chosen (`--languages en,de`), and every tier but the ones
+  cut (`--cut mip0,lod0`, or `--bare-minimum` for the top three texture mips and the meshes'
+  LOD 0 and 1). It writes one file per part and tier, so a tier can be added or removed
+  later as whole files.
+- Every command reads an install as it reads a store. A texture missing its top mips is
+  drawn from the mips it has, and a mesh missing its first LODs from the first it has; a
+  texture keeps its smallest mip and a mesh its last LOD.
+- `nfsh verify` checks an install, listing the entries it leaves out apart from failures.
+- Measured: base plus English is 20.46 GiB with every tier and 8.49 GiB at the bare
+  minimum, which draws the speedway with 1.2 million triangles instead of 6.4 and 11.7 MiB
+  of textures instead of 694 (`docs/SIZES.md`, "Installs").
+
 ## [0.26.0] - 2026-11-07
 
 ### Changed

@@ -3,6 +3,7 @@
 //! returns an [`Error`] on malformed input; none of them panic.
 
 pub mod cas;
+pub mod copy;
 pub mod dbobject;
 pub mod dxbc;
 pub mod ebx;

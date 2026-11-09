@@ -141,12 +141,12 @@ impl<'a> Archives<'a> {
 }
 
 #[cfg(unix)]
-fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+pub(crate) fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
     std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
 }
 
 #[cfg(windows)]
-fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+pub(crate) fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !buf.is_empty() {
         match file.seek_read(buf, offset)? {

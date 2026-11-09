@@ -695,6 +695,13 @@ impl<'s> Meshes<'s> {
         self.entries.read(asset.location)
     }
 
+    /// Whether an install left out `lod`'s chunk (a LOD cut), rather than it being
+    /// missing or unread.
+    pub fn left_out(&self, lod: &Lod) -> bool {
+        let location = lod.chunk.and_then(|id| self.chunks.get(&id));
+        location.is_some_and(|&l| self.store.is_cut(l).unwrap_or(false))
+    }
+
     /// The chunk holding `lod`'s geometry.
     pub fn chunk(&mut self, lod: &Lod) -> Result<Vec<u8>> {
         let Some(id) = lod.chunk else {
