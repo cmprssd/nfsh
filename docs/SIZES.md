@@ -23,7 +23,9 @@ nfsh sizes-trial D:\nfsh-store (about 5 minutes)
   The owner has settled on one complete disc with the choice made at install, down to a
   bare minimum: [DECISIONS.md](DECISIONS.md) ("One disc, stripping down").
 - **The install is built:** base plus English is 20.46 GiB with every tier, and 4.97 GiB at
-  the bare minimum ([Installs](#installs)).
+  the bare minimum ([Installs](#installs)). That is 2.06 and 1.12 GiB over the estimates,
+  which counted savings not built yet: the gathered block fields, the movies' other audio
+  tracks, and 7/8 of the cinematics' audio ([Against the estimate](#against-the-estimate)).
 - **Blu-ray speed looks sufficient for the city's zones, but that isn't proven.** Reading
   2 km ahead takes 8.7 MiB/s at worst, under a 6x drive's slowest 10.3 MiB/s. Seeks, cars
   and missions are not in that number.
@@ -122,15 +124,61 @@ out apart, and the history views render from both.
   3.8). The estimate had counted only an eighth of the cinematics' audio as English, so
   the voices cut takes the other 7/8 too; the bare minimum ends 1.17 GiB over the estimate,
   where the cuts before these ended 2.19 over.
-- **Both are larger than "A frame per tier" estimated:** 18.4 GiB for one language with
-  everything; the 2.06 GiB gap carries through, and where the estimate went wrong is not
-  worked out. Mesh chunks that are some mesh's last LOD stay: the cut LOD tiers hold
-  2.65 GiB here, against 2.75 tagged in the store.
+- **Both are larger than "A frame per tier" estimated** (18.4 GiB with everything, 3.8 at
+  the bare minimum). The estimate took off savings nothing has built yet; see
+  [Against the estimate](#against-the-estimate). Mesh chunks that are some mesh's last
+  LOD stay: the cut LOD tiers hold 2.65 GiB here, against 2.75 tagged in the store.
 - **What stays of the media:** the UI's movies (0.26 GiB), the crowds' localized walla
   (44 MiB) and the cinematics' other sounds (0.27 GiB) are in `base.nfsh`, as are
   waves whose chunks something else also names ([DECISIONS.md](DECISIONS.md), "Cutscene
   video, voices and music as install tiers").
 - **Mesh LOD 5's 3.12 MiB** are last LODs, so they are in `base.nfsh`.
+
+### Against the estimate
+
+The 18.4 GiB came from "What can go without changing the look" (on the 0.4.0 store):
+19.24 GiB of packs once 7/8 of the cinematics' audio goes, plus a 0.16 GiB index, makes
+19.40. Taking off the movies' other audio tracks and the gathered block fields then gives
+18.40. Two of those three savings are not built, and the install doesn't make the third.
+The install's own files account for the whole gap:
+
+| With everything, base plus English | GiB |
+|---|---:|
+| Estimate | 18.40 |
+| Gathered block fields: not built | +0.66 |
+| Movies' other audio tracks: need a WebM rewrite, not built; in `base.video.nfsh` | +0.34 |
+| 7/8 of the cinematics' audio: which language a chunk is in is not worked out, so `base.voices.nfsh` keeps all of it (1.15 GiB; the estimate had 1.01 as 7/8) | +1.01 |
+| A frame per tier: the trial's +0.65% on 10.56 GiB of textures' chunks | +0.07 |
+| Sum | 20.48 |
+| **Install, measured** | **20.46** |
+
+The packs alone agree too. Without the first three rows, the estimate had 20.25 GiB of
+packs, and the install's packs are 20.31: 0.06 more, which is the frame per tier's cost.
+The index is the store's whole index (0.16 GiB, every language's entries). The estimate
+counted the same index, so it isn't part of the gap. A one-language index would be a
+little smaller; that is not measured.
+
+| Bare minimum | GiB |
+|---|---:|
+| Estimate | 3.85 |
+| Gathered block fields, taken off in full by the estimate, though most of them are in mips the bare minimum cuts | +0.66 |
+| Meshes: chunks that are some mesh's last LOD stay; cut 2.65, not 2.82 | +0.17 |
+| Video, voices and music: cut 3.52, not 3.78; mostly the UI's movies (0.26), which stay | +0.26 |
+| Textures' top three mips: cut 9.32, not 9.30 | -0.02 |
+| Sum | 4.92 |
+| **Install, measured** | **4.97** |
+
+The last 0.05 GiB is the frame per tier's cost in the tiers kept, plus the estimate's
+rounding; it is not split between them. The 3.78 is everything the estimate took off for
+media: the 1.01 and 0.34 above, then video 1.46, voices 0.6 and music 0.37.
+
+- **Nothing in the gap is something the install should leave out** today. Two rows are
+  savings still to build: the gathered block fields, and the movies' tracks. The third is
+  the cinematics' other languages, which can be cut once it is known which chunk is which
+  language.
+- **The bare minimum's estimate was too low by design**: it took the gathered fields off
+  in full, but gathering saves bytes in proportion to the texture data left, and the bare
+  minimum keeps only about 1.1 GiB of mips.
 
 ## By kind
 
