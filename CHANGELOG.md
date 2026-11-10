@@ -4,6 +4,16 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.29.0] - 2026-11-10
+
+### Changed
+
+- The import puts each of a cinematic's 8 dialogue chunks in its language's part: the
+  language whose `Win32/loc` table lists it (English, in the owner's install), or the new
+  part `others`, the languages the install has no table for. An English install now leaves
+  out the other 7 languages' cinematic lines; an install of any language without a table
+  keeps `others` too. Needs a re-import.
+
 ## [0.28.0] - 2026-11-10
 
 ### Added

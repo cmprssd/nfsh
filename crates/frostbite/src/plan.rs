@@ -7,7 +7,7 @@
 //! [`decide`] what becomes of each entry. None of them touch a file.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::Hasher;
 use std::ops::Range;
 
@@ -28,6 +28,9 @@ pub const LANGUAGES: [&str; 8] = ["en", "de", "es", "fr", "it", "jp", "pl", "ru"
 pub const NO_FOLDER: &str = "content, no language folder";
 /// What a cinematic wave's name says: every language is in one asset.
 pub const CINEMATIC: &str = "cinematics: every language in one asset";
+/// The part of the languages the install has no `loc` table for: a cinematic wave's
+/// chunk that no `Win32/loc/<language>` superbundle lists is one of those languages'.
+pub const OTHERS: u8 = LANGUAGES.len() as u8 + 1;
 
 /// A frame's tier: what a player may leave out. Everything not listed here is
 /// [`tier::WHOLE`].
@@ -96,6 +99,7 @@ pub mod tier {
 pub fn part_names() -> Vec<String> {
     std::iter::once("base")
         .chain(LANGUAGES)
+        .chain(["others"])
         .map(str::to_owned)
         .collect()
 }
@@ -132,6 +136,16 @@ fn wave_part(name: &str) -> u8 {
         .iter()
         .position(|l| *l == language)
         .map_or(BASE, |n| n as u8 + 1)
+}
+
+/// The language part whose table a superbundle named `name` is: `Win32/loc/<language>`.
+pub fn loc_part(name: &str) -> Option<u8> {
+    let language = name.to_ascii_lowercase();
+    let language = language.strip_prefix("win32/loc/")?;
+    LANGUAGES
+        .iter()
+        .position(|l| *l == language)
+        .map(|n| n as u8 + 1)
 }
 
 /// Finds chunk ids in an entry's bytes.
@@ -194,6 +208,10 @@ pub struct Entry {
     pub tail: Option<(u32, u32)>,
     /// For an ebx, the part it belongs to if it turns out to be a localized wave.
     pub wave: u8,
+    /// For an ebx, whether its name is a cinematic's, every language in one asset; for a
+    /// res, whether an ebx of its bundle has its name and is: a wave's res names its
+    /// chunks too.
+    pub cinematic: bool,
     /// For a res, the ebx of the same name, if that name is in a language's folder: a
     /// wave's res names its chunks too, and goes where the wave goes.
     pub twin: Option<Location>,
@@ -207,6 +225,9 @@ pub struct Listing {
     pub ids: HashMap<[u8; 16], u32>,
     /// By chunk: whether a bundle lists it.
     pub in_bundle: Vec<bool>,
+    /// By chunk: the language whose `loc` superbundle lists it ([`loc_part`]), else the
+    /// base.
+    pub loc: Vec<u8>,
     /// By chunk: the ranges bundles list as tails.
     pub tails: HashMap<u32, Vec<(u32, u32)>>,
 }
@@ -224,6 +245,7 @@ fn listed(
         chunks: Vec::new(),
         tail: None,
         wave,
+        cinematic: false,
         twin: None,
     });
     // A location listed as a whole chunk by anyone is one.
@@ -238,6 +260,7 @@ impl Listing {
         let mut entries: BTreeMap<Location, Entry> = BTreeMap::new();
         let mut ids: HashMap<[u8; 16], u32> = HashMap::new();
         let mut in_bundle = Vec::new();
+        let mut loc = Vec::new();
         let mut tails: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
         for sb in superbundles {
             for b in &sb.bundles {
@@ -249,11 +272,21 @@ impl Listing {
                     .map(|a| (a.name.as_str(), a.location))
                     .collect();
                 for a in &b.bundle.ebx {
-                    listed(&mut entries, a.location, Kind::Ebx, wave_part(&a.name));
+                    listed(&mut entries, a.location, Kind::Ebx, wave_part(&a.name)).cinematic |=
+                        language(&a.name) == CINEMATIC;
                 }
+                let cinematic: HashSet<&str> = b
+                    .bundle
+                    .ebx
+                    .iter()
+                    .filter(|a| language(&a.name) == CINEMATIC)
+                    .map(|a| a.name.as_str())
+                    .collect();
                 for r in &b.bundle.res {
                     let twin = twins.get(r.asset.name.as_str()).copied();
-                    listed(&mut entries, r.asset.location, Kind::Res(r.res_type), BASE).twin = twin;
+                    let e = listed(&mut entries, r.asset.location, Kind::Res(r.res_type), BASE);
+                    e.twin = twin;
+                    e.cinematic |= cinematic.contains(r.asset.name.as_str());
                 }
                 for c in &b.bundle.chunks {
                     let next = ids.len() as u32;
@@ -279,6 +312,10 @@ impl Listing {
                 let next = ids.len() as u32;
                 let id = *ids.entry(toc_chunk_id(c.chunk.id)).or_insert(next);
                 in_bundle.resize(ids.len(), false);
+                loc.resize(ids.len(), BASE);
+                if let Some(part) = loc_part(&sb.name) {
+                    loc[id as usize] = part;
+                }
                 listed(&mut entries, c.chunk.location, Kind::Whole, BASE)
                     .chunks
                     .push(id);
@@ -293,10 +330,12 @@ impl Listing {
             ranges.sort_unstable();
             ranges.dedup();
         }
+        loc.resize(ids.len(), BASE);
         Self {
             entries,
             ids,
             in_bundle,
+            loc,
             tails,
         }
     }
@@ -322,6 +361,9 @@ pub struct Scan {
     pub imports: Vec<[u8; 16]>,
     /// Whether an ebx is a `SentenceGroup`, one language's list of its lines.
     pub sentences: bool,
+    /// Whether an ebx is a cinematic's `LocalizedWaveAsset`, naming a chunk per language,
+    /// or a res of the same name.
+    pub cinematic: bool,
     /// The chunks it names, by index.
     pub names: Vec<u32>,
     pub texture: Option<Cuts>,
@@ -350,6 +392,7 @@ pub fn scan(entry: &Entry, data: &[u8], listing: &Listing, finder: &Finder) -> S
                 let root = p.instances.first().map(|i| p.type_name(i.type_index));
                 if root.as_deref() == Some("LocalizedWaveAsset") {
                     scan.part = entry.wave;
+                    scan.cinematic = entry.cinematic;
                 }
                 scan.sentences = root.as_deref() == Some("SentenceGroup");
                 scan.guid = p.header.guid;
@@ -373,6 +416,7 @@ pub fn scan(entry: &Entry, data: &[u8], listing: &Listing, finder: &Finder) -> S
         }
         Kind::Res(res) => {
             scan.names = finder.scan(data);
+            scan.cinematic = entry.cinematic;
             if res == res_type_hash("MeshSet")
                 && let Ok(m) = MeshSet::parse(data)
             {
@@ -504,6 +548,13 @@ pub fn decide(listing: &Listing, scans: &[Scan]) -> Vec<Fate> {
     let mut lods: Vec<Option<usize>> = vec![None; chunks];
     for (s, &part) in scans.iter().zip(&part_of) {
         for &c in s.names.iter().chain(&s.lods) {
+            // A cinematic wave's chunks are a language each: the one whose `loc` table
+            // lists it, or one of the languages the install has no table for.
+            let part = match (s.cinematic, listing.loc[c as usize]) {
+                (false, _) => part,
+                (true, BASE) => OTHERS,
+                (true, language) => language,
+            };
             named[c as usize] = true;
             parts[c as usize] = shared(parts[c as usize], part);
         }
@@ -1003,6 +1054,64 @@ mod tests {
         };
         assert_eq!([part(0), part(1), part(2)], [2, 4, BASE]);
         assert_eq!([part(3), part(4), part(5)], [2, BASE, BASE]);
+    }
+
+    #[test]
+    fn a_loc_table_is_its_languages_part() {
+        assert_eq!(loc_part("Win32/loc/en"), Some(1));
+        assert_eq!(loc_part("win32/loc/RU"), Some(8));
+        assert_eq!(loc_part("Win32/loc/br"), None);
+        assert_eq!(loc_part("Win32/chunks0"), None);
+        assert_eq!(part_names()[usize::from(OTHERS)], "others");
+        assert_eq!(part_names().len(), usize::from(OTHERS) + 1);
+    }
+
+    /// As in the game: a cinematic's wave names a chunk per language, and the English
+    /// table lists the English one.
+    #[test]
+    fn a_cinematic_waves_chunks_go_to_the_language_whose_table_lists_them() {
+        // Ebx 0 is a cinematic wave naming chunks 1 to 3, and so does its res (entry 5);
+        // `loc/en` lists chunk 2; ebx 4 is not localized and names chunk 3 too.
+        let mut chunks0 = superbundle(
+            &[
+                ("audio/cinematics/audioassets/c1/scene_dx_m", at(0)),
+                ("audio/music/a", at(40)),
+            ],
+            Vec::new(),
+            vec![toc(1, at(10)), toc(2, at(20)), toc(3, at(30))],
+        );
+        chunks0.name = "Win32/chunks0".into();
+        chunks0.bundles[0].bundle.res = vec![Res {
+            asset: Asset {
+                name: "audio/cinematics/audioassets/c1/scene_dx_m".into(),
+                sha1: [0; 20],
+                original_size: 1,
+                location: at(50),
+            },
+            res_type: 1,
+            meta: [0; 16],
+            id: 1,
+        }];
+        let mut en = superbundle(&[], Vec::new(), vec![toc(2, at(20))]);
+        en.name = "Win32/loc/en".into();
+        let l = Listing::new(&[chunks0, en]);
+        assert!(l.entries[0].cinematic && !l.entries[4].cinematic && l.entries[5].cinematic);
+        let c = |n| chunk_index(&l, n);
+        let mut scans: Vec<Scan> = (0..6).map(|n| scan_of(n, 10)).collect();
+        for n in [0, 5] {
+            scans[n].cinematic = true;
+            scans[n].names = vec![c(1), c(2), c(3)];
+        }
+        scans[4].names = vec![c(3)];
+        let fates = decide(&l, &scans);
+        let part = |n: usize| match &fates[n] {
+            Fate::Keep(k) => k.part,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            (0..6).map(part).collect::<Vec<_>>(),
+            [BASE, OTHERS, 1, BASE, BASE, BASE]
+        );
     }
 
     /// As in the game: a wave's ebx and the res of the same name both name its chunk.

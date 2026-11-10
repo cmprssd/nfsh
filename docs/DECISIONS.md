@@ -981,6 +981,7 @@ These decide how many bytes a language part can really hold:
   English" for less than that.
 - **Which of a cinematic's 8 audio chunks is which language?** Until then its 1.01 GiB saving
   isn't available, so one language is about 20.41 GiB, which still fits the BD-25.
+  (Answered for English in "The cinematics' lines by language", 2026-11-10.)
 - **Movie tracks** need a WebM rewrite for 0.34 GiB. They can stay whole at first, as the
   saving isn't needed to fit.
 - **Do other owners' installs hold all 8 languages?** Only this install has been read. The
@@ -1230,3 +1231,26 @@ chunks are a last LOD; the store doesn't tag them, so no re-import. Choices made
 - **Nothing in nfsh plays sound or video yet**, so "skipping what is absent" is today
   `nfsh verify` counting the cut entries apart. When playback comes, a missing video is
   skipped and a missing line plays nothing, with subtitles carrying it.
+
+## 2026-11-10: The cinematics' lines by language
+
+A cinematic's dialogue wave holds 8 chunks, one per language, in the base; an English
+install kept all 8 (1.15 GiB, [SIZES.md](SIZES.md), "Against the estimate"). How each
+chunk's language is known is in [FORMATS.md](FORMATS.md), "Cinematic dialogue": the
+`Win32/loc/<language>` table lists its own language's chunk, and the owner's install has
+only `loc/en`.
+
+- **Each chunk goes in its language's part when a `loc` table names it; the other
+  languages' chunks go in one part, `others`** (the owner's choice, over waiting until each
+  chunk is named). An install keeps `others` with any language the store has no `loc` table
+  for, so an English install leaves out 7 of the 8 and a German one keeps all 8. Why: the
+  tables name English for certain and no other language, and an English install is the one
+  the owner plays. Naming the other 7 would take a decoded listening of each of the 490
+  chunks; nfsh doesn't decode EALayer3.
+- **The proof that the 8 are 8 languages is outside the repo:** four assets' 32 chunks
+  decoded with vgmstream and named with offline speech recognition (faster-whisper), 8
+  languages in each, the English always the one `loc/en` lists. Neither tool is part of
+  nfsh or its checks.
+- **The rule is the tables', not English's:** an install with more `loc` tables would put
+  those languages' chunks in their own parts on import, and `others` would hold only the
+  rest.

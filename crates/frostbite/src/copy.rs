@@ -550,14 +550,35 @@ pub fn copy(
     match &choice.languages {
         None => keep_part.iter_mut().for_each(|k| *k = true),
         Some(languages) => {
+            let others = store.parts.iter().position(|p| p == "others");
+            let has_table = |l: &str| {
+                let table = format!("win32/loc/{l}");
+                store
+                    .superbundles
+                    .iter()
+                    .any(|sb| sb.name.eq_ignore_ascii_case(&table))
+            };
             for l in languages {
-                let Some(n) = store.parts.iter().position(|p| p == l && p != "base") else {
+                let Some(n) = store
+                    .parts
+                    .iter()
+                    .position(|p| p == l && p != "base" && p != "others")
+                else {
                     bail!(
                         "no language {l:?} in the store (it has {})",
-                        store.parts[1..].join(", ")
+                        store.parts[1..]
+                            .iter()
+                            .filter(|p| *p != "others")
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     );
                 };
                 keep_part[n] = true;
+                // The cinematics' lines of a language with no `loc` table are in `others`.
+                if let Some(o) = others.filter(|_| !has_table(l)) {
+                    keep_part[o] = true;
+                }
             }
         }
     }

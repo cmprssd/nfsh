@@ -12,7 +12,7 @@
 //! partition GUID, so a reference into another partition is found without reading
 //! every ebx.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -754,6 +754,9 @@ pub struct PartsCheck {
     pub references: u64,
     pub base_to_language: u64,
     pub language_to_other: u64,
+    /// Chunks a localized wave in the base (or a cinematic wave's res) names in a
+    /// language's part: a cinematic's wave names a chunk per language.
+    pub wave_to_language: u64,
     /// To a partition the store doesn't have, as the install doesn't either.
     pub to_nothing: u64,
     pub failures: Vec<String>,
@@ -772,12 +775,14 @@ impl PartsCheck {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "Parts: {} ebx and res name {} chunks, {} failed. Of {} references to other \
+            "Parts: {} ebx and res name {} chunks, {} failed, {} of them a localized wave's \
+             in the base naming a language's chunk. Of {} references to other \
              partitions, {} go from the base to a language, {} from a language to another, \
              {} to a partition no table lists.",
             self.entries,
             self.names,
             self.failed,
+            self.wave_to_language,
             self.references,
             self.base_to_language,
             self.language_to_other,
@@ -791,8 +796,10 @@ impl PartsCheck {
 }
 
 /// Checks that the base and any one language find everything they refer to: a chunk an
-/// entry names must be in the base or in that entry's own part, and a texture or a mesh
-/// must find its chunks at all. Every ebx and res is read once.
+/// entry names must be in the base or in that entry's own part (or, for a localized
+/// wave in the base and a cinematic wave's res, in any language's: a cinematic's wave
+/// names a chunk per language),
+/// and a texture or a mesh must find its chunks at all. Every ebx and res is read once.
 pub fn check_parts(store: &Store) -> Result<PartsCheck> {
     let mut report = PartsCheck::default();
     if store.frames.is_empty() {
@@ -819,6 +826,8 @@ pub fn check_parts(store: &Store) -> Result<PartsCheck> {
         }
     }
     let finder = Finder::new(&ids);
+    // A cinematic wave's res, of the wave's name, names its chunks as the wave does.
+    let mut cinematic_res: HashSet<Location> = HashSet::new();
     let mut wanted: BTreeMap<Location, plan::Kind> = BTreeMap::new();
     for (_, a) in each_ebx(&store.superbundles) {
         wanted.insert(a.location, plan::Kind::Ebx);
@@ -826,6 +835,9 @@ pub fn check_parts(store: &Store) -> Result<PartsCheck> {
     for b in store.superbundles.iter().flat_map(|s| &s.bundles) {
         for r in &b.bundle.res {
             wanted.insert(r.asset.location, plan::Kind::Res(r.res_type));
+            if plan::language(&r.asset.name) == plan::CINEMATIC {
+                cinematic_res.insert(r.asset.location);
+            }
         }
     }
     // An install checks what it keeps: an entry left out refers to nothing.
@@ -841,6 +853,7 @@ pub fn check_parts(store: &Store) -> Result<PartsCheck> {
         /// What must be there, whatever the tables' other chunks are.
         needs: Vec<[u8; 16]>,
         imports: Vec<[u8; 16]>,
+        wave: bool,
     }
     let found = in_parallel(
         &wanted,
@@ -851,6 +864,7 @@ pub fn check_parts(store: &Store) -> Result<PartsCheck> {
                 names: Vec::new(),
                 needs: Vec::new(),
                 imports: Vec::new(),
+                wave: false,
             };
             match kind {
                 plan::Kind::Res(texture::TEXTURE) => {
@@ -862,6 +876,8 @@ pub fn check_parts(store: &Store) -> Result<PartsCheck> {
                 plan::Kind::Ebx => {
                     f.names = finder.scan(&data);
                     if let Ok(p) = Partition::parse(&data) {
+                        f.wave = p.instances.first().map(|i| p.type_name(i.type_index))
+                            == Some("LocalizedWaveAsset".into());
                         f.imports = p.imports.iter().map(|i| i.partition).collect();
                         f.imports.sort_unstable();
                         f.imports.dedup();
@@ -869,6 +885,7 @@ pub fn check_parts(store: &Store) -> Result<PartsCheck> {
                 }
                 _ => {
                     f.names = finder.scan(&data);
+                    f.wave = cinematic_res.contains(&l);
                     if kind == plan::Kind::Res(res_type_hash("MeshSet"))
                         && let Ok(m) = MeshSet::parse(&data)
                     {
@@ -895,6 +912,7 @@ pub fn check_parts(store: &Store) -> Result<PartsCheck> {
             let target = listed[n as usize];
             match store.part_at(&starts, target) {
                 Some(p) if p == plan::BASE || p == part => {}
+                Some(_) if f.wave && part == plan::BASE => report.wave_to_language += 1,
                 Some(p) => report.fail(format!(
                     "{l:?} in part {part} names a chunk in part {p}, at {target:?}"
                 )),
@@ -1721,7 +1739,8 @@ mod tests {
     }
 
     /// A store of four entries, one a texture-like chunk in two tiers, in parts base,
-    /// en and de, copied into installs.
+    /// en and de, and a frame in `others`, copied into installs. The store has an
+    /// English `loc` table and no German one.
     #[test]
     fn an_install_keeps_the_chosen_parts_and_tiers() {
         use crate::copy::{Choice, copy};
@@ -1729,12 +1748,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let (dir, dest, all) = (root.join("store"), root.join("install"), root.join("all"));
         std::fs::create_dir_all(&dir).unwrap();
-        let data: [&[u8]; 5] = [
+        let data: [&[u8]; 6] = [
             b"ebx of the base",
             b"top mip",
             b"other mips",
             b"english",
             b"german",
+            b"a cinematic's line in a language with no table",
         ];
         let mut encoder = FrameEncoder::new(None).unwrap();
         let stored: Vec<Vec<u8>> = data
@@ -1747,6 +1767,7 @@ mod tests {
             (plan::BASE, plan::tier::REST),
             (1, plan::tier::WHOLE),
             (2, plan::tier::WHOLE),
+            (plan::OTHERS, plan::tier::WHOLE),
         ];
         let frames: Vec<Frame> = stored
             .iter()
@@ -1782,6 +1803,11 @@ mod tests {
         bundle.chunks[0].logical_offset = 0;
         bundle.chunks[0].location = texture;
         sb[0].chunks[0].chunk.location = german;
+        sb.push(Superbundle {
+            name: "Win32/loc/en".into(),
+            bundles: Vec::new(),
+            chunks: Vec::new(),
+        });
         std::fs::write(
             dir.join(INDEX),
             encode(&Index {
@@ -1804,7 +1830,7 @@ mod tests {
         let copied = copy(&store, &dest, &choice, &mut |_| {}).unwrap();
         let names: Vec<&str> = copied.files.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["base.nfsh", "en.nfsh"]);
-        assert_eq!(copied.frames_cut, 2);
+        assert_eq!(copied.frames_cut, 3);
         assert_eq!(copied.bytes, (len(0) + len(2) + len(3)) as u64);
         let install = Store::open(&dest).unwrap();
         let mut entries = install.entries().unwrap();
@@ -1816,10 +1842,34 @@ mod tests {
         assert!(install.is_cut(german).unwrap() && !install.is_cut(base).unwrap());
         assert!(copy(&install, &all, &Choice::default(), &mut |_| {}).is_err());
 
+        // German has no table, so its cinematics' lines are in `others`, which is no
+        // language of its own.
+        let german_only = Choice {
+            languages: Some(vec!["de".into()]),
+            cut: vec![plan::tier::TOP],
+        };
+        let copied = copy(&store, &dest, &german_only, &mut |_| {}).unwrap();
+        let names: Vec<&str> = copied.files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["base.nfsh", "de.nfsh", "others.nfsh"]);
+        let others = Choice {
+            languages: Some(vec!["others".into()]),
+            cut: Vec::new(),
+        };
+        assert!(copy(&store, &dest, &others, &mut |_| {}).is_err());
+
         // Keeping everything, every entry reads as from the store.
         let copied = copy(&store, &all, &Choice::default(), &mut |_| {}).unwrap();
         let names: Vec<&str> = copied.files.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, ["base.nfsh", "base.mip0.nfsh", "en.nfsh", "de.nfsh"]);
+        assert_eq!(
+            names,
+            [
+                "base.nfsh",
+                "base.mip0.nfsh",
+                "en.nfsh",
+                "de.nfsh",
+                "others.nfsh"
+            ]
+        );
         assert_eq!((copied.frames_cut, copied.bytes), (0, pack.len() as u64));
         let install = Store::open(&all).unwrap();
         let (mut from, mut to) = (store.entries().unwrap(), install.entries().unwrap());
