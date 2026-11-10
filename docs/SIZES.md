@@ -22,17 +22,18 @@ nfsh sizes-trial D:\nfsh-store (about 5 minutes)
   0.27 GiB with the chunks dropped, before the disc's own file system.
   The owner has settled on one complete disc with the choice made at install, down to a
   bare minimum: [DECISIONS.md](DECISIONS.md) ("One disc, stripping down").
-- **The install is built:** base plus English is 20.46 GiB with every tier, and 4.97 GiB at
-  the bare minimum ([Installs](#installs)). That is 2.06 and 1.12 GiB over the estimates,
-  which counted savings not built yet: the gathered block fields, the movies' other audio
-  tracks, and 7/8 of the cinematics' audio ([Against the estimate](#against-the-estimate)).
+- **The install is built:** base plus English is 19.47 GiB with every tier, and 4.97 GiB at
+  the bare minimum ([Installs](#installs)). That is 1.07 and 1.12 GiB over the estimates,
+  which counted savings not built yet: the gathered block fields and the movies' other
+  audio tracks ([Against the estimate](#against-the-estimate)).
 - **Blu-ray speed looks sufficient for the city's zones, but that isn't proven.** Reading
   2 km ahead takes 8.7 MiB/s at worst, under a 6x drive's slowest 10.3 MiB/s. Seeks, cars
   and missions are not in that number.
 
 ## The store as built
 
-`nfsh import` from nfsh 0.26.0, 2026-11-07, 106 minutes, every entry checked byte for byte
+`nfsh import` from nfsh 0.26.0, 2026-11-07, 106 minutes (158 minutes for nfsh 0.29.0's on
+2026-11-10, the same sizes but for the parts below), every entry checked byte for byte
 against the install; `nfsh verify` then read it all back with no failures.
 
 | | Size |
@@ -50,23 +51,30 @@ Not stored again, in the install's stored bytes:
 | A chunk's end, read from the whole chunk | 66,474 | 1.05 GiB |
 | Chunks nothing names | 15,908 | 2.86 GiB |
 
-By part: the base and one part per language. The base plus any one language holds
-everything they refer to (`nfsh verify` checks it): of 945,550 references between
-partitions, 24 go from the base to a language, all from the per-language voice-over
-loaders (`Audio/VO/LoadVoiceOver_XX`), which are only used with their language; none goes
-from one language to another, and 5 go to partitions no table lists, as in the install.
+By part: the base, one part per language, and from nfsh 0.29.0 `others`, the cinematics'
+lines in the languages with no `loc` table in the install (all but English here,
+[FORMATS.md](FORMATS.md), "Cinematic dialogue"). The base plus any one language (and
+`others`, for a language without a table) holds everything they refer to (`nfsh verify`
+checks it): of 945,550 references between partitions, 24 go from the base to a language,
+all from the per-language voice-over loaders (`Audio/VO/LoadVoiceOver_XX`), which are only
+used with their language; none goes from one language to another, and 5 go to partitions
+no table lists, as in the install. The 70 cinematic waves and their res name their 8
+chunks each in the language parts: 1,120 names, which the check allows.
 
-| Part | Size |
-|---|---:|
-| Base | 19.90 GiB |
-| de | 474.75 MiB |
-| es | 451.07 MiB |
-| fr | 425.27 MiB |
-| en | 414.70 MiB |
-| jp | 338.36 MiB |
-| ru | 337.71 MiB |
-| it | 332.25 MiB |
-| pl | 317.51 MiB |
+| Part | 0.26.0 to 0.28.0 | From 0.29.0 |
+|---|---:|---:|
+| Base | 19.90 GiB | 18.75 GiB |
+| others | | 1,021.88 MiB |
+| en | 414.70 MiB | 567.08 MiB |
+| de | 474.75 MiB | |
+| es | 451.07 MiB | |
+| fr | 425.27 MiB | |
+| jp | 338.36 MiB | |
+| ru | 337.71 MiB | |
+| it | 332.25 MiB | |
+| pl | 317.51 MiB | |
+
+The other languages' parts are the same in both.
 
 By tier, what the player can choose to copy or leave on the disc:
 
@@ -85,14 +93,16 @@ By tier, what the player can choose to copy or leave on the disc:
 | Mesh LOD 5 | 3.12 MiB |
 
 The margin is 0.20 GiB before the disc's own file system. Voice-over in a folder that names
-no language counts as English; the cinematics' audio, whose languages are not worked out,
-stays in the base.
+no language counts as English; the cinematics' audio stays in the base in 0.26.0 to 0.28.0,
+and from 0.29.0 is in `en` and `others`.
 
 ## Installs
 
-`nfsh install` from nfsh 0.28.0, 2026-11-10, from the store above, with English as the one
-language. `nfsh verify` read each back with no failures, counting the entries it leaves
-out apart, and the history views render from both.
+`nfsh install` from the store above, with English as the one language: every tier from
+nfsh 0.29.0's store (2026-11-10), the bare minimum from 0.28.0's. `nfsh verify` read each
+back with no failures, counting the entries it leaves out apart, and the history views
+render from both (0.28.0's installs). The bare minimum is not measured again: it cuts all
+of the voices, wherever they are, so 0.29.0 leaves it as it was.
 
 | File | Every tier | Bare minimum |
 |---|---:|---:|
@@ -106,15 +116,17 @@ out apart, and the history views render from both.
 | `base.lod3.nfsh` | 206.67 MiB | 206.67 MiB |
 | `base.lod4.nfsh` | 6.79 MiB | 6.79 MiB |
 | `base.video.nfsh`, cutscene video | 1.56 GiB | |
-| `base.voices.nfsh`, the cinematics' audio | 1.15 GiB | |
+| `base.voices.nfsh`, voices in the base (the cinematics' audio until 0.28.0, 1.15 GiB) | 4.50 MiB | |
 | `base.music.nfsh` | 414.07 MiB | |
 | `en.nfsh` | 1.15 MiB | 1.15 MiB |
-| `en.voices.nfsh`, the spoken lines | 413.55 MiB | |
-| **Install**, with index and placement | **20.46 GiB** | **4.97 GiB** |
-| Copy time on the owner's PC, `D:` to `D:` | 14.5 min | 9.2 min |
+| `en.voices.nfsh`, the spoken lines and the cinematics' English | 565.92 MiB | |
+| **Install**, with index and placement | **19.47 GiB** | **4.97 GiB** |
+| Copy time on the owner's PC, `D:` to `D:` | 16.2 min | 9.2 min |
 
-- **Every tier, base plus English:** the same 20.46 GiB as in 0.27.0, now in more files;
-  the speedway's five history views draw identically to the store's, pixel for pixel.
+- **Every tier, base plus English:** 19.47 GiB, 0.99 GiB less than 0.28.0's 20.46: the
+  cinematics' other 7 languages (1,021.88 MiB) are in `others`, which English doesn't need.
+  In 0.28.0 the speedway's five history views drew identically to the store's, pixel for
+  pixel; 0.29.0 moves only audio.
 - **The bare minimum** (`--bare-minimum`: the top three mips, the meshes' LOD 0 and 1,
   cutscene video, voices and music cut) is 4.97 GiB, against 8.49 in 0.27.0 and the 3.8
   "A frame per tier" estimated. Its views are softer and coarser: the speedway's zone
@@ -139,21 +151,22 @@ out apart, and the history views render from both.
 The 18.4 GiB came from "What can go without changing the look" (on the 0.4.0 store):
 19.24 GiB of packs once 7/8 of the cinematics' audio goes, plus a 0.16 GiB index, makes
 19.40. Taking off the movies' other audio tracks and the gathered block fields then gives
-18.40. Two of those three savings are not built, and the install doesn't make the third.
-The install's own files account for the whole gap:
+18.40. Two of those three savings are not built; the third is, from nfsh 0.29.0. The
+install's own files account for the whole gap:
 
 | With everything, base plus English | GiB |
 |---|---:|
 | Estimate | 18.40 |
 | Gathered block fields: not built | +0.66 |
 | Movies' other audio tracks: need a WebM rewrite, not built; in `base.video.nfsh` | +0.34 |
-| 7/8 of the cinematics' audio: which language a chunk is in is not worked out, so `base.voices.nfsh` keeps all of it (1.15 GiB; the estimate had 1.01 as 7/8) | +1.01 |
+| 7/8 of the cinematics' audio: built in 0.29.0, the other 7 languages' 1,021.88 MiB left out in `others`, against the estimate's 1.01 GiB (until 0.28.0, `base.voices.nfsh` kept all of it, +1.01) | +0.01 |
 | A frame per tier: the trial's +0.65% on 10.56 GiB of textures' chunks | +0.07 |
-| Sum | 20.48 |
-| **Install, measured** | **20.46** |
+| Sum | 19.48 |
+| **Install, measured** | **19.47** |
 
-The packs alone agree too. Without the first three rows, the estimate had 20.25 GiB of
-packs, and the install's packs are 20.31: 0.06 more, which is the frame per tier's cost.
+The packs alone agree too. Without the first two rows, the estimate had 19.24 GiB of
+packs, and the install's packs are 19.31: 0.07 more, which is the frame per tier's cost
+and the cinematics' 0.01.
 The index is the store's whole index (0.16 GiB, every language's entries). The estimate
 counted the same index, so it isn't part of the gap. A one-language index would be a
 little smaller; that is not measured.
@@ -173,9 +186,7 @@ rounding; it is not split between them. The 3.78 is everything the estimate took
 media: the 1.01 and 0.34 above, then video 1.46, voices 0.6 and music 0.37.
 
 - **Nothing in the gap is something the install should leave out** today. Two rows are
-  savings still to build: the gathered block fields, and the movies' tracks. The third is
-  the cinematics' other languages, which can be cut once it is known which chunk is which
-  language.
+  savings still to build: the gathered block fields, and the movies' tracks.
 - **The bare minimum's estimate was too low by design**: it took the gathered fields off
   in full, but gathering saves bytes in proportion to the texture data left, and the bare
   minimum keeps only about 1.1 GiB of mips.
@@ -239,7 +250,9 @@ Localized waves, by the language folder in their names:
 | en, in `en/` | 199 MiB | | pl | 316 MiB |
 | en, assumed, directly in `content/` | 217 MiB | | | |
 
-Cinematics' audio is another 1,174 MiB, in assets of 8 chunks each.
+Cinematics' audio is another 1,174 MiB, in assets of 8 chunks each, one per language:
+English 152 MiB, the other 7 together 1,022 MiB ([FORMATS.md](FORMATS.md), "Cinematic
+dialogue").
 
 ## What can go without changing the look
 
@@ -252,7 +265,7 @@ a new store.
 | Identical content stored once, no copied chunk ends | 25.57 GiB | 2.35 GiB | Certain: compared byte for byte |
 | Chunks nothing names | 22.85 GiB | 2.72 GiB | Strong evidence, not proof |
 | Voice-over in folders of one language, English | 20.25 GiB | 2.60 GiB | Certain, if one language is all the owner wants |
-| 7/8 of the cinematics' audio | 19.24 GiB | 1.01 GiB | Likely: which chunk is which language is not worked out |
+| 7/8 of the cinematics' audio | 19.24 GiB | 1.01 GiB | Certain: `loc/en` names the English chunk of each; built in 0.29.0, 1,021.88 MiB |
 
 Not in the tool's table, and not counted against the rows above:
 
