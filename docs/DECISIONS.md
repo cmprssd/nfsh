@@ -1202,3 +1202,31 @@ building it:
 Measured ([SIZES.md](SIZES.md), "Installs"): base plus English is 20.46 GiB with every
 tier and draws the history views exactly as the store does; at the bare minimum it is
 8.49 GiB, softer and coarser, with nothing drawn grey.
+
+## 2026-11-10: Cutscene video, voices and music as install tiers (decided by Claude, pending review)
+
+The rest of the settings table in "One disc, stripping down" that removes data: `nfsh
+install` can cut `video`, `voices` and `music`, and `--bare-minimum` cuts all three. They
+are tiers the install decides from the assets' names and types, as it decides which mesh
+chunks are a last LOD; the store doesn't tag them, so no re-import. Choices made:
+
+- **Cutscene video is the movies under `cinematics/`** (`MovieTexture2Asset`, 18 of them).
+  The UI's movies (`ui/movies/`, `ui/revealvideos/`: the intro, the map reveals, a banner,
+  0.26 GiB) stay. Why: the setting is named for cutscenes, and a menu that shows nothing
+  where a video was is a visible hole the cut wasn't meant to make.
+- **Voices are the spoken lines and the cinematics' audio:** `LocalizedWaveAsset` under
+  `audio/vo/` (in the language's part) and under `audio/cinematics/` (in the base, every
+  language in one asset). The crowds' localized walla and the cinematics' other sounds
+  (`NewWaveAsset`) stay. A movie's audio is inside its WebM, so it goes with the video, not
+  with the voices.
+- **Music is the waves under `audio/music/`** (`NewWaveAsset`).
+- **A chunk is cut only if nothing else needs it:** every ebx naming it must be one tier's
+  media, and no other entry (another chunk, an ebx, a res) may be stored in its frames.
+  Why: a cut must never take something a non-media asset uses. Which chunks an ebx names is
+  found by scanning its bytes for chunk ids, as the import does; res are not scanned, but no
+  res's location may overlap a cut frame.
+- **The cut tiers go in their part's file of that tier** (`base.video.nfsh`,
+  `en.voices.nfsh`, `base.music.nfsh`), like the mip and LOD tiers.
+- **Nothing in nfsh plays sound or video yet**, so "skipping what is absent" is today
+  `nfsh verify` counting the cut entries apart. When playback comes, a missing video is
+  skipped and a missing line plays nothing, with subtitles carrying it.

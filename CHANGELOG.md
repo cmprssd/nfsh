@@ -4,6 +4,17 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.28.0] - 2026-11-10
+
+### Added
+
+- `nfsh install` can cut cutscene video (`--cut video`), voices (`voices`: the spoken
+  lines and the cinematics' audio) and music (`music`), each into its own files, and
+  `--bare-minimum` cuts all three as well. A chunk is cut only when nothing else uses it.
+  The store is unchanged: no re-import.
+- Measured: base plus English at the bare minimum is 4.97 GiB, down from 8.49; with every
+  tier it is still 20.46 GiB (`docs/SIZES.md`, "Installs").
+
 ## [0.27.0] - 2026-11-09
 
 ### Added

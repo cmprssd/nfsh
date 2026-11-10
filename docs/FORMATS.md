@@ -1031,7 +1031,8 @@ part and tier, and the store's index unchanged.
 index.nfsh        the store's index, byte for byte; its locations still name the packs
 install.nfsh      where each of the index's frames is (below)
 base.nfsh         a part's frames that are never cut: the base, en, de, …
-base.mip0.nfsh    a part's frames of one tier that can be cut: mip0 to mip2, lod0, lod1, …
+base.mip0.nfsh    a part's frames of one tier that can be cut: mip0 to mip2, video, voices,
+                  music, lod0, lod1, …
 ```
 
 Each file holds its frames in the store's order, back to back, so a frame's offset follows
@@ -1043,6 +1044,14 @@ part's own file with everything else that can't be. (The store tags a mesh chunk
 best LOD; the install reads every mesh set again to know which chunks are a last LOD.) A
 texture's other mips (tier 4) also go in the part's own file. An entry can only lose its
 first frames: a texture keeps its smallest mips, and a mesh chunk is one frame.
+
+Three tiers are the install's own, decided from the ebx that name a chunk: cutscene video
+(tier 5, `video`: `MovieTexture2Asset` under `cinematics/`), voices (tier 6, `voices`:
+`LocalizedWaveAsset` under `audio/vo/` and `audio/cinematics/`) and music (tier 7,
+`music`: `NewWaveAsset` under `audio/music/`). A chunk is in one of them when every ebx
+naming it (its id found anywhere in the ebx's bytes) is of that tier, and a frame only
+when no other entry, chunk, ebx or res, is stored in it. A cut media chunk is left out
+whole.
 
 `install.nfsh` is big-endian, as the index is:
 

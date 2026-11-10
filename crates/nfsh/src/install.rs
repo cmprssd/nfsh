@@ -19,9 +19,12 @@ pub struct Options {
     pub choice: Choice,
 }
 
-/// The cuts `--bare-minimum` stands for: the top three mips and the meshes' LOD 0
-/// and 1, as `docs/DECISIONS.md` ("One disc, stripping down") lists them.
-pub const BARE_MINIMUM: [&str; 5] = ["mip0", "mip1", "mip2", "lod0", "lod1"];
+/// The cuts `--bare-minimum` stands for: the top three mips, the meshes' LOD 0 and 1,
+/// cutscene video, voices and music, as `docs/DECISIONS.md` ("One disc, stripping
+/// down") lists them.
+pub const BARE_MINIMUM: [&str; 8] = [
+    "mip0", "mip1", "mip2", "lod0", "lod1", "video", "voices", "music",
+];
 
 /// Reads `STORE DEST [--languages L,…] [--cut TIER,…] [--bare-minimum]`; `None` when
 /// they aren't that.
@@ -116,6 +119,9 @@ mod tests {
                 tier::TOP,
                 tier::SECOND,
                 tier::THIRD,
+                tier::VIDEO,
+                tier::VOICES,
+                tier::MUSIC,
                 tier::LOD,
                 tier::LOD + 1
             ]

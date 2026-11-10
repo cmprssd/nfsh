@@ -22,8 +22,8 @@ nfsh sizes-trial D:\nfsh-store (about 5 minutes)
   0.27 GiB with the chunks dropped, before the disc's own file system.
   The owner has settled on one complete disc with the choice made at install, down to a
   bare minimum: [DECISIONS.md](DECISIONS.md) ("One disc, stripping down").
-- **The install is built:** base plus English is 20.46 GiB with every tier, and 8.49 GiB at
-  the bare minimum that can be cut today ([Installs](#installs)).
+- **The install is built:** base plus English is 20.46 GiB with every tier, and 4.97 GiB at
+  the bare minimum ([Installs](#installs)).
 - **Blu-ray speed looks sufficient for the city's zones, but that isn't proven.** Reading
   2 km ahead takes 8.7 MiB/s at worst, under a 6x drive's slowest 10.3 MiB/s. Seeks, cars
   and missions are not in that number.
@@ -88,13 +88,13 @@ stays in the base.
 
 ## Installs
 
-`nfsh install` from nfsh 0.27.0, 2026-11-09, from the store above, with English as the one
+`nfsh install` from nfsh 0.28.0, 2026-11-10, from the store above, with English as the one
 language. `nfsh verify` read each back with no failures, counting the entries it leaves
 out apart, and the history views render from both.
 
 | File | Every tier | Bare minimum |
 |---|---:|---:|
-| `base.nfsh` (never cut) | 7.16 GiB | 7.16 GiB |
+| `base.nfsh` (never cut) | 4.04 GiB | 4.04 GiB |
 | `base.mip0.nfsh`, textures' top mip | 6.91 GiB | |
 | `base.mip1.nfsh`, second mip | 1.89 GiB | |
 | `base.mip2.nfsh`, third mip | 535.79 MiB | |
@@ -103,21 +103,33 @@ out apart, and the history views render from both.
 | `base.lod2.nfsh` | 577.92 MiB | 577.92 MiB |
 | `base.lod3.nfsh` | 206.67 MiB | 206.67 MiB |
 | `base.lod4.nfsh` | 6.79 MiB | 6.79 MiB |
-| `en.nfsh` | 414.70 MiB | 414.70 MiB |
-| **Install**, with index and placement | **20.46 GiB** | **8.49 GiB** |
-| Copy time on the owner's PC, `D:` to `D:` | 13.5 min | 9.1 min |
+| `base.video.nfsh`, cutscene video | 1.56 GiB | |
+| `base.voices.nfsh`, the cinematics' audio | 1.15 GiB | |
+| `base.music.nfsh` | 414.07 MiB | |
+| `en.nfsh` | 1.15 MiB | 1.15 MiB |
+| `en.voices.nfsh`, the spoken lines | 413.55 MiB | |
+| **Install**, with index and placement | **20.46 GiB** | **4.97 GiB** |
+| Copy time on the owner's PC, `D:` to `D:` | 14.5 min | 9.2 min |
 
-- **Every tier, base plus English:** the speedway's five history views draw identically to
-  the store's, pixel for pixel.
-- **The bare minimum** (`--bare-minimum`: the top three mips and the meshes' LOD 0 and 1
-  cut) is softer and coarser: the speedway's zone draws 1.2 million triangles instead of
-  6.4, and its textures take 11.7 MiB of the GPU instead of 694. No texture or mesh is
-  drawn grey or missing.
+- **Every tier, base plus English:** the same 20.46 GiB as in 0.27.0, now in more files;
+  the speedway's five history views draw identically to the store's, pixel for pixel.
+- **The bare minimum** (`--bare-minimum`: the top three mips, the meshes' LOD 0 and 1,
+  cutscene video, voices and music cut) is 4.97 GiB, against 8.49 in 0.27.0 and the 3.8
+  "A frame per tier" estimated. Its views are softer and coarser: the speedway's zone
+  draws 1.2 million triangles instead of 6.4, and its textures take 11.7 MiB of the GPU
+  instead of 694. No texture or mesh is drawn grey or missing.
+- **Video, voices and music come to 3.52 GiB**, against the estimate's 2.5 (from 6.3 to
+  3.8). The estimate had counted only an eighth of the cinematics' audio as English, so
+  the voices cut takes the other 7/8 too; the bare minimum ends 1.17 GiB over the estimate,
+  where the cuts before these ended 2.19 over.
 - **Both are larger than "A frame per tier" estimated:** 18.4 GiB for one language with
-  everything, and 6.3 GiB after the same cuts (4 GiB with cutscene video, voices and music
-  also off, which aren't tiers yet). The 2.06 GiB gap in the whole install carries through;
-  where the estimate went wrong is not worked out. Mesh chunks that are some mesh's last
-  LOD stay: the cut LOD tiers hold 2.65 GiB here, against 2.75 tagged in the store.
+  everything; the 2.06 GiB gap carries through, and where the estimate went wrong is not
+  worked out. Mesh chunks that are some mesh's last LOD stay: the cut LOD tiers hold
+  2.65 GiB here, against 2.75 tagged in the store.
+- **What stays of the media:** the UI's movies (0.26 GiB), the crowds' localized walla
+  (44 MiB) and the cinematics' other sounds (0.27 GiB) are in `base.nfsh`, as are
+  waves whose chunks something else also names ([DECISIONS.md](DECISIONS.md), "Cutscene
+  video, voices and music as install tiers").
 - **Mesh LOD 5's 3.12 MiB** are last LODs, so they are in `base.nfsh`.
 
 ## By kind
