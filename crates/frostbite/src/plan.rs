@@ -40,6 +40,11 @@ pub mod tier {
     pub const THIRD: u8 = 3;
     /// A texture's other mips, always kept.
     pub const REST: u8 = 4;
+    /// Cutscene video, voices and music: tiers an install decides from the assets'
+    /// names and types (`copy::install_tiers`); a store never tags a frame with them.
+    pub const VIDEO: u8 = 5;
+    pub const VOICES: u8 = 6;
+    pub const MUSIC: u8 = 7;
     /// A mesh's LOD 0; later LODs follow.
     pub const LOD: u8 = 16;
 
@@ -50,6 +55,9 @@ pub mod tier {
             SECOND => "second mip".into(),
             THIRD => "third mip".into(),
             REST => "other mips".into(),
+            VIDEO => "cutscene video".into(),
+            VOICES => "voices".into(),
+            MUSIC => "music".into(),
             lod if lod >= LOD => format!("mesh LOD {}", lod - LOD),
             other => format!("tier {other}"),
         }
@@ -57,10 +65,14 @@ pub mod tier {
 
     /// What names a tier that can be cut, in an install's file names and on `nfsh
     /// install`'s command line: `mip0` to `mip2` for a texture's top three mips, `lod0`
-    /// on for a mesh's LODs; `None` for the tiers always kept.
+    /// on for a mesh's LODs, `video`, `voices` and `music`; `None` for the tiers always
+    /// kept.
     pub fn slug(tier: u8) -> Option<String> {
         match tier {
             TOP | SECOND | THIRD => Some(format!("mip{}", tier - TOP)),
+            VIDEO => Some("video".into()),
+            VOICES => Some("voices".into()),
+            MUSIC => Some("music".into()),
             lod if lod >= LOD => Some(format!("lod{}", lod - LOD)),
             _ => None,
         }
@@ -69,9 +81,12 @@ pub mod tier {
     /// The tier [`slug`] names.
     pub fn of_slug(slug: &str) -> Option<u8> {
         let number = |prefix: &str| slug.strip_prefix(prefix)?.parse::<u8>().ok();
-        match (number("mip"), number("lod")) {
-            (Some(n), _) if n < 3 => Some(TOP + n),
-            (_, Some(n)) if n <= 200 => Some(LOD + n),
+        match (slug, number("mip"), number("lod")) {
+            ("video", ..) => Some(VIDEO),
+            ("voices", ..) => Some(VOICES),
+            ("music", ..) => Some(MUSIC),
+            (_, Some(n), _) if n < 3 => Some(TOP + n),
+            (_, _, Some(n)) if n <= 200 => Some(LOD + n),
             _ => None,
         }
     }
@@ -906,10 +921,14 @@ mod tests {
             tier::THIRD,
             tier::LOD,
             tier::LOD + 5,
+            tier::VIDEO,
+            tier::VOICES,
+            tier::MUSIC,
         ] {
             assert_eq!(tier::of_slug(&tier::slug(t).unwrap()), Some(t));
         }
         assert_eq!(tier::slug(tier::THIRD).as_deref(), Some("mip2"));
+        assert_eq!(tier::slug(tier::VOICES).as_deref(), Some("voices"));
         assert_eq!(tier::slug(tier::WHOLE), None);
         assert_eq!(tier::slug(tier::REST), None);
         assert_eq!(tier::of_slug("mip3"), None);

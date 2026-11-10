@@ -37,9 +37,11 @@ usage: nfsh install STORE DEST [--languages L,...] [--cut TIER,...] [--bare-mini
   if missing; an earlier store or install there is replaced), one file per part and
   tier: the base, the languages L (en, de, es, fr, it, jp, pl, ru; default: every
   one the store has), and every tier but the ones cut: mip0, mip1 and mip2 for a
-  texture's top three mips, lod0, lod1, ... for a mesh's LODs. A texture keeps its
-  smallest mip and a mesh its last LOD. --bare-minimum cuts mip0 to mip2, lod0 and
-  lod1. Every other command reads an install as it does a store.
+  texture's top three mips, lod0, lod1, ... for a mesh's LODs, video for the
+  cutscenes' movies, voices for the spoken lines and the cinematics' audio, music.
+  A texture keeps its smallest mip and a mesh its last LOD. --bare-minimum cuts
+  mip0 to mip2, lod0, lod1, video, voices and music. Every other command reads an
+  install as it does a store.
 usage: nfsh reindex STORE
   Lists every ebx's partition GUID in the index of the store in the folder STORE
   (the import does it; this adds them to a store made before nfsh 0.6.0).

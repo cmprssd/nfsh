@@ -204,8 +204,9 @@ copy off the disc ([DECISIONS.md](DECISIONS.md), "One disc, stripping down").
 Since 0.27.0 `nfsh install` makes that copy: one file per part and tier, and every command
 reads it as it does a store, a texture without its top mips drawn from the ones it has and
 a mesh without its first LODs from the first it has. Base plus English is 20.46 GiB with
-every tier, drawing exactly as the store does, and 8.49 GiB at today's bare minimum (no top
-three mips, no LOD 0 or 1), softer and coarser ([SIZES.md](SIZES.md), "Installs").
+every tier, drawing exactly as the store does. Since 0.28.0 it can also cut cutscene
+video, voices and music: the bare minimum (no top three mips, no LOD 0 or 1, none of
+those three) is 4.97 GiB, softer, coarser and silent ([SIZES.md](SIZES.md), "Installs").
 
 ## Where it is going
 

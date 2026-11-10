@@ -8,15 +8,17 @@
 //! leading frames (the top mips) and a mesh's chunk can be missing altogether (a LOD
 //! cut); readers fall back to what is there. See `docs/FORMATS.md`, "Installs".
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use crate::ebx::Partition;
 use crate::mesh::MeshSet;
-use crate::plan::{BASE, tier};
+use crate::plan::{BASE, Finder, tier};
 use crate::sb::res_type_hash;
-use crate::store::{INDEX, Store, clear, finish, in_parallel, io_error, pack_name};
+use crate::store::{INDEX, Store, clear, finish, in_parallel, io_error, pack_name, toc_chunk_id};
 use crate::{Location, Result, bail};
 
 /// Where an install's frames are.
@@ -285,11 +287,63 @@ pub struct Choice {
     pub cut: Vec<u8>,
 }
 
+/// The install-time tier of an ebx named `name` whose first instance is a `root`, if
+/// it is one: cutscene video (the movies under `cinematics/`), voices (the spoken lines
+/// under `audio/vo/` and the cinematics' audio, in every language) or music.
+pub fn media_tier(name: &str, root: &str) -> Option<u8> {
+    let name = name.to_ascii_lowercase();
+    let under = |folder: &str| name.starts_with(folder);
+    match root {
+        "MovieTexture2Asset" if under("cinematics/") => Some(tier::VIDEO),
+        "LocalizedWaveAsset" if under("audio/vo/") || under("audio/cinematics/") => {
+            Some(tier::VOICES)
+        }
+        "NewWaveAsset" if under("audio/music/") => Some(tier::MUSIC),
+        _ => None,
+    }
+}
+
+/// By chunk, its media tier: one tier's ebx name it, and no other ebx does.
+/// `named` is every ebx's media tier, if any, and the chunks it names.
+fn media_of(named: &[(Option<u8>, Vec<u32>)], chunks: usize) -> Vec<Option<u8>> {
+    // `None`: nothing names it yet; `Some(None)`: something that is no one tier's media.
+    let mut of: Vec<Option<Option<u8>>> = vec![None; chunks];
+    for (tier, names) in named {
+        for &c in names {
+            let Some(slot) = of.get_mut(c as usize) else {
+                continue;
+            };
+            *slot = Some(match *slot {
+                None => *tier,
+                Some(had) if had == *tier => had,
+                Some(_) => None,
+            });
+        }
+    }
+    of.into_iter().map(Option::flatten).collect()
+}
+
+/// The frames holding the entry at `location`, if it starts at a frame and ends at one.
+fn frames_at(starts: &[(u8, u32)], sizes: &[u32], location: Location) -> Option<Range<usize>> {
+    let first = starts
+        .binary_search(&(location.cas.cas, location.offset))
+        .ok()?;
+    let mut left = u64::from(location.size);
+    let mut end = first;
+    while left > 0 {
+        let size = u64::from(*sizes.get(end)?);
+        left = left.checked_sub(size)?;
+        end += 1;
+    }
+    Some(first..end)
+}
+
 /// The tier each frame of `store` is installed by: a texture's top three mips each
 /// their own, a mesh chunk's LOD its own unless it is the last LOD of a mesh using it
-/// (a mesh keeps its last LOD, as a texture its smallest mip), and everything else
-/// [`tier::WHOLE`]. The store tags a mesh chunk with its best LOD; this reads every
-/// mesh set again to know which chunks are a mesh's last.
+/// (a mesh keeps its last LOD, as a texture its smallest mip), cutscene video, voices
+/// and music their own ([`media_tier`]), and everything else [`tier::WHOLE`]. The
+/// store tags a mesh chunk with its best LOD; this reads every mesh set again to know
+/// which chunks are a mesh's last, and every ebx for the chunks it names.
 pub fn install_tiers(store: &Store) -> Result<Vec<u8>> {
     let mut tiers: Vec<u8> = store
         .frames
@@ -341,7 +395,82 @@ pub fn install_tiers(store: &Store) -> Result<Vec<u8>> {
             *t = tier::LOD + lod;
         }
     }
+    media_tiers(store, &starts, &mut tiers)?;
     Ok(tiers)
+}
+
+/// Tags the frames of cutscene video, voices and music with their tier, where no
+/// other entry needs them: a frame stays whole if any entry that isn't one tier's
+/// media is stored in it.
+fn media_tiers(store: &Store, starts: &[(u8, u32)], tiers: &mut [u8]) -> Result<()> {
+    let mut ids: HashMap<[u8; 16], u32> = HashMap::new();
+    let mut chunks: Vec<(u32, Location)> = Vec::new();
+    let mut others: Vec<Location> = Vec::new();
+    let mut ebx: BTreeMap<Location, Vec<&str>> = BTreeMap::new();
+    let mut chunk = |ids: &mut HashMap<[u8; 16], u32>, id: [u8; 16], l: Location| {
+        let next = ids.len() as u32;
+        chunks.push((*ids.entry(id).or_insert(next), l));
+    };
+    for sb in &store.superbundles {
+        for b in &sb.bundles {
+            for a in &b.bundle.ebx {
+                ebx.entry(a.location).or_default().push(&a.name);
+                others.push(a.location);
+            }
+            others.extend(b.bundle.res.iter().map(|r| r.asset.location));
+            for c in &b.bundle.chunks {
+                chunk(&mut ids, c.id, c.location);
+            }
+        }
+        for c in &sb.chunks {
+            chunk(&mut ids, toc_chunk_id(c.chunk.id), c.chunk.location);
+        }
+    }
+    let finder = Finder::new(&ids);
+    let ebx: Vec<(Location, Vec<&str>)> = ebx.into_iter().collect();
+    let named = in_parallel(
+        &ebx,
+        || store.entries(),
+        |entries, (l, names)| {
+            let data = entries.read(*l)?;
+            let root = Partition::parse(&data)
+                .ok()
+                .and_then(|p| p.instances.first().map(|i| p.type_name(i.type_index)))
+                .unwrap_or_default();
+            let found = finder.scan(&data);
+            Ok(names
+                .iter()
+                .map(|n| (media_tier(n, &root), found.clone()))
+                .collect::<Vec<_>>())
+        },
+    )?;
+    let named: Vec<(Option<u8>, Vec<u32>)> = named.into_iter().flatten().collect();
+    let media = media_of(&named, ids.len());
+    let sizes: Vec<u32> = store.frames.iter().map(|f| f.size).collect();
+    let mut kept = vec![false; tiers.len()];
+    let mut tagged: Vec<(Range<usize>, u8)> = Vec::new();
+    for (c, l) in chunks {
+        let Some(frames) = frames_at(starts, &sizes, l) else {
+            continue;
+        };
+        match media[c as usize] {
+            Some(t) => tagged.push((frames, t)),
+            None => kept[frames].fill(true),
+        }
+    }
+    for l in others {
+        if let Some(frames) = frames_at(starts, &sizes, l) {
+            kept[frames].fill(true);
+        }
+    }
+    for (frames, t) in tagged {
+        for f in frames {
+            if !kept[f] && tiers[f] == tier::WHOLE {
+                tiers[f] = t;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// What [`copy`] wrote.
@@ -432,7 +561,7 @@ pub fn copy(
             }
         }
     }
-    say("reading the mesh sets for their last LODs");
+    say("reading the mesh sets for their last LODs, and the ebx for the media they name");
     let tiers = install_tiers(store)?;
     let keys: Vec<(u8, u8)> = store
         .frames
@@ -542,6 +671,96 @@ mod tests {
         let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["base.nfsh", "base.lod0.nfsh", "en.nfsh"]);
         assert_eq!(of, [0, CUT, 2, CUT, 1, 0]);
+    }
+
+    #[test]
+    fn media_is_known_by_its_type_and_folder() {
+        let t = |name, root| media_tier(name, root);
+        assert_eq!(
+            t("Cinematics/Raw_Videos/c01", "MovieTexture2Asset"),
+            Some(tier::VIDEO)
+        );
+        assert_eq!(
+            t("ui/movies/introsizzle", "MovieTexture2Asset"),
+            None,
+            "UI movies stay"
+        );
+        assert_eq!(
+            t("audio/vo/cops/content/en/line", "LocalizedWaveAsset"),
+            Some(tier::VOICES)
+        );
+        assert_eq!(
+            t("audio/cinematics/audioassets/c0", "LocalizedWaveAsset"),
+            Some(tier::VOICES)
+        );
+        assert_eq!(
+            t("audio/cinematics/sfx/c0", "NewWaveAsset"),
+            None,
+            "cinematic effects stay"
+        );
+        assert_eq!(t("audio/crowds/walla", "LocalizedWaveAsset"), None);
+        assert_eq!(t("audio/music/track_01", "NewWaveAsset"), Some(tier::MUSIC));
+        assert_eq!(
+            t("audio/music/track_01", "SoundPatchAsset"),
+            None,
+            "only the waves"
+        );
+    }
+
+    #[test]
+    fn a_chunk_is_media_only_if_nothing_else_names_it() {
+        let named = [
+            (Some(tier::MUSIC), vec![0, 1]),
+            (Some(tier::MUSIC), vec![1]),
+            (Some(tier::VOICES), vec![2, 3]),
+            (Some(tier::MUSIC), vec![3]),
+            (None, vec![4]),
+            (Some(tier::VIDEO), vec![4, 5]),
+        ];
+        assert_eq!(
+            media_of(&named, 7),
+            [
+                Some(tier::MUSIC),
+                Some(tier::MUSIC),
+                Some(tier::VOICES),
+                None,
+                None,
+                Some(tier::VIDEO),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn an_entry_covers_whole_frames_or_none() {
+        let starts = [(0, 0), (0, 10), (0, 30), (1, 0)];
+        let sizes = [10, 20, 5, 7];
+        let at = |cas: u8, offset, size| Location {
+            cas: crate::CasRef {
+                patch: false,
+                package: 0,
+                cas,
+            },
+            offset,
+            size,
+        };
+        assert_eq!(frames_at(&starts, &sizes, at(0, 10, 25)), Some(1..3));
+        assert_eq!(frames_at(&starts, &sizes, at(1, 0, 7)), Some(3..4));
+        assert_eq!(
+            frames_at(&starts, &sizes, at(0, 10, 21)),
+            None,
+            "ends inside a frame"
+        );
+        assert_eq!(
+            frames_at(&starts, &sizes, at(0, 5, 5)),
+            None,
+            "starts inside one"
+        );
+        assert_eq!(
+            frames_at(&starts, &sizes, at(1, 0, 8)),
+            None,
+            "runs past the last"
+        );
     }
 
     #[test]
