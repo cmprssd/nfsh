@@ -960,6 +960,28 @@ Each zone's `worldart_zs_<n>_midday` (and `_tealnight`, …) bundle holds the zo
 precomputed indirect light for that time (a `LayerReferenceObjectData`, a
 `GiGridAssetSelectorData`, Enlighten data); not read yet.
 
+## Cinematic dialogue
+
+A real-time cinematic's lines are a `LocalizedWaveAsset` under
+`audio/cinematics/audioassets/` (70 of them, two per scene: `_dx_m` and `_dx_f` for the
+male and female driver), with every language in one asset. Its `Chunks` array has 8
+`SoundDataChunk` records (a chunk id and its size), one per language, **sorted by chunk
+id**: the array's order says nothing about the language, and the English one is at every
+position from 0 to 7 across the 70. Its `Policy` is
+`CortexShared/Audio/System/AudioSystem_NFS20`, whose `Languages` list the 8 (English,
+French, Italian, German, Spanish, Japanese, Russian, Polish, in that order) and the
+settings mapping each from English.
+
+Which chunk is which language is in the tables: `Win32/loc/<language>` lists its own
+language's chunk of each asset, as well as `Win32/chunks0` listing all 8. The owner's
+install has only `Win32/loc/en`, which lists exactly one chunk of each of the 70.
+
+Each chunk is EA's SPS stream: a header block `0x48`, 12 bytes (codec EALayer3, 6
+channels, 48,000 Hz, the sample count), then the audio. All 8 chunks of an asset have the
+same sample count. Decoding four assets' 32 chunks and naming the language spoken
+(speech recognition, outside the repo) found 8 different languages in each asset, the
+English one always the chunk `loc/en` lists.
+
 ## nfsh's store (our own format)
 
 What `nfsh import` writes: a folder with an index and a few packs.
@@ -992,7 +1014,12 @@ What is not stored as the install lists it:
 
 Every frame has a part and a tier (below). A chunk or an ebx is in a language's part
 only if a localized wave of that language needs it and nothing else does; anything shared
-goes in the base, so the base and any one language find every chunk they name.
+goes in the base, so the base and any one language find every chunk they name. A
+cinematic's wave (above) is in the base, and each of its chunks in its language's part:
+the language whose `Win32/loc/<language>` lists it, or `others`, the languages the
+install has no table for. The wave's res, of the same name, names the same chunks and
+counts as the wave. A wave or its res in the base naming a language's chunk is the one
+reference out of the base the check allows.
 
 The index is big-endian like Heat's tables. A string or byte run is a u32 length and
 the bytes; a list is a u32 count and the items; a location is the pack (u8), the
@@ -1010,7 +1037,7 @@ offset in it and the size (u32 each), and must lie inside the pack.
 | bundle chunk | id (16 bytes), SHA-1, logical offset, logical size (u32), location |
 | superbundle chunk | id, layer, location |
 | partitions | after the superbundles: list of each ebx's partition GUID (16 bytes, from its header), in the order the superbundles list their ebx; empty for none, else one per ebx |
-| parts | list of names: `base`, then the languages `en`, `de`, `es`, `fr`, `it`, `jp`, `pl`, `ru` |
+| parts | list of names: `base`, then the languages `en`, `de`, `es`, `fr`, `it`, `jp`, `pl`, `ru`, then `others` (from nfsh 0.29.0) |
 | frames | list of every frame in pack order: size (u32), part (u8, an index into parts), tier (u8) |
 
 A frame's place follows from those before it, so the frames must fill each pack exactly;
@@ -1034,6 +1061,9 @@ base.nfsh         a part's frames that are never cut: the base, en, de, …
 base.mip0.nfsh    a part's frames of one tier that can be cut: mip0 to mip2, video, voices,
                   music, lod0, lod1, …
 ```
+
+An install with a list of languages keeps `others` when one of them has no
+`Win32/loc/<language>` in the store; `others` can't be asked for by name.
 
 Each file holds its frames in the store's order, back to back, so a frame's offset follows
 from those before it in the same file. Files are not split; offsets are 64-bit.
