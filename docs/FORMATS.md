@@ -1011,6 +1011,14 @@ What is not stored as the install lists it:
 - **A texture's chunk** of exactly its mips is split into a frame per tier: the top mip,
   second, third, and the rest. A texture always keeps its smallest mip, in the last frame,
   so one of few mips has no frames for the tiers before it.
+- **A BC1, BC2, BC3 or BC5 texture's frames hold its blocks with their fields gathered**
+  (from nfsh 0.30.0): every block's first field, then every block's second, and so on; bytes
+  after the last whole block stay at the end. BC1 (8 bytes): colours 0-3, indices 4-7. BC2
+  and BC3 (16): alpha end points 0-1, alpha indices 8-11, colours 2-7, colour indices 12-15.
+  BC5 (16): end points 0-1, 8-9, then indices 2-7, 10-15. Each such frame follows a zstd
+  skippable frame of 9 bytes: magic `5B 2A 4D 18`, length 1 (u32 little-endian), and the
+  layout (u8: 1 BC1, 2 BC2/BC3, 3 BC5). The frame's size in the table counts both, so a
+  tier cut from an install takes its marker with it.
 
 Every frame has a part and a tier (below). A chunk or an ebx is in a language's part
 only if a localized wave of that language needs it and nothing else does; anything shared
@@ -1027,7 +1035,7 @@ offset in it and the size (u32 each), and must lie inside the pack.
 
 | field | |
 |-------|--|
-| magic, version | `NFSHSTOR`, u32 4 (versions 3, without the last two lists, and 2, without the partitions either, are still read; version 1 kept Heat's Oodle blocks) |
+| magic, version | `NFSHSTOR`, u32 5 (version 4 is the same without gathered frames; versions 3, without the last two lists, and 2, without the partitions either, are still read; version 1 kept Heat's Oodle blocks) |
 | packs | list of u64 sizes (checked against the files on open) |
 | dictionary | byte run: the ebx frames' zstd dictionary, empty for none |
 | superbundles | list: name, bundles, chunks |

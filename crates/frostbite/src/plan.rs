@@ -13,6 +13,7 @@ use std::ops::Range;
 
 use crate::Location;
 use crate::ebx::Partition;
+use crate::frames::Layout;
 use crate::install::Superbundle;
 use crate::mesh::MeshSet;
 use crate::sb::{bundle_chunk_size, res_type_hash};
@@ -347,6 +348,8 @@ pub struct Cuts {
     pub chunk: u32,
     pub at: [u64; 3],
     pub bytes: u64,
+    /// How its blocks are laid out in its frames.
+    pub layout: Layout,
 }
 
 /// What one entry's bytes hold.
@@ -411,6 +414,9 @@ pub fn scan(entry: &Entry, data: &[u8], listing: &Listing, finder: &Finder) -> S
                     chunk,
                     at: t.tier_cuts(),
                     bytes: t.chunk_bytes(),
+                    layout: t
+                        .format()
+                        .map_or(Layout::Plain, |f| Layout::of_format(f.name)),
                 });
             }
         }
@@ -450,6 +456,8 @@ pub struct Keep {
     pub part: u8,
     /// Its frames in order: where each ends in the entry, and its tier.
     pub frames: Vec<(u64, u8)>,
+    /// How its frames' bytes are laid out: a texture's chunk by its blocks' format.
+    pub layout: Layout,
 }
 
 impl Keep {
@@ -651,6 +659,7 @@ pub fn decide(listing: &Listing, scans: &[Scan]) -> Vec<Fate> {
                 ebx: g.ebx,
                 part: g.part.unwrap_or(BASE),
                 frames: frames_of(s.raw, g.cuts, g.lod),
+                layout: g.cuts.map_or(Layout::Plain, |c| c.layout),
             })
         });
     }
@@ -938,6 +947,7 @@ mod tests {
             chunk,
             at: [64, 80, 88],
             bytes,
+            layout: Layout::Bc3,
         };
         let mut scans = vec![scan_of(1, 10), scan_of(2, 100), scan_of(3, 90)];
         scans[0].names = vec![chunk_index(&l, 1), chunk_index(&l, 2)];
@@ -957,11 +967,13 @@ mod tests {
         );
         let pieces: Vec<_> = k.pieces().collect();
         assert_eq!(pieces[1], (64..80, tier::SECOND));
+        assert_eq!(k.layout, Layout::Bc3);
         // Not exactly the mips of any texture: one frame.
         let Fate::Keep(k) = &fates[2] else {
             panic!("{:?}", fates[2]);
         };
         assert_eq!(k.frames, [(90, tier::WHOLE)]);
+        assert_eq!(k.layout, Layout::Plain);
     }
 
     #[test]
@@ -993,6 +1005,7 @@ mod tests {
             chunk: 0,
             at: [64, 64, 64],
             bytes: 80,
+            layout: Layout::Plain,
         };
         assert_eq!(
             frames_of(80, Some(cuts), None),

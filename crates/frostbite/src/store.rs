@@ -33,9 +33,11 @@ use crate::{CasRef, Location, Result, bail};
 
 pub const INDEX: &str = "index.nfsh";
 const MAGIC: &[u8; 8] = b"NFSHSTOR";
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 /// The oldest version still read: such a store has no partition GUIDs until [`reindex`]
-/// adds them. Version 3 added the GUIDs, and version 4 the frames' table and parts.
+/// adds them. Version 3 added the GUIDs, version 4 the frames' table and parts, and
+/// version 5 frames with their blocks' fields gathered ([`frames::Layout`]), which an
+/// older nfsh would read wrong; its index is version 4's.
 const VERSION_WITHOUT_GUIDS: u32 = 2;
 
 /// A pack is closed once the next entry would take it past this size, so packs stay
@@ -598,7 +600,7 @@ pub fn import(
                 let mut stored = Vec::new();
                 let mut frames = Vec::new();
                 for (range, tier) in keep.pieces() {
-                    let frame = encoder.encode(&data[range], ebx)?;
+                    let frame = encoder.encode_as(&data[range], ebx, keep.layout)?;
                     frames.push(Frame {
                         size: frame.len() as u32,
                         part: keep.part,
@@ -1274,7 +1276,7 @@ pub fn decode(bytes: &[u8]) -> Result<Index> {
         _ => i.list(|i| i.r.array())?,
     };
     let (parts, frames) = match version {
-        VERSION => {
+        4 | VERSION => {
             let parts = i.list(IndexReader::string)?;
             let frames = i.list(|i| {
                 Ok(Frame {
