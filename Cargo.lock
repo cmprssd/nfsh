@@ -826,6 +826,7 @@ dependencies = [
  "frostbite",
  "nfsh-render",
  "png",
+ "windows-sys 0.61.2",
  "winit",
 ]
 

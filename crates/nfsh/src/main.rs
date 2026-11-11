@@ -1,10 +1,11 @@
-//! nfsh: a new engine for Need for Speed: Heat. For now it has eleven commands: an
+//! nfsh: a new engine for Need for Speed: Heat. For now it has twelve commands: an
 //! inventory of the owner's install, a check that every entry of the install or of a
 //! store decompresses, the import into nfsh's own store, the copy of a store into an
 //! install of the parts and tiers a player keeps, the store's partition GUIDs
 //! listed again, an ebx partition printed as text, Palm City's level graph, one
-//! mesh's geometry, one texture, what a store's bytes are, and a window to fly through one zone.
+//! mesh's geometry, one texture, what a store's bytes are, and a window to fly through one zone, and a reader of the original's camera.
 
+mod camera;
 mod ebx;
 mod fly;
 mod import;
@@ -82,6 +83,15 @@ usage: nfsh view STORE ZONE [--shot PNG] [--vsync] [--night] [--camera X,Y,Z,YAW
   in seconds) and closes at its end, printing the time to the first frame and the
   frame times along it (mean, median, p99, 1% low, max); --headless draws that path
   without a window, a frame every 1/60 s of path time, one at a time.
+usage: nfsh camera scan FILE --near X,Y,Z [--radius M]
+       nfsh camera changed FILE | same FILE | show FILE
+       nfsh camera record ADDRESS LAYOUT PATH --seconds S
+  Reads the running original game's camera, for the baseline; it only reads its
+  memory (Windows only). scan writes to FILE every matrix in the game's memory that
+  could be a camera within M metres (default 2000) of X,Y,Z; changed keeps those that
+  turned or moved since the last look, same those that held still, show lists them.
+  record polls the camera at ADDRESS read as LAYOUT (as the listing names them) and
+  writes a path to PATH, from its first move for S seconds.
 INSTALL is the game folder (with Data/ and Patch/); default: $NFSH_INSTALL.";
 
 fn main() -> ExitCode {
@@ -96,6 +106,18 @@ fn main() -> ExitCode {
             Ok(text) => {
                 print!("{text}");
                 eprintln!("view took {:.1} s", start.elapsed().as_secs_f64());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("nfsh: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if let Some(("camera", rest)) = args.split_first().map(|(c, r)| (c.as_str(), r)) {
+        return match camera::run(rest) {
+            Ok(text) => {
+                print!("{text}");
                 ExitCode::SUCCESS
             }
             Err(e) => {
