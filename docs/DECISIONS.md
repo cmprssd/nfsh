@@ -1270,3 +1270,6 @@ recompression"), built in nfsh 0.30.0.
   frame. It costs 9 bytes a frame.
 - **The index is version 5, its layout unchanged,** so a release before 0.30.0 refuses the
   store instead of reading gathered blocks as they are. 0.30.0 still reads version 4.
+- **Measured:** the store is 22.50 GiB, 0.58 GiB less than 0.29.0's 23.08, all of it in the
+  textures' tiers; base plus English with every tier is 18.89 GiB ([SIZES.md](SIZES.md),
+  "Installs"). The import took about 130 minutes.
