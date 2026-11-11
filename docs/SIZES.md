@@ -16,16 +16,17 @@ nfsh sizes-trial D:\nfsh-store (about 5 minutes)
   23.28 GiB. nfsh 0.26.0's store is 23.08 GiB: 22.92 GiB of packs and a 0.16 GiB index,
   every language kept, every texture's chunk split into a frame per tier. It was 28.07 GiB.
 - **The rest of this page measured the 0.4.0 store** and says what a new store would hold;
-  the gathered block fields and everything that loses quality are not built.
+  everything that loses quality is not built.
 - **Two savings are the owner's call**: the chunks nothing names, and the other languages.
   Either one is enough, along with storing identical bytes once, though the margin is thin:
   0.27 GiB with the chunks dropped, before the disc's own file system.
   The owner has settled on one complete disc with the choice made at install, down to a
   bare minimum: [DECISIONS.md](DECISIONS.md) ("One disc, stripping down").
-- **The install is built:** base plus English is 19.47 GiB with every tier, and 4.97 GiB at
-  the bare minimum ([Installs](#installs)). That is 1.07 and 1.12 GiB over the estimates,
-  which counted savings not built yet: the gathered block fields and the movies' other
-  audio tracks ([Against the estimate](#against-the-estimate)).
+- **The install is built:** base plus English is 18.89 GiB with every tier, and 4.91 GiB at
+  the bare minimum ([Installs](#installs)), from nfsh 0.30.0's store with gathered block
+  fields. That is 0.49 and 1.06 GiB over the estimates, which counted the movies' other
+  audio tracks, not built yet, and the gathered block fields at 0.66 GiB, where they save
+  0.58 ([Against the estimate](#against-the-estimate)).
 - **Blu-ray speed looks sufficient for the city's zones, but that isn't proven.** Reading
   2 km ahead takes 8.7 MiB/s at worst, under a 6x drive's slowest 10.3 MiB/s. Seeks, cars
   and missions are not in that number.
@@ -34,14 +35,16 @@ nfsh sizes-trial D:\nfsh-store (about 5 minutes)
 
 `nfsh import` from nfsh 0.26.0, 2026-11-07, 106 minutes (158 minutes for nfsh 0.29.0's on
 2026-11-10, the same sizes but for the parts below), every entry checked byte for byte
-against the install; `nfsh verify` then read it all back with no failures.
+against the install; `nfsh verify` then read it all back with no failures. nfsh 0.30.0's,
+2026-11-11, about 130 minutes, stores textures' blocks with their fields gathered, checked
+byte for byte by the import the same way (`nfsh verify` not run on it).
 
-| | Size |
-|---|---:|
-| Packs (24) | 22.92 GiB |
-| Index | 162.39 MiB |
-| **Store** | **23.08 GiB** |
-| A BD-25 holds | 23.28 GiB |
+| | 0.26.0 | 0.30.0 |
+|---|---:|---:|
+| Packs | 22.92 GiB (24) | 22.34 GiB (23) |
+| Index | 162.39 MiB | 162.39 MiB |
+| **Store** | **23.08 GiB** | **22.50 GiB** |
+| A BD-25 holds | 23.28 GiB | 23.28 GiB |
 
 Not stored again, in the install's stored bytes:
 
@@ -106,10 +109,10 @@ of the voices, wherever they are, so 0.29.0 leaves it as it was.
 
 | File | Every tier | Bare minimum |
 |---|---:|---:|
-| `base.nfsh` (never cut) | 4.04 GiB | 4.04 GiB |
-| `base.mip0.nfsh`, textures' top mip | 6.91 GiB | |
-| `base.mip1.nfsh`, second mip | 1.89 GiB | |
-| `base.mip2.nfsh`, third mip | 535.79 MiB | |
+| `base.nfsh` (never cut) | 3.97 GiB | 3.97 GiB |
+| `base.mip0.nfsh`, textures' top mip | 6.51 GiB | |
+| `base.mip1.nfsh`, second mip | 1.80 GiB | |
+| `base.mip2.nfsh`, third mip | 512.97 MiB | |
 | `base.lod0.nfsh`, mesh LOD 0 | 1.63 GiB | |
 | `base.lod1.nfsh`, mesh LOD 1 | 1.02 GiB | |
 | `base.lod2.nfsh` | 577.92 MiB | 577.92 MiB |
@@ -120,15 +123,21 @@ of the voices, wherever they are, so 0.29.0 leaves it as it was.
 | `base.music.nfsh` | 414.07 MiB | |
 | `en.nfsh` | 1.15 MiB | 1.15 MiB |
 | `en.voices.nfsh`, the spoken lines and the cinematics' English | 565.92 MiB | |
-| **Install**, with index and placement | **19.47 GiB** | **4.97 GiB** |
+| **Install**, with index and placement | **18.89 GiB** | **4.91 GiB** |
 | Copy time on the owner's PC, `D:` to `D:` | 16.2 min | 9.2 min |
 
-- **Every tier, base plus English:** 19.47 GiB, 0.99 GiB less than 0.28.0's 20.46: the
+- **Gathered block fields (0.30.0) save 0.58 GiB,** 622,723,049 bytes, all in the textures'
+  tiers: top mip -5.77%, second -5.03%, third -4.26%, the rest (in `base.nfsh`) -5.62%. The
+  trial's sample had estimated 0.66. The four texture rows above and the totals are
+  0.29.0's installs less each tier's bytes in the new store's index (`D:\nfsh-store-gathered`),
+  not a new copy: nothing else in base or English changed, byte for byte. The import checked
+  every entry back against the install.
+- **Every tier, base plus English, in 0.29.0:** 19.47 GiB, 0.99 GiB less than 0.28.0's 20.46: the
   cinematics' other 7 languages (1,021.88 MiB) are in `others`, which English doesn't need.
   In 0.28.0 the speedway's five history views drew identically to the store's, pixel for
   pixel; 0.29.0 moves only audio.
 - **The bare minimum** (`--bare-minimum`: the top three mips, the meshes' LOD 0 and 1,
-  cutscene video, voices and music cut) is 4.97 GiB, against 8.49 in 0.27.0 and the 3.8
+  cutscene video, voices and music cut) was 4.97 GiB in 0.28.0, against 8.49 in 0.27.0 and the 3.8
   "A frame per tier" estimated. Its views are softer and coarser: the speedway's zone
   draws 1.2 million triangles instead of 6.4, and its textures take 11.7 MiB of the GPU
   instead of 694. No texture or mesh is drawn grey or missing.
@@ -151,22 +160,22 @@ of the voices, wherever they are, so 0.29.0 leaves it as it was.
 The 18.4 GiB came from "What can go without changing the look" (on the 0.4.0 store):
 19.24 GiB of packs once 7/8 of the cinematics' audio goes, plus a 0.16 GiB index, makes
 19.40. Taking off the movies' other audio tracks and the gathered block fields then gives
-18.40. Two of those three savings are not built; the third is, from nfsh 0.29.0. The
-install's own files account for the whole gap:
+18.40. The cinematics are built from nfsh 0.29.0 and the gathered fields from 0.30.0; the
+movies' tracks are not. The install's own files account for the whole gap:
 
 | With everything, base plus English | GiB |
 |---|---:|
 | Estimate | 18.40 |
-| Gathered block fields: not built | +0.66 |
+| Gathered block fields: built in 0.30.0, saving 0.58 of the estimate's 0.66 | +0.08 |
 | Movies' other audio tracks: need a WebM rewrite, not built; in `base.video.nfsh` | +0.34 |
 | 7/8 of the cinematics' audio: built in 0.29.0, the other 7 languages' 1,021.88 MiB left out in `others`, against the estimate's 1.01 GiB (until 0.28.0, `base.voices.nfsh` kept all of it, +1.01) | +0.01 |
 | A frame per tier: the trial's +0.65% on 10.56 GiB of textures' chunks | +0.07 |
-| Sum | 19.48 |
-| **Install, measured** | **19.47** |
+| Sum | 18.90 |
+| **Install, measured** | **18.89** |
 
-The packs alone agree too. Without the first two rows, the estimate had 19.24 GiB of
-packs, and the install's packs are 19.31: 0.07 more, which is the frame per tier's cost
-and the cinematics' 0.01.
+The packs alone agree too, as 0.29.0 measured them: without the movies' tracks and the
+gathered fields, the estimate had 19.24 GiB of packs, and that install's packs are 19.31:
+0.07 more, which is the frame per tier's cost and the cinematics' 0.01.
 The index is the store's whole index (0.16 GiB, every language's entries). The estimate
 counted the same index, so it isn't part of the gap. A one-language index would be a
 little smaller; that is not measured.
@@ -174,12 +183,12 @@ little smaller; that is not measured.
 | Bare minimum | GiB |
 |---|---:|
 | Estimate | 3.85 |
-| Gathered block fields, taken off in full by the estimate, though most of them are in mips the bare minimum cuts | +0.66 |
+| Gathered block fields: the estimate took off 0.66, the bare minimum keeps only the rest tier's 0.06 of the 0.58 | +0.60 |
 | Meshes: chunks that are some mesh's last LOD stay; cut 2.65, not 2.82 | +0.17 |
 | Video, voices and music: cut 3.52, not 3.78; mostly the UI's movies (0.26), which stay | +0.26 |
 | Textures' top three mips: cut 9.32, not 9.30 | -0.02 |
-| Sum | 4.92 |
-| **Install, measured** | **4.97** |
+| Sum | 4.86 |
+| **Install** (0.28.0's measured 4.97, less the rest tier's 0.06) | **4.91** |
 
 The last 0.05 GiB is the frame per tier's cost in the tiers kept, plus the estimate's
 rounding; it is not split between them. The 3.78 is everything the estimate took off for
@@ -272,7 +281,8 @@ Not in the tool's table, and not counted against the rows above:
 - **7/8 of the movies' audio: 0.34 GiB.** Summing the WebM blocks by track, the 26 distinct
   movies hold 1.46 GiB of video and 0.40 GiB of audio, 16 of them with 8 audio tracks. Taking
   tracks out means rewriting the WebM files and their frame tables.
-- **Gathering block fields: about 0.66 GiB** (the trial below), applied to today's sizes.
+- **Gathering block fields: about 0.66 GiB** (the trial below), applied to today's sizes;
+  built in nfsh 0.30.0, it saves 0.58 ([Installs](#installs)).
 
 ### Identical bytes
 

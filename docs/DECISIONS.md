@@ -1254,3 +1254,22 @@ only `loc/en`.
 - **The rule is the tables', not English's:** an install with more `loc` tables would put
   those languages' chunks in their own parts on import, and `others` would hold only the
   rest.
+
+## 2026-11-11: Gathered block fields in the store (decided by Claude, pending review)
+
+The largest saving left without loss in [SIZES.md](SIZES.md) ("The sample of lossless
+recompression"), built in nfsh 0.30.0.
+
+- **Which formats:** BC1, BC2, BC3 and BC5. BC4 gained 1.8% in the trial on 0.4 MiB, and
+  BC6H and BC7 have no fixed fields, so they stay as they are.
+- **Gathered within each frame, not across the chunk.** A tier cut from an install takes its
+  frame with it, so every frame has to read back alone.
+- **Each gathered frame says so itself,** in a 9-byte zstd skippable frame before it, not in
+  the index's frame table. Why: every reader (a store, an install, a copy) decodes from the
+  frame's bytes alone, with no table to look up, and an install copies the marker with the
+  frame. It costs 9 bytes a frame.
+- **The index is version 5, its layout unchanged,** so a release before 0.30.0 refuses the
+  store instead of reading gathered blocks as they are. 0.30.0 still reads version 4.
+- **Measured:** the store is 22.50 GiB, 0.58 GiB less than 0.29.0's 23.08, all of it in the
+  textures' tiers; base plus English with every tier is 18.89 GiB ([SIZES.md](SIZES.md),
+  "Installs"). The import took about 130 minutes.

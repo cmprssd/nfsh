@@ -4,6 +4,15 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.30.0] - 2026-11-11
+
+### Changed
+
+- The import stores BC1, BC2, BC3 and BC5 textures with each block's fields gathered (end
+  points together, indices together), which zstd compresses better; reading puts the
+  blocks back, byte for byte. Still a frame per tier. The store's index is version 5,
+  which older releases refuse; 0.30.0 still reads a version 4 store. Needs a re-import.
+
 ## [0.29.0] - 2026-11-10
 
 ### Changed

@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-11-10 (48 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-11-11 (49 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -54,7 +54,7 @@ draw the same camera path on the same PC, and screenshots and frame times are co
 ## Architecture
 
 <!-- progress:code -->
-3 crates in one Cargo workspace, 23,907 lines of Rust (sources and tests), 199 tests.
+3 crates in one Cargo workspace, 24,115 lines of Rust (sources and tests), 201 tests.
 <!-- /progress -->
 
 ```mermaid
@@ -72,7 +72,7 @@ flowchart BT
 <!-- progress:crates -->
 | Crate | Rust lines | Tests | What it does |
 |------|------:|------:|------|
-| `frostbite` | 14,224 | 126 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store, with every ebx's partition GUID, and copies it into an install of the parts and tiers a player keeps, which it reads as a store; reads ebx partitions (types, instances, fields, arrays, references); walks a level's sub-levels and what each zone places (meshes in world space); reads mesh sets and decodes their geometry (LODs, sections, positions, texture coordinates, tangent frames, triangles), and when each mesh's LODs take over (its lod group's distances and screen-area cut); reads texture headers and their pixels (block-compressed mips, layers), and what each material names (its shader, textures and vector parameters); reads a time of day's sun, sky and exposure from its visual environment; reads the terrain's quadtree of tiles, their heightfields, colours and pages, and builds the ground's mesh under an area, with normals from its heights, coloured and weighted by its layers, with a map of the same colour and weights for what lies over it; reads the terrain's layer tree (which layers each tile's pages are for), the level's shader database (each shader permutation's parameter block, the textures it binds and its program) and so each terrain layer's own diffuse maps; reads a shader program's instructions far enough to find the scale each terrain layer's diffuse is drawn at, and the far detail its programs overlay on its diffuse and normal maps; averages a BC1 texture's colour |
+| `frostbite` | 14,432 | 128 | readers for the install's tables: `layout.toc`, superbundle `.toc` and `.sb`, DbObject trees, cas references; resolves `Patch/` over `Data/`; decompresses entries (Oodle through the install's own library); writes, checks and reads nfsh's store, with every ebx's partition GUID, and copies it into an install of the parts and tiers a player keeps, which it reads as a store; reads ebx partitions (types, instances, fields, arrays, references); walks a level's sub-levels and what each zone places (meshes in world space); reads mesh sets and decodes their geometry (LODs, sections, positions, texture coordinates, tangent frames, triangles), and when each mesh's LODs take over (its lod group's distances and screen-area cut); reads texture headers and their pixels (block-compressed mips, layers), and what each material names (its shader, textures and vector parameters); reads a time of day's sun, sky and exposure from its visual environment; reads the terrain's quadtree of tiles, their heightfields, colours and pages, and builds the ground's mesh under an area, with normals from its heights, coloured and weighted by its layers, with a map of the same colour and weights for what lies over it; reads the terrain's layer tree (which layers each tile's pages are for), the level's shader database (each shader permutation's parameter block, the textures it binds and its program) and so each terrain layer's own diffuse maps; reads a shader program's instructions far enough to find the scale each terrain layer's diffuse is drawn at, and the far detail its programs overlay on its diffuse and normal maps; averages a BC1 texture's colour |
 | `nfsh` | 4,073 | 21 | the `nfsh` command: `inventory` lists what the install holds, `verify` decompresses every entry and checks its size, `import` copies the live data into nfsh's store, `install` copies the store into an install of the languages and tiers kept, `reindex` lists its partition GUIDs, `ebx` prints a partition as text, `level` prints Palm City's bundles or one zone's placements, `mesh` prints a mesh's LODs and writes one as an .obj, `texture` prints a texture and writes it as a .dds, `view` flies through one zone in a window, textured and lit at midday or tealnight (or writes a screenshot) |
 | `render` | 5,610 | 52 | the Vulkan renderer (`nfsh-render`, Vulkan 1.3 through `ash`): device bring-up, a window's swapchain and frame loop with GPU timing, an offscreen target read back for screenshots and tests; packs a zone's placed meshes (every LOD) into one vertex, index and instance buffer and draws them with one instanced draw per section, each frame only the placements whose box is in view, each at the LOD its distance chooses from its lod group and none that cover too little of the screen, each with its colour texture uploaded block-compressed as stored (grey when one can't be read), road asphalt as its clean and damaged layers blended by the road's mask with its detail colours over them, giving way to the ground at its edges as its shoulder texture says (up to eight textures a draw, and the ground's map of its colour, detail weights and normals) and road lines, cracks and tyre marks blended over it as decals, lit by the time of day's sun and sky, exposed and tonemapped, with each mesh's own normals bent by its normal map, and asphalt's by its layers' (the triangle's where it has none); the ground under the zone as one more draw per 128 m block (culled likewise), in its tiles' colours with up to eight of its layers' diffuse maps (one texture array) laid over them as detail, weighted by each layer's share of the tiles' pages, and its normals (from its heights, smooth across its tiles' edges) bent by those layers' normal maps (another array; also under asphalt where it gives way to the ground), each layer's far detail map overlaid on both at its own scale and strength (a third array) |
 <!-- /progress -->
@@ -115,7 +115,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 48 decision entries, 10 chosen by the owner, 23 made by Claude for review.
+  So far: 49 decision entries, 10 chosen by the owner, 24 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -133,15 +133,15 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-49 commits, 48 merged PRs from 2026-10-30 to 2026-11-10, on 9 working days: 34 feat, 8
-docs, 5 fix, 1 ci. About 33,929 lines added and 2,069 removed; 70 tracked files.
+50 commits, 49 merged PRs from 2026-10-30 to 2026-11-11, on 10 working days: 35 feat, 8
+docs, 5 fix, 1 ci. About 34,229 lines added and 2,115 removed; 70 tracked files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
-    x-axis ["Oct 30", "Oct 31", "Nov 1", "Nov 2", "Nov 3", "Nov 6", "Nov 7", "Nov 9", "Nov 10"]
+    x-axis ["Oct 30", "Oct 31", "Nov 1", "Nov 2", "Nov 3", "Nov 6", "Nov 7", "Nov 9", "Nov 10", "Nov 11"]
     y-axis "PRs" 0 --> 17
-    bar [1, 13, 15, 6, 3, 3, 3, 1, 3]
+    bar [1, 13, 15, 6, 3, 3, 3, 1, 3, 1]
 ```
 <!-- /progress -->
 
@@ -180,7 +180,8 @@ owner's install, 2026-10-31:
 | cas archives (the install) | | | 33.15 GiB | |
 | 0.3.0: live entries copied, Oodle blocks kept | 30, 29.35 GiB | 148 MiB | 29.49 GiB | 27 min |
 | 0.4.0: recompressed with zstd | 29, 27.92 GiB | 148 MiB | 28.07 GiB | 117 min |
-| **0.26.0: identical content once, unnamed chunks dropped, a frame per tier** | 24, 22.92 GiB | 162 MiB | **23.08 GiB** | 106 min |
+| 0.26.0: identical content once, unnamed chunks dropped, a frame per tier | 24, 22.92 GiB | 162 MiB | 23.08 GiB | 106 min |
+| **0.30.0: and textures' block fields gathered (from 0.29.0, the cinematics' lines by language)** | 23, 22.34 GiB | 162 MiB | **22.50 GiB** | about 130 min |
 
 zstd ends up 4.8% smaller than Oodle (the sample predicted about the same size) and
 makes the store readable anywhere: `nfsh verify` decodes all 65.4 GiB from it in 5
@@ -204,11 +205,12 @@ copy off the disc ([DECISIONS.md](DECISIONS.md), "One disc, stripping down").
 
 Since 0.27.0 `nfsh install` makes that copy: one file per part and tier, and every command
 reads it as it does a store, a texture without its top mips drawn from the ones it has and
-a mesh without its first LODs from the first it has. Base plus English is 19.47 GiB with
-every tier since 0.29.0 (20.46 before it kept the cinematics' 7 other languages), drawing
+a mesh without its first LODs from the first it has. Base plus English is 18.89 GiB with
+every tier since 0.30.0 stores textures' blocks with their fields gathered (19.47 in
+0.29.0, 20.46 before it left out the cinematics' 7 other languages), drawing
 exactly as the store does. Since 0.28.0 it can also cut cutscene
 video, voices and music: the bare minimum (no top three mips, no LOD 0 or 1, none of
-those three) is 4.97 GiB, softer, coarser and silent ([SIZES.md](SIZES.md), "Installs").
+those three) is 4.91 GiB, softer, coarser and silent ([SIZES.md](SIZES.md), "Installs").
 
 ## Where it is going
 
