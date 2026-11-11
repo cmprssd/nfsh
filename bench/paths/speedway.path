@@ -1,0 +1,13 @@
+# The baseline's camera path through zone 495, the speedway (bench/baseline.sh): 40 s
+# from high above the stands down to the track, along the barrels, low over the
+# asphalt and back up. One key per line: T X Y Z YAW PITCH (seconds, metres, degrees),
+# as `nfsh view --camera` takes them; the camera moves in straight lines between keys.
+# Our own numbers, picked around the history views (bench/history-views.txt).
+ 0   3700  130   2900   30  -45
+ 8   3760  110   2960   45  -30
+14   3840   90   3060   35  -15
+20   3886   82   3141   20  -12
+26   3800   86   3040  -60  -15
+32   3735   88   2960  -20  -25
+36   3739   84   2978   20  -45
+40   3700  130   2900   30  -45

@@ -1273,3 +1273,28 @@ recompression"), built in nfsh 0.30.0.
 - **Measured:** the store is 22.50 GiB, 0.58 GiB less than 0.29.0's 23.08, all of it in the
   textures' tiers; base plus English with every tier is 18.89 GiB ([SIZES.md](SIZES.md),
   "Installs"). The import took about 130 minutes.
+
+## 2026-11-11: The baseline, nfsh's half first (chosen by the owner)
+
+The original Heat has never run on this PC: the Steam version needs the EA app and an EA
+sign-in, and its first start opens on the prologue, not free roam. It has no free camera or
+console.
+
+- **nfsh's half ships first:** a camera path played by `nfsh view --path`, its frame times
+  and the time to the first frame, in [BASELINE.md](BASELINE.md). The original's half
+  waits until the owner has installed the EA app and played to free roam.
+- **The original's camera is read from its memory, never written.** A small tool reads the
+  camera's position and angles while the owner drives or uses photo mode and writes the
+  path; nfsh plays it. Only our description of where the camera sits goes in the repo.
+  Why: an exact path gives a frame-time and screenshot comparison on the same views, which
+  standing at spots by hand would not.
+- **A path is text, `T X Y Z YAW PITCH` a key, interpolated linearly, angles as written**
+  (decided by Claude, pending review). Why: the format `--camera` already takes, readable
+  and diffable; a recorded path has a key per frame, so curves between keys add nothing.
+- **1% low is the mean of the slowest 1% of frames,** as swjkja reports it (decided by
+  Claude, pending review).
+- **Headless mode draws a frame every 1/60 s of path time, one at a time** (decided by
+  Claude, pending review). Why: every run draws the same 2,400 frames, and no window
+  takes over the owner's screen; the window mode is the one compared with the original.
+- **The first frame is the load, not part of the path's times.** It builds the
+  pipelines and is far slower than any after it.
