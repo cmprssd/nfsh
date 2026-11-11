@@ -20,3 +20,5 @@
 !scripts/progress_page.html
 # The views bench/history.sh renders for the progress page.
 !bench/history-views.txt
+# Camera paths for the baseline (bench/baseline.sh): our own numbers.
+!bench/paths/*.path

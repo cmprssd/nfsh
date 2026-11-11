@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.31.0] - 2026-11-11
+
+### Added
+
+- `nfsh view --path FILE` flies a recorded camera path (`T X Y Z YAW PITCH` a line)
+  instead of the keys, closes at its end, and prints the time to the first frame and the
+  frame times along it: mean, median, p99, 1% low and max. `--headless` draws the path
+  without a window, a frame every 1/60 s of path time.
+- `bench/baseline.sh` measures nfsh on `bench/paths/speedway.path` (zone 495, 40 s),
+  headless or in a window, and `docs/BASELINE.md` has the first numbers: 11.6 ms a frame
+  on average, 20.6 ms 1% low, on the owner's HD 630. The original Heat is not measured yet.
+
 ## [0.30.0] - 2026-11-11
 
 ### Changed

@@ -3,7 +3,9 @@
 //! through: mouse to look, W A S D to move, Space and C up and down, Shift to go
 //! faster, N to switch between midday and tealnight, Esc to quit. The title shows
 //! the time of day, the frame rate and frame time. With `--shot`, one frame is drawn
-//! without a window and written as a PNG.
+//! without a window and written as a PNG. With `--path`, the camera flies a recorded
+//! path (crate::path) instead, and the frame times along it and the time to the first
+//! frame are printed at its end; `--headless` draws that path without a window.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -29,6 +31,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::fly::{self, Keys};
 use crate::level::{SUPERBUNDLE, zone_bundle};
+use crate::path::{Path as CameraPath, Stats};
 
 /// The window's first size, and the screenshot's.
 const SIZE: (u32, u32) = (1280, 720);
@@ -41,6 +44,9 @@ const GROUND_MARGIN: f32 = ROAD_MARGIN;
 const GROUND_SPACING: f32 = 2.0;
 /// How often the title's frame rate is updated.
 const TITLE_EVERY: Duration = Duration::from_millis(500);
+/// The path time between two frames drawn with `--headless`, in seconds: every run
+/// draws the same frames.
+const HEADLESS_STEP: f64 = 1.0 / 60.0;
 
 pub struct Options {
     pub store: PathBuf,
@@ -52,6 +58,10 @@ pub struct Options {
     /// Where the camera starts, and its yaw and pitch in degrees, rather than the
     /// overview.
     pub camera: Option<[f32; 5]>,
+    /// A camera path to fly instead of the keys, and whether to draw it without a
+    /// window.
+    pub path: Option<PathBuf>,
+    pub headless: bool,
 }
 
 /// Parses `X,Y,Z,YAW,PITCH`.
@@ -64,10 +74,12 @@ fn camera(s: &str) -> Option<[f32; 5]> {
     v.iter().all(|n| n.is_finite()).then_some(v)
 }
 
-/// Parses `STORE ZONE [--shot PNG] [--vsync] [--night] [--camera X,Y,Z,YAW,PITCH]`.
+/// Parses `STORE ZONE [--shot PNG] [--vsync] [--night] [--camera X,Y,Z,YAW,PITCH]
+/// [--path FILE [--headless]]`: a path is not a screenshot, and only a path is drawn
+/// headless.
 pub fn options(args: &[String]) -> Option<Options> {
     let (mut positional, mut shot, mut vsync, mut night) = (Vec::new(), None, false, false);
-    let mut start = None;
+    let (mut start, mut path, mut headless) = (None, None, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -75,6 +87,8 @@ pub fn options(args: &[String]) -> Option<Options> {
             "--night" => night = true,
             "--camera" => start = Some(camera(it.next()?)?),
             "--shot" => shot = Some(PathBuf::from(it.next()?)),
+            "--path" => path = Some(PathBuf::from(it.next()?)),
+            "--headless" => headless = true,
             _ if a.starts_with("--") => return None,
             _ => positional.push(a),
         }
@@ -82,6 +96,9 @@ pub fn options(args: &[String]) -> Option<Options> {
     let [store, zone] = positional[..] else {
         return None;
     };
+    if (path.is_some() && shot.is_some()) || (headless && path.is_none()) {
+        return None;
+    }
     Some(Options {
         store: store.into(),
         zone: zone.clone(),
@@ -89,6 +106,8 @@ pub fn options(args: &[String]) -> Option<Options> {
         vsync,
         night,
         camera: start,
+        path,
+        headless,
     })
 }
 
@@ -128,14 +147,75 @@ impl Times {
 }
 
 pub fn run(o: &Options) -> Result<String, String> {
+    let started = Instant::now();
+    let path = match &o.path {
+        Some(file) => {
+            let text =
+                std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
+            Some(CameraPath::parse(&text).map_err(|e| format!("{}: {e}", file.display()))?)
+        }
+        None => None,
+    };
     let name = zone_bundle(&o.zone);
     let store = Store::open(&o.store).map_err(|e| e.to_string())?;
     let scene = load(&store, &name).map_err(|e| e.to_string())?;
     let times = Times::read(&store);
-    match &o.shot {
-        Some(png) => shot(o, &store, &scene, &times, png),
-        None => window(o, &name, &store, &scene, &times),
+    match (&o.shot, &path) {
+        (Some(png), _) => shot(o, &store, &scene, &times, png),
+        (None, Some(path)) if o.headless => headless(o, &store, &scene, &times, path, started),
+        _ => window(o, &name, &store, &scene, &times, path.as_ref(), started),
     }
+}
+
+/// The line that says how long the viewer took from its start to its first frame.
+fn load_line(started: Instant, first_frame: Instant) -> String {
+    format!(
+        "load: {:.2} s to the first frame\n",
+        (first_frame - started).as_secs_f64()
+    )
+}
+
+/// Draws `path` without a window, a frame every [`HEADLESS_STEP`] of path time, and
+/// returns the time to the first frame and the frame times. A frame's time is its
+/// recording, drawing and read back, one at a time: an upper bound on a window's,
+/// where the CPU records a frame while the GPU draws the one before.
+fn headless(
+    o: &Options,
+    store: &Store,
+    scene: &Scene,
+    times: &Times,
+    path: &CameraPath,
+    started: Instant,
+) -> Result<String, String> {
+    let gpu = Gpu::new_headless().map_err(|e| e.to_string())?;
+    let renderer = renderer(&gpu, store, scene, Target::COLOR_FORMAT)?;
+    let mut target = Target::new(&gpu, SIZE.0, SIZE.1).map_err(|e| e.to_string())?;
+    let extent = target.color.extent;
+    let light = &times.lights[usize::from(o.night)];
+    let frames = (path.duration() / HEADLESS_STEP).floor() as usize + 1;
+    let (mut first, mut ms) = (None, Vec::with_capacity(frames));
+    for i in 0..frames {
+        let [x, y, z, yaw, pitch] = path.at(i as f64 * HEADLESS_STEP);
+        let camera = Camera::new([x, y, z], yaw, pitch, SIZE.0, SIZE.1);
+        let begin = Instant::now();
+        target
+            .render(|cmd| renderer.record(cmd, &camera, extent, light))
+            .map_err(|e| e.to_string())?;
+        let end = Instant::now();
+        // The first frame is part of the load (pipelines warm up); it is not timed.
+        match first {
+            None => first = Some(end),
+            Some(_) => ms.push((end - begin).as_secs_f64() * 1000.0),
+        }
+    }
+    let stats = Stats::of(&ms).ok_or("the path is too short to time")?;
+    Ok(format!(
+        "{}{} (headless, {}, {})\n",
+        load_line(started, first.unwrap_or(started)),
+        stats.line(),
+        gpu.name,
+        times.names[usize::from(o.night)]
+    ))
 }
 
 /// Uploads `scene` with its textures from `store`, and prints what was uploaded and
@@ -313,6 +393,8 @@ fn window(
     store: &Store,
     scene: &Scene,
     times: &Times,
+    path: Option<&CameraPath>,
+    started: Instant,
 ) -> Result<String, String> {
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let mut app = App {
@@ -326,10 +408,26 @@ fn window(
         error: None,
         frames: 0,
         total: Duration::ZERO,
+        path,
+        first_frame: None,
+        path_ms: Vec::new(),
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
     if let Some(e) = app.error {
         return Err(e);
+    }
+    if path.is_some() {
+        let first = app
+            .first_frame
+            .ok_or("the window closed before a frame was drawn")?;
+        let stats = Stats::of(&app.path_ms).ok_or("the window closed before the path was timed")?;
+        let present = if o.vsync { "vsync" } else { "no vsync" };
+        let time = times.names[usize::from(o.night)];
+        return Ok(format!(
+            "{}{} (window, {present}, {time})\n",
+            load_line(started, first.0),
+            stats.line(),
+        ));
     }
     let average = app.total.as_secs_f64() * 1000.0 / app.frames.max(1) as f64;
     Ok(format!(
@@ -351,6 +449,11 @@ struct App<'a> {
     /// Frames presented and the time between them, for the summary at the end.
     frames: u64,
     total: Duration,
+    /// The path the camera flies, when there is one; when its first frame was
+    /// presented and when it began; and the time of every frame after it, in ms.
+    path: Option<&'a CameraPath>,
+    first_frame: Option<(Instant, Instant)>,
+    path_ms: Vec<f64>,
 }
 
 /// The open window and what draws into it. Fields drop in order: the GPU's users
@@ -417,12 +520,25 @@ impl App<'_> {
 impl View {
     /// Moves the camera, draws and presents a frame lit by `light`, and updates the
     /// title. Returns the time since the previous frame.
-    fn frame(&mut self, title: &str, light: &Light) -> nfsh_render::Result<Duration> {
+    /// With `path` (the path and when its first frame began), the camera is where the
+    /// path is at this time instead of where the keys take it.
+    fn frame(
+        &mut self,
+        title: &str,
+        light: &Light,
+        path: Option<(&CameraPath, Instant)>,
+    ) -> nfsh_render::Result<Duration> {
         let now = Instant::now();
         let dt = now - self.last_frame;
         self.last_frame = now;
-        // A stall (the window dragged, a breakpoint) must not fling the camera away.
-        fly::fly(&mut self.camera, self.keys, dt.as_secs_f32().min(0.1));
+        match path {
+            Some((path, began)) => {
+                let [x, y, z, yaw, pitch] = path.at((now - began).as_secs_f64());
+                (self.camera.origin, self.camera.yaw, self.camera.pitch) = ([x, y, z], yaw, pitch);
+            }
+            // A stall (the window dragged, a breakpoint) must not fling the camera away.
+            None => fly::fly(&mut self.camera, self.keys, dt.as_secs_f32().min(0.1)),
+        }
         let extent = self.swapchain.extent;
         if extent.width == 0 || extent.height == 0 {
             return Ok(dt);
@@ -539,12 +655,28 @@ impl ApplicationHandler for App<'_> {
             WindowEvent::RedrawRequested => {
                 let time = usize::from(self.night);
                 let title = format!("{} | {}", self.title, self.times.names[time]);
-                match view.frame(&title, &self.times.lights[time]) {
-                    Ok(dt) => {
-                        self.frames += 1;
-                        self.total += dt;
+                let now = Instant::now();
+                let path = self
+                    .path
+                    .map(|p| (p, self.first_frame.map_or(now, |f| f.1)));
+                let dt = match view.frame(&title, &self.times.lights[time], path) {
+                    Ok(dt) => dt,
+                    Err(e) => return self.fail(event_loop, e),
+                };
+                self.frames += 1;
+                self.total += dt;
+                if let Some(path) = self.path {
+                    // The first frame ends the load and starts the path; each frame
+                    // after it is timed until the path ends.
+                    match self.first_frame {
+                        None => self.first_frame = Some((Instant::now(), now)),
+                        Some((_, began)) => {
+                            self.path_ms.push(dt.as_secs_f64() * 1000.0);
+                            if (now - began).as_secs_f64() >= path.duration() {
+                                event_loop.exit();
+                            }
+                        }
                     }
-                    Err(e) => self.fail(event_loop, e),
                 }
             }
             _ => {}
@@ -603,6 +735,14 @@ mod tests {
         assert!(options(&args("store 495 --camera 1,2,3,4")).is_none());
         assert!(options(&args("store 495 --camera 1,2,3,4,x")).is_none());
         assert!(options(&args("store 495 --camera 1,2,3,4,NaN")).is_none());
+        let o = options(&args("store 495 --path p.path --headless --night")).unwrap();
+        assert_eq!((o.path, o.headless), (Some(PathBuf::from("p.path")), true));
+        let o = options(&args("store 495 --path p.path")).unwrap();
+        assert_eq!((o.path, o.headless), (Some(PathBuf::from("p.path")), false));
+        // A path is not a screenshot, and only a path is drawn headless.
+        assert!(options(&args("store 495 --path p.path --shot z.png")).is_none());
+        assert!(options(&args("store 495 --headless")).is_none());
+        assert!(options(&args("store 495 --path")).is_none());
         // A missing value, an unknown flag, or the wrong number of arguments.
         assert!(options(&args("store 495 --shot")).is_none());
         assert!(options(&args("store 495 --fast")).is_none());
