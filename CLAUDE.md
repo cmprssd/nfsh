@@ -3,7 +3,7 @@
 nfsh is a new engine for **Need for Speed: Heat** in Rust (Vulkan 1.3 via `ash`), written
 clean-room: Heat's code was never released, so file formats and behaviour are reverse
 engineered. Same game, same look, much smaller on disk, much faster, more reliable; the
-same nature as `cmprssd/swjkja` (`~/projects/cmprssd/swjkja`), whose tooling is copied
+same nature as `cmprssd/swjkja` (`~/organizations/cmprssd/swjkja`), whose tooling is copied
 and adapted here. It ships no game data: it reads the owner's install at
 `D:\SteamLibrary\steamapps\common\Need for Speed Heat`
 (`/mnt/d/SteamLibrary/steamapps/common/Need for Speed Heat` from WSL).

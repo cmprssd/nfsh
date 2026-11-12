@@ -165,7 +165,7 @@ play it today.
 
 ## References
 
-- `cmprssd/swjkja` (`~/projects/cmprssd/swjkja`): the model this project follows
+- `cmprssd/swjkja` (`~/organizations/cmprssd/swjkja`): the model this project follows
   (README, `docs/OVERVIEW.md`, `docs/DECISIONS.md` "Project direction").
 
 ## Log
