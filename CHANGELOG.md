@@ -4,6 +4,17 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.33.0] - 2026-11-12
+
+### Added
+
+- `nfsh level STORE X,Z` lists the streaming zones whose placements span the point
+  (x and z in metres, as a camera path's), smallest first, or the nearest five when
+  none does.
+- nfsh's numbers on the original's recorded drive, `bench/paths/garage-drive.path`, in
+  zone 494 (docs/BASELINE.md, "The same path"): 17.0 ms median a frame headless on the
+  HD 630, against Heat's 114.0 ms at Low; load about 50 s.
+
 ## [0.32.0] - 2026-11-12
 
 ### Added
