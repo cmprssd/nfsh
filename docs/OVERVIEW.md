@@ -49,7 +49,8 @@ flowchart LR
 
 Once something renders, the loop gains swjkja's second half: the original game and nfsh
 draw the same camera path on the same PC, and screenshots and frame times are compared
-([BASELINE.md](BASELINE.md): nfsh's half since 0.31.0, the original's not yet).
+([BASELINE.md](BASELINE.md): frame times of both on the original's recorded drive since
+0.33.0; the screenshots not yet).
 
 ## Architecture
 

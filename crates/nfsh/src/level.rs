@@ -6,7 +6,7 @@ use std::fmt::Write;
 use std::path::Path;
 
 use frostbite::Result;
-use frostbite::level::{Level, SubLevel, Zone};
+use frostbite::level::{Level, SubLevel, Zone, xz_bounds};
 use frostbite::store::Store;
 
 /// The level, its superbundle, and the prefix its zones' bundle names share.
@@ -29,16 +29,114 @@ pub fn is_zone(name: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// A point given as `X,Z` (metres, as Heat's positions), or `None` for anything else.
+pub fn point(text: &str) -> Option<[f32; 2]> {
+    let (x, z) = text.split_once(',')?;
+    let p = [x.trim().parse().ok()?, z.trim().parse().ok()?];
+    p.iter().all(|v: &f32| v.is_finite()).then_some(p)
+}
+
+/// One streaming zone's extent in x and z (its placements' origins).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Extent {
+    pub zone: String,
+    pub lo: [f32; 2],
+    pub hi: [f32; 2],
+    pub placements: usize,
+}
+
+impl Extent {
+    fn holds(&self, p: [f32; 2]) -> bool {
+        (0..2).all(|i| self.lo[i] <= p[i] && p[i] <= self.hi[i])
+    }
+
+    fn area(&self) -> f32 {
+        (self.hi[0] - self.lo[0]) * (self.hi[1] - self.lo[1])
+    }
+
+    /// How far `p` is from the extent's middle, in metres.
+    fn distance(&self, p: [f32; 2]) -> f32 {
+        let mid = |i: usize| (self.lo[i] + self.hi[i]) / 2.0;
+        (p[0] - mid(0)).hypot(p[1] - mid(1))
+    }
+}
+
+/// The zones whose extent holds `p`, smallest first (a zone the size of the city holds
+/// every point and says least); when none does, the nearest `nearest` by their middle.
+pub fn covering(extents: &[Extent], p: [f32; 2], nearest: usize) -> (Vec<&Extent>, bool) {
+    let mut held: Vec<&Extent> = extents.iter().filter(|e| e.holds(p)).collect();
+    if !held.is_empty() {
+        held.sort_by(|a, b| a.area().total_cmp(&b.area()));
+        return (held, true);
+    }
+    let mut near: Vec<&Extent> = extents.iter().collect();
+    near.sort_by(|a, b| a.distance(p).total_cmp(&b.distance(p)));
+    near.truncate(nearest);
+    (near, false)
+}
+
 pub fn run(dir: &Path, zone: Option<&str>) -> Result<String> {
     let store = Store::open(dir)?;
     let mut level = Level::new(&store, SUPERBUNDLE)?;
     match zone {
         None => Ok(sub_levels(&level.sub_levels(ROOT)?)),
+        Some(at) if point(at).is_some() => {
+            let p = point(at).unwrap_or_default();
+            let mut extents = Vec::new();
+            for s in level.sub_levels(ROOT)? {
+                if !(s.found && is_zone(&s.name)) {
+                    continue;
+                }
+                let zone = level.zone(&s.name)?;
+                if let Some((lo, hi)) = xz_bounds(&zone) {
+                    let placements = zone.placements.len();
+                    extents.push(Extent {
+                        zone: s.name,
+                        lo,
+                        hi,
+                        placements,
+                    });
+                }
+            }
+            Ok(zones_at(&extents, p))
+        }
         Some(zone) => {
             let name = zone_bundle(zone);
             Ok(placements(&name, &level.zone(&name)?))
         }
     }
+}
+
+fn zones_at(extents: &[Extent], p: [f32; 2]) -> String {
+    let mut out = String::new();
+    let (zones, held) = covering(extents, p, 5);
+    let _ = writeln!(
+        out,
+        "{} of {} zones {} x {}, z {}:",
+        zones.len(),
+        extents.len(),
+        if held {
+            "hold"
+        } else {
+            "are nearest to (none holds)"
+        },
+        p[0],
+        p[1]
+    );
+    for e in zones {
+        let _ = writeln!(
+            out,
+            "  {} | x {:.0}..{:.0}, z {:.0}..{:.0} | {} placements | middle {:.0} m away",
+            &e.zone[ZONE.len()..],
+            e.lo[0],
+            e.hi[0],
+            e.lo[1],
+            e.hi[1],
+            e.placements,
+            e.distance(p)
+        );
+    }
+    out
 }
 
 fn sub_levels(all: &[SubLevel]) -> String {
@@ -141,5 +239,52 @@ mod tests {
             "levels/mainlevel/worldart_zs_mainlevel_region_city"
         ));
         assert!(!is_zone("levels/mainlevel/worldart_zs_"));
+    }
+
+    #[test]
+    fn a_point_is_two_numbers_and_a_comma() {
+        assert_eq!(point("4500,2560"), Some([4500.0, 2560.0]));
+        assert_eq!(point("-12.5, 30"), Some([-12.5, 30.0]));
+        assert_eq!(point("495"), None);
+        assert_eq!(point("levels/mainlevel/worldart_zs_495"), None);
+        assert_eq!(point("1,2,3"), None);
+        assert_eq!(point("nan,0"), None);
+    }
+
+    fn extent(n: u32, lo: [f32; 2], hi: [f32; 2]) -> Extent {
+        Extent {
+            zone: format!("{ZONE}{n}"),
+            lo,
+            hi,
+            placements: 1,
+        }
+    }
+
+    #[test]
+    fn the_zones_holding_a_point_come_smallest_first() {
+        let all = [
+            extent(1, [-5000.0; 2], [5000.0; 2]),
+            extent(2, [0.0, 0.0], [100.0, 100.0]),
+            extent(3, [50.0, 50.0], [60.0, 60.0]),
+            extent(4, [200.0, 0.0], [300.0, 100.0]),
+        ];
+        let (zones, held) = covering(&all, [55.0, 55.0], 5);
+        assert!(held);
+        let names: Vec<&str> = zones.iter().map(|e| &e.zone[ZONE.len()..]).collect();
+        assert_eq!(names, ["3", "2", "1"]);
+    }
+
+    #[test]
+    fn without_a_zone_holding_it_the_nearest_are_listed() {
+        let all = [
+            extent(2, [0.0, 0.0], [100.0, 100.0]),
+            extent(4, [200.0, 0.0], [300.0, 100.0]),
+            extent(5, [1000.0, 0.0], [1100.0, 100.0]),
+        ];
+        let (zones, held) = covering(&all, [180.0, 50.0], 2);
+        assert!(!held);
+        let names: Vec<&str> = zones.iter().map(|e| &e.zone[ZONE.len()..]).collect();
+        assert_eq!(names, ["4", "2"]);
+        assert_eq!(zones[0].distance([180.0, 50.0]), 70.0);
     }
 }

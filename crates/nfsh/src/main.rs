@@ -51,10 +51,11 @@ usage: nfsh reindex STORE
 usage: nfsh ebx STORE NAME
   Prints the ebx partition NAME (e.g. levels/mainlevel/staticworld) from the store
   in the folder STORE as text: its imports, then each instance with its fields.
-usage: nfsh level STORE [ZONE]
+usage: nfsh level STORE [ZONE | X,Z]
   Palm City's level graph from the store in the folder STORE: without ZONE, the
   bundles the level loads and its streaming zones; with ZONE (a zone number such as
-  495, or a bundle name), every mesh the zone places and where.
+  495, or a bundle name), every mesh the zone places and where; with a point X,Z (in
+  metres, as a camera path's), the zones whose placements span it, smallest first.
 usage: nfsh mesh STORE NAME [OBJ]
   The mesh asset NAME (a RigidMeshAsset or CompositeMeshAsset ebx, as nfsh level
   lists them) from the store in the folder STORE: its LODs and their sections, with

@@ -2,7 +2,7 @@
 
 The numbers the viewer has to beat, measured against the original Need for Speed: Heat
 on the same camera path and the same PC (BRIEF.md, "Success criteria"). Both halves are
-measured, but not yet on the same path (see "The original's half").
+measured on `bench/paths/garage-drive.path` (nfsh headless so far; "The same path").
 
 ## Machine
 
@@ -55,6 +55,30 @@ Midday, zone 495 with the roads and ground under it, 1280x720. Times in ms.
   warm-up and then three runs.
 - The window's warm-up ran slower (14.81 ms mean) than the three runs after it.
 
+## The same path, 2026-11-12 (nfsh 0.32.0)
+
+`bench/baseline.sh bench/paths/garage-drive.path 494`: the original's recorded drive (25 s,
+1,505 frames headless) through zone 494, which `nfsh level D:\nfsh-store X,Z` gives as
+the one zone whose placements span the path's start, middle and end (x 3883..4576,
+z 2222..2937, 1,805 placements). Midday, the zone with its roads and ground, 1280x720.
+Times in ms.
+
+| Path | Mode | Mean | Median | p99 | 1% low | Max | Load, warm (s) | Load, first (s) |
+|------|------|------|--------|-----|--------|-----|----------------|-----------------|
+| garage-drive | headless | 17.68 (57 FPS) | 17.01 | 31.80 | 33.69 (30 FPS) | 40.61 | 49.71 (49.71, 52.10, 42.87) | 52.96 |
+| garage-drive | Heat, Low, window | | 114.0 (8.8 FPS) | p95 145.1 | | 188.0 | 88.8 (Play Solo to the garage) | |
+
+- **6.7 times the original's frame rate by the median** (17.0 against 114.0 ms), but
+  not the same things drawn: nfsh draws one zone with its roads and ground, no car,
+  traffic, sky dome, neighbouring zones, particles or post-processing; Heat at Low
+  draws all of them. The window run, the one comparable with Heat's, isn't done yet:
+  it opens a window on the owner's screen.
+- **Load is five times zone 495's** (about 50 s against 10 s headless). Zone 494 spans
+  about 700 m by 700 m; which part of its load (reading, uploading, pipelines) costs
+  most isn't measured yet.
+- The third run's 1% low (47.20 ms) and max (77.14 ms) stand out from the other two;
+  the medians use all three.
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)
@@ -80,9 +104,8 @@ swapchain presents. Times in ms.
   this is the closest the game gives to "the first frame of Palm City".
 - **Not the speedway path.** At 9 FPS, driven by scripted keys without seeing the
   screen, the car didn't reach zone 495, 600 m away. The path recorded is a 25 s drive
-  through a field east of the raceway, `bench/paths/garage-drive.path`. nfsh hasn't
-  flown it yet: its viewer draws one zone, and which zone holds that field isn't known
-  yet (`nfsh level` lists no positions).
+  through a field east of the raceway, `bench/paths/garage-drive.path`, in zone 494;
+  nfsh's numbers on it are under "The same path".
 - A first start shows a warning that the Intel driver (31.0.101.2141) is older than
   recommended; the game misreads the version, and it runs.
 
@@ -120,7 +143,7 @@ What was found about the matrix:
 
 | Criterion | State |
 |-----------|-------|
-| Lower average and 1%-low frame times on the same path | both measured, not yet on the same path: Heat 96-114 ms median at Low by the raceway, nfsh 11.5 ms on the speedway |
+| Lower average and 1%-low frame times on the same path | on garage-drive.path: Heat 114.0 ms median at Low (window), nfsh 17.0 ms median, 33.7 ms 1% low (headless, one zone; the window run is still to do) |
 | The same look by automated screenshot comparison | not started: Heat's frames can now be taken at a known camera; nfsh can't yet draw where they were taken |
 | Lower load time to the first frame of Palm City | Heat 88.8 s (Play Solo to the garage); nfsh 24.2 s window, 10.4 s headless (zone 495 only) |
 | nfsh's copy of the viewer's data is smaller | nfsh's install, base plus English with every tier, is 18.89 GiB ([SIZES.md](SIZES.md)); the viewer's own share is not split out yet |
