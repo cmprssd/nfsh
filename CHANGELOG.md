@@ -19,6 +19,9 @@ All notable changes are listed here. The format follows
 - The camera reader looks down the game's camera matrix's -z, as Heat stores it, and a
   recording skips a read that jumps over 100 m (a copy cleared for one poll) and starts
   just before the first move.
+- Making or destroying a GPU device is done one thread at a time: the Vulkan loader on
+  Linux crashed when several did it at once (the draw tests, about one run in eight
+  under load).
 
 ## [0.31.0] - 2026-11-11
 
