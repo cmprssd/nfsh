@@ -32,6 +32,19 @@ def git(*args):
     return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=True).stdout
 
 
+def pr_title():
+    """The title of this branch's open PR, or None without one (or without gh)."""
+    try:
+        out = subprocess.run(["gh", "pr", "view", "--json", "title,state", "-q",
+                              'select(.state == "OPEN") | .title'],
+                             cwd=ROOT, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip() or None
+
+
 def history():
     """Main's changes (its first-parent line: one per squashed or merged PR) up to this
     branch's merge base, oldest first, plus this change if it is not on main yet."""
@@ -55,9 +68,10 @@ def history():
     if not on_main:
         # This change, counted as the squash merge it becomes.
         date = git("log", "-1", "--format=%ad", "--date=short", "HEAD").strip()
-        # Its type is the branch's first commit's, which the PR is titled after: a later
-        # commit (regenerated numbers, a fix-up) does not change what the PR is.
-        subject = git("log", "--reverse", "--format=%s", f"{base}..HEAD").splitlines()[0]
+        # Its type is the open PR's title's, which the squash merge takes as its subject;
+        # without a PR (or offline), the branch's first commit's, which the PR is
+        # usually titled after.
+        subject = pr_title() or git("log", "--reverse", "--format=%s", f"{base}..HEAD").splitlines()[0]
         diff = git("diff", "--shortstat", base, "HEAD", "--", ".", NOT_COUNTED)
         changes.append({**change("this", date, subject, diff), "pr": "this"})
     return changes, int(git("rev-list", "--count", base)) + (0 if on_main else 1)
