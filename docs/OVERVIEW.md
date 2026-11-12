@@ -135,8 +135,8 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-54 commits, 53 merged PRs from 2026-10-30 to 2026-11-12, on 11 working days: 36 feat, 10
-docs, 5 fix, 1 ci, 1 The. About 35,890 lines added and 2,166 removed; 76 tracked files.
+54 commits, 53 merged PRs from 2026-10-30 to 2026-11-12, on 11 working days: 36 feat, 9
+docs, 6 fix, 1 ci, 1 The. About 35,890 lines added and 2,166 removed; 76 tracked files.
 
 ```mermaid
 xychart-beta
