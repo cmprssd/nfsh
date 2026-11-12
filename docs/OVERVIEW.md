@@ -86,7 +86,9 @@ every mesh placed there (5,475 meshes, 48.8 million triangles in all their LODs)
 every texture their materials name (8,015 textures, 4.7 GiB of pixels). The renderer's
 tests draw on the real device (lavapipe on Linux, the GPU on Windows) and read the pixels
 back; a store test builds zone 495 (the speedway: 2,171 placements of 199 meshes, 780
-sections with 129 textures, 4.0 million triangles), every mesh drawn.
+sections with 129 textures, 4.0 million triangles), every mesh drawn. The tests run in
+parallel, each with its own device; making and destroying devices takes a lock, since
+the Linux Vulkan loader crashes when threads do that at once.
 
 ## The process
 

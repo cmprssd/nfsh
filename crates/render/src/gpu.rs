@@ -34,6 +34,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Locks `m` even if a thread panicked while holding it: what it guards (a queue, the
 /// allocator) stays usable.
+/// Held while a device and its instance are made or destroyed. The Vulkan loader on
+/// Linux (1.4.341) is not safe for that on several threads at once: it unloads drivers
+/// in `vkEnumeratePhysicalDevices` while another thread is in `vkGetDeviceProcAddr`
+/// or `vkDestroyDevice`, which crashed the draw tests one run in a few dozen under
+/// load. nfsh makes one device, so only parallel tests ever wait on it.
+static LIFECYCLE: Mutex<()> = Mutex::new(());
+
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -92,6 +99,7 @@ impl Gpu {
     fn create(
         window: Option<(RawDisplayHandle, RawWindowHandle)>,
     ) -> Result<(Arc<Self>, Option<vk::SurfaceKHR>)> {
+        let _made = lock(&LIFECYCLE);
         let entry =
             unsafe { ash::Entry::load() }.map_err(|e| Error(format!("no Vulkan loader: {e}")))?;
         let app = vk::ApplicationInfo::default()
@@ -314,6 +322,7 @@ impl Gpu {
 
 impl Drop for Gpu {
     fn drop(&mut self) {
+        let _destroyed = lock(&LIFECYCLE);
         unsafe {
             let _ = self.device.device_wait_idle();
             // The allocator must go before the device it allocates from.
