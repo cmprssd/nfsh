@@ -187,4 +187,18 @@ mod tests {
             "path: 2 frames, mean 15.00 ms (66.7 FPS), median 15.00 ms, p99 20.00 ms, 1% low 20.00 ms (50.0 FPS), max 20.00 ms"
         );
     }
+
+    #[test]
+    fn every_bench_path_parses() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bench/paths");
+        let mut n = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let file = entry.unwrap().path();
+            let path = Path::parse(&std::fs::read_to_string(&file).unwrap())
+                .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            assert!(path.duration() > 0.0, "{}", file.display());
+            n += 1;
+        }
+        assert!(n >= 2);
+    }
 }

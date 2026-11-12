@@ -4,6 +4,22 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.32.0] - 2026-11-12
+
+### Added
+
+- `nfsh camera scan|changed|same|show|record`: reads the running original game's camera
+  from its memory (read only, Windows) and records it as a camera path, for the baseline.
+- The original's half of the baseline (docs/BASELINE.md): Heat's frame times at Low,
+  1280x720 (median 96-114 ms on the HD 630), its load from Play Solo to the garage
+  (88.8 s), and a recorded drive, `bench/paths/garage-drive.path`.
+
+### Fixed
+
+- The camera reader looks down the game's camera matrix's -z, as Heat stores it, and a
+  recording skips a read that jumps over 100 m (a copy cleared for one poll) and starts
+  just before the first move.
+
 ## [0.31.0] - 2026-11-11
 
 ### Added

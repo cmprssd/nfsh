@@ -23,14 +23,18 @@ use std::fmt::Write as _;
 pub type Matrix = [[f32; 4]; 4];
 
 /// How a camera matrix is stored. Frostbite's world space is y up and left-handed,
-/// its transforms rows of right, up, forward and position (`render::camera`).
+/// its transforms rows of right, up, forward and position (`render::camera`). The
+/// game's camera matrix is that transform turned half a turn about up: rows left, up,
+/// back and position, so the camera looks down its -z (measured in Heat 2026-11-12:
+/// cycling the chase, hood and bumper views moved the camera along -z, and -z pitched
+/// the chase view down at the car).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
-    /// The camera's transform: rows right, up, forward, then its position.
+    /// The camera's transform: rows left, up, back, then its position.
     Transform,
     /// The view matrix for row vectors (`p * V`): the transform's inverse.
     View,
-    /// The transform transposed: columns right, up, forward, position.
+    /// The transform transposed: columns left, up, back, position.
     TransformColumns,
     /// The view matrix for column vectors (`V * p`).
     ViewColumns,
@@ -103,7 +107,7 @@ pub fn pose(m: &Matrix, layout: Layout) -> Option<([f32; 3], [f32; 3])> {
     }
     let last_column_free = (0..3).all(|i| near(m[i][3], 0.0));
     let last_row_free = (0..3).all(|j| near(m[3][j], 0.0)) && near(m[3][3], 1.0);
-    let pose = match layout {
+    let (position, back) = match layout {
         Layout::Transform if last_column_free => (row(m, 3), row(m, 2)),
         Layout::View if last_column_free => {
             let t = row(m, 3);
@@ -116,7 +120,7 @@ pub fn pose(m: &Matrix, layout: Layout) -> Option<([f32; 3], [f32; 3])> {
         }
         _ => return None,
     };
-    Some(pose)
+    Some((position, back.map(|v| -v)))
 }
 
 /// Yaw and pitch in degrees of a forward vector, as `render::Camera` takes them: yaw
@@ -278,8 +282,11 @@ impl Recording {
     }
 
     /// Adds the camera seen at `seconds` (any clock) if it moved since the last key.
-    /// Returns whether it did.
+    /// Returns whether it did. A read more than `JUMP` metres from the last key is not
+    /// the camera moving but its memory being cleared or reused for a frame (seen in
+    /// Heat: a copy read as the origin for one poll), so it is skipped.
     pub fn add(&mut self, seconds: f64, position: [f32; 3], forward: [f32; 3]) -> bool {
+        const JUMP: f32 = 100.0;
         let (mut yaw, pitch) = angles(forward);
         if let Some((_, k)) = self.last {
             yaw = unwrap_yaw(k[3], yaw);
@@ -289,7 +296,13 @@ impl Recording {
             let still = (0..3).all(|i| (k[i] - key[i]).abs() < 0.005)
                 && (k[3] - key[3]).abs() < 0.01
                 && (k[4] - key[4]).abs() < 0.01;
-            if still || seconds <= t {
+            let d = [0, 1, 2].map(|i| key[i] - k[i]);
+            if still && self.keys == 1 && seconds > t {
+                // Still at rest: the path starts at the last look before the first move.
+                self.first = Some(seconds);
+                self.last = Some((seconds, k));
+            }
+            if still || seconds <= t || dot3(d, d) > JUMP * JUMP {
                 return false;
             }
         }
@@ -599,14 +612,15 @@ mod commands {
 mod tests {
     use super::*;
 
-    /// A camera transform at `p` looking along yaw/pitch, as `render::Camera` builds it.
+    /// The game's camera matrix at `p` looking along yaw/pitch as `render::Camera`
+    /// takes them: rows left, up, back and position.
     fn transform(p: [f32; 3], yaw: f32, pitch: f32) -> Matrix {
         let c = nfsh_render::camera::Camera::new(p, yaw, pitch, 16, 9);
         let [f, r, u] = c.axes();
         [
-            [r[0], r[1], r[2], 0.0],
+            [-r[0], -r[1], -r[2], 0.0],
             [u[0], u[1], u[2], 0.0],
-            [f[0], f[1], f[2], 0.0],
+            [-f[0], -f[1], -f[2], 0.0],
             [p[0], p[1], p[2], 1.0],
         ]
     }
@@ -707,12 +721,15 @@ mod tests {
             [s, 0.0, c]
         };
         assert!(r.add(5.0, [0.0; 3], f(350.0)));
+        // Resting longer moves the start up to the last look before the move.
         assert!(!r.add(5.1, [0.0; 3], f(350.0)));
+        // A cleared copy, read as the origin far away, is no move.
+        assert!(!r.add(5.2, [5000.0, 0.0, 0.0], f(0.0)));
         assert!(r.add(5.5, [1.0, 0.0, 0.0], f(10.0)));
         assert_eq!(r.keys(), 2);
         let path = crate::path::Path::parse(r.text()).unwrap();
-        assert_eq!(path.duration(), 0.5);
-        let end = path.at(0.5);
+        assert!((path.duration() - 0.4).abs() < 1e-6, "{}", path.duration());
+        let end = path.at(0.4);
         assert!((end[3] - 370.0).abs() < 0.01, "{end:?}");
     }
 }

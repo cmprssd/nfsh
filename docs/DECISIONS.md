@@ -1298,3 +1298,26 @@ console.
   takes over the owner's screen; the window mode is the one compared with the original.
 - **The first frame is the load, not part of the path's times.** It builds the
   pipelines and is far slower than any after it.
+
+## 2026-11-12: The original measured, driven by Claude (the owner's choice)
+
+Heat now runs on this PC (Steam, through the EA app). The owner asked Claude to drive it:
+no computer-use tools were in the session, so Claude drove it from WSL with PowerShell,
+taking screenshots and sending keys and mouse input, the owner's PC not in use meanwhile.
+
+- **Solo, Low, windowed 1280x720** (the owner's choice). A first Enter in the lobby
+  started Play Online by mistake; Claude quit to the lobby before reading any memory.
+- **Not the speedway path, noted as such** (the owner's fallback): at 9 FPS and driving
+  blind, the car stayed by the garage east of the raceway. The recorded drive is
+  `bench/paths/garage-drive.path`.
+- **The camera reader looks down the matrix's -z** (decided by Claude, pending review).
+  Why: measured in the game (BASELINE.md, "How the original's camera is read"); the
+  reader as first written had the camera looking backwards.
+- **A recorded key more than 100 m from the last is skipped** (decided by Claude, pending
+  review). Why: a copy of the camera read as cleared for one poll, which the recorder
+  took for the first move. A real camera never moves that far between 1 ms polls.
+- **Load is timed from Play Solo to the garage's menu** (decided by Claude, pending
+  review). Why: it is the game's own load into Palm City, the garage is in it, and a
+  pixel of the menu tells exactly when it is up; the title screen and lobby before it
+  are menus, not the world.
+
