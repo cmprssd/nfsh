@@ -227,6 +227,7 @@ fn renderer(
     format: vk::Format,
 ) -> Result<ZoneRenderer, String> {
     let start = Instant::now();
+    let disk = frostbite::cas::read_so_far();
     let mut textures = Textures::new(store).map_err(|e| e.to_string())?;
     let mut by_name = |name: &str| -> frostbite::Result<Loaded> {
         let texture = textures.by_name(name)?;
@@ -259,11 +260,12 @@ fn renderer(
     let ground = scene.detail.len() + normals + far_count;
     let wanted = scene.textures.len() + ground;
     eprintln!(
-        "{} textures ({} of them ground detail), {:.1} MiB uploaded in {:.1} s",
+        "{} textures ({} of them ground detail), {:.1} MiB uploaded in {:.1} s; {}",
         wanted.saturating_sub(renderer.missing.len()),
         ground,
         renderer.texture_bytes as f64 / f64::from(1 << 20),
-        start.elapsed().as_secs_f64()
+        start.elapsed().as_secs_f64(),
+        read_since(disk)
     );
     for (texture, why) in &renderer.missing {
         eprintln!("  drawn grey: {texture}: {why}");
@@ -271,10 +273,24 @@ fn renderer(
     Ok(renderer)
 }
 
+/// What has been read from the store since `then`, a [`frostbite::cas::read_so_far`].
+fn read_since(then: (u64, u64)) -> String {
+    let now = frostbite::cas::read_so_far();
+    disk_line(now.0 - then.0, now.1 - then.1)
+}
+
+fn disk_line(bytes: u64, reads: u64) -> String {
+    format!(
+        "{:.1} MiB read from the store in {reads} reads",
+        bytes as f64 / f64::from(1 << 20)
+    )
+}
+
 /// The zone's placements and meshes, ready to upload; prints what it read and what
 /// it could not.
 fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
     let start = Instant::now();
+    let disk = frostbite::cas::read_so_far();
     let mut level = Level::new(store, SUPERBUNDLE)?;
     let mut zone = level.zone(name)?;
     let roads = level.add_drivable_surfaces(&mut zone, ROAD_MARGIN)?;
@@ -323,13 +339,14 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
         None => {}
     }
     eprintln!(
-        "{name}: {} placements ({roads} of them drivable surfaces) of {} meshes; {} vertices, {} triangles, {} draws; read in {:.1} s",
+        "{name}: {} placements ({roads} of them drivable surfaces) of {} meshes; {} vertices, {} triangles, {} draws; read in {:.1} s; {}",
         zone.placements.len(),
         zone.meshes.len(),
         scene.positions.len(),
         scene.triangles(),
         scene.draws.len(),
-        start.elapsed().as_secs_f64()
+        start.elapsed().as_secs_f64(),
+        read_since(disk)
     );
     for (mesh, why) in &scene.failed {
         eprintln!("  not drawn: {mesh}: {why}");
@@ -748,6 +765,14 @@ mod tests {
         assert!(options(&args("store 495 --fast")).is_none());
         assert!(options(&args("store")).is_none());
         assert!(options(&args("store 495 extra")).is_none());
+    }
+
+    #[test]
+    fn the_disk_line_gives_mebibytes_and_reads() {
+        assert_eq!(
+            disk_line(3 << 19, 7),
+            "1.5 MiB read from the store in 7 reads"
+        );
     }
 
     #[test]

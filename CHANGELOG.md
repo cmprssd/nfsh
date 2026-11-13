@@ -4,6 +4,17 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.34.0] - 2026-11-13
+
+### Added
+
+- `nfsh view` says how much it read from the store, and in how many reads, for the
+  zone's meshes and ground and for its textures.
+- nfsh's window run on `bench/paths/garage-drive.path` (docs/BASELINE.md, "The same
+  path"): 6.76 ms median a frame and 16.2 ms 1% low, against Heat's 114.0 ms at Low.
+- Where zone 494's load goes: about 12 s warm, near zone 495's; its ~42 s are a cold
+  file cache, most of it 9,889 small reads for 37 MiB of meshes and ground.
+
 ## [0.33.0] - 2026-11-12
 
 ### Added
