@@ -170,11 +170,47 @@ number.
 - **Warm, it costs nothing measurable:** 8.0 s (0.34.0) and 8.3 s (0.35.0) by the median
   of three loads each, the runs within 7.8 to 8.5 s. The rounds parse each partition and
   mesh set twice; that is at most the 0.3 s between them.
-- **Left:** the textures (17.3 to 9.2 s sorted), the roads and the zone's own walk (4.7
+- **Left:** the textures (done in 0.36.0, below), the roads and the zone's own walk (4.7
   s, 0.8 s or so sorted: the walk follows blueprints, so its rounds mean walking again
   each time one is found), the layers and the ground tiles. On a disc, where a seek costs
   more, laying each zone's entries out together is the next step after that (org rules,
   "On a disc").
+
+### The textures in the packs' order, read while they upload (0.36.0)
+
+The texture stage (`nfsh view`'s upload, after the read stage) read each texture's ebx,
+res and chunk as the renderer asked for it: 1,800 reads of 609 MiB, hopping between
+packs. 0.36.0 finds every texture the zone needs first (the ground's detail and far
+maps, then the scene's), reads their ebx and then their res in two sorted rounds, and
+uploads the scene's textures in the order of their chunks in the packs. A second thread
+reads the chunks in that order, 64 MiB of stored bytes at a time, each batch sorted and
+merged across 64 KiB, while the first decodes and uploads; each chunk is dropped once
+used.
+
+| Zone 494's texture stage | Reads | Replayed unbuffered | In the viewer, cold | Warm |
+|---|---|---|---|---|
+| as 0.35.0 reads them | 1,800 | 17.1-19.5 s | 18.9, 19.5, 20.6 s | 6.3-6.4 s |
+| sorted, read in 128 MiB batches before each is used (not released) | 570 | 9.4-10.3 s | 19.9 s | 7.6 s (one load, PC in use) |
+| 0.36.0: sorted, read on a second thread | 570 | 9.4-11.8 s | 11.0, 11.0 s | 6.3-6.4 s |
+
+- **Sorting alone saved nothing in the viewer.** Replayed past the cache, the sorted
+  reads take half the time, but in a real cold load the stage stayed at 20 s: each
+  batch waited for the disk, then the disk waited for the decoding and upload (about
+  6.3 s of the stage, as warm loads show), and Windows' own read-ahead had already
+  hidden part of the old order's seeks. Read on a second thread, the reads and the
+  work overlap, and the stage takes about as long as its reads.
+- **The whole cold load:** 35.4 to 39.4 s to the first frame in 0.35.0's three cold
+  loads, 28.4 and 28.7 s in 0.36.0's; the read stage took 13.8 to 14.9 s in all of
+  them. Warm, three loads each on an idle PC, alternating: 10.9 to 11.0 s for both
+  (one more 0.35.0 load took 15.5 s, its read stage slow).
+- **Memory:** the peak working set of a `--shot` load went from 1,927 to 1,989 MiB: one
+  batch read while one waits and one is used.
+- **The same picture:** the textures are uploaded in the packs' order but numbered in
+  the scene's, so the draws keep their order; zone 494's `--shot` is byte for byte
+  0.35.0's.
+- Cold loads were had by reading 12 GiB of other files from D: first (the old 0.4.0
+  store) to push the store out of Windows' file cache; each load's read stage (13.8 to
+  14.9 s against about 3.6 s warm) shows it was cold.
 
 ## The original's half
 

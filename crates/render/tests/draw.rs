@@ -100,6 +100,7 @@ fn middle_of(
         &scene,
         Target::COLOR_FORMAT,
         load,
+        &[],
         Vec::new(),
         Vec::new(),
     )
@@ -226,6 +227,7 @@ fn draws_a_placed_mesh_where_the_camera_sees_it() {
         &scene,
         Target::COLOR_FORMAT,
         |_| unreachable!(),
+        &[],
         Vec::new(),
         Vec::new(),
     )
@@ -408,6 +410,7 @@ fn an_empty_scene_draws_nothing() {
         &scene,
         Target::COLOR_FORMAT,
         |_| unreachable!(),
+        &[],
         Vec::new(),
         Vec::new(),
     )
@@ -456,6 +459,7 @@ fn ground_row_far(
         &scene,
         Target::COLOR_FORMAT,
         |_| unreachable!(),
+        &[],
         loaded,
         far,
     )
@@ -719,6 +723,7 @@ fn asphalt_over_ground(shoulder: [u8; 8], mask: [u8; 8], normal: [u8; 4]) -> [u8
         &scene,
         Target::COLOR_FORMAT,
         load,
+        &[],
         Vec::new(),
         Vec::new(),
     )
@@ -799,6 +804,7 @@ fn lod_middle(z: f32) -> [u8; 4] {
         &scene,
         Target::COLOR_FORMAT,
         |_| Ok(bc1(0x37, RED)),
+        &[],
         Vec::new(),
         Vec::new(),
     )

@@ -327,18 +327,35 @@ fn shader_module(gpu: &Gpu, spirv: &[u8]) -> Result<vk::ShaderModule> {
     })
 }
 
+/// Each of `0..count` once: those in `order` first, as `order` has them, then the rest
+/// in turn; indices out of range or repeated are passed over.
+fn load_order(order: &[usize], count: usize) -> Vec<usize> {
+    let mut seen = vec![false; count];
+    let mut out = Vec::with_capacity(count);
+    for i in order.iter().copied().chain(0..count) {
+        if i < count && !seen[i] {
+            seen[i] = true;
+            out.push(i);
+        }
+    }
+    out
+}
+
 impl ZoneRenderer {
     /// Uploads `scene` and its textures, each from `load` (by `TextureAsset`
     /// partition), and the ground's detail layers' textures `detail` (one per
     /// [`Scene::detail`]) and their far detail maps `far` (one per
     /// [`crate::scene::far_maps`]), and makes the pipelines for drawing into
-    /// `color_format`. A texture that can't be loaded or sampled is drawn grey, a
+    /// `color_format`. The scene's textures load in the order of their indices in
+    /// `order` (the packs' order, for a disk's sake), then those it leaves out in the
+    /// scene's order. A texture that can't be loaded or sampled is drawn grey, a
     /// detail layer's left out, and listed in `missing`.
     pub fn new(
         gpu: &Arc<Gpu>,
         scene: &Scene,
         color_format: vk::Format,
         mut load: impl FnMut(&[u8; 16]) -> frostbite::Result<Loaded>,
+        order: &[usize],
         detail: Vec<DetailTextures>,
         far: Vec<frostbite::Result<Loaded>>,
     ) -> Result<Self> {
@@ -486,18 +503,25 @@ impl ZoneRenderer {
         )?;
         r.images.push(grey);
         // Each of the scene's textures' image; the grey one for those that failed.
-        let mut texture_images = Vec::with_capacity(scene.textures.len());
-        for guid in &scene.textures {
-            match r.upload(load(guid)) {
-                Ok(image) => {
+        // Loaded in `order`, they are numbered and listed in the scene's: the draws are
+        // sorted by their images, and the order of draws that tie in depth shows.
+        let mut uploaded: Vec<Option<_>> = scene.textures.iter().map(|_| None).collect();
+        for i in load_order(order, scene.textures.len()) {
+            uploaded[i] = Some(r.upload(load(&scene.textures[i])));
+        }
+        let mut texture_images = Vec::with_capacity(uploaded.len());
+        for (guid, upload) in scene.textures.iter().zip(uploaded) {
+            match upload {
+                Some(Ok(image)) => {
                     texture_images.push(r.images.len());
                     r.images.push(image);
                 }
-                Err((name, why)) => {
+                Some(Err((name, why))) => {
                     let name = name.unwrap_or_else(|| hex(guid));
                     r.missing.push((name, why));
                     texture_images.push(0);
                 }
+                None => texture_images.push(0),
             }
         }
         let ([ground, ground_normals, ground_far], detail_look) =
@@ -1181,6 +1205,14 @@ fn pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn textures_load_in_the_order_given_then_the_rest() {
+        assert_eq!(load_order(&[], 3), [0, 1, 2]);
+        assert_eq!(load_order(&[2, 0, 1], 3), [2, 0, 1]);
+        assert_eq!(load_order(&[3, 1, 1, 9], 4), [3, 1, 0, 2]);
+        assert_eq!(load_order(&[5], 0), [] as [usize; 0]);
+    }
 
     #[test]
     fn the_sun_is_exposed_and_the_sky_follows_it() {

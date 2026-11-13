@@ -1350,3 +1350,23 @@ before reading.
   store read written to a file, and read again past Windows' file cache. Why: the only
   repeatable cold measurement without an administrator; the disc check (org rules)
   needs the same trace of a recorded path.
+
+## 2026-11-13: The textures read in the packs' order, on a second thread
+
+0.35.0's rounds left zone 494's texture stage reading 1,800 pieces in the renderer's
+order: 17 to 20 s cold, against 9.2 s for the same bytes sorted (BASELINE.md, "The
+textures in the packs' order").
+
+- **Upload the scene's textures in the order of their chunks in the packs, but number
+  them in the scene's** (decided by Claude, pending review). Why: the read-ahead then
+  goes through the packs once, front to back; numbered as before, the draws keep their
+  order, and the picture is byte for byte the same (draws that tie in depth showed it
+  when they were numbered in upload order).
+- **Read the chunks on a second thread while the first decodes and uploads** (decided
+  by Claude, pending review). Why: sorted reads made before each batch is used saved
+  nothing in a real cold load, because reading and uploading took turns; overlapped,
+  the stage went from 19 to 20 s to 11 s.
+- **64 MiB batches, each chunk dropped once used** (decided by Claude, pending review).
+  Why: holding the zone's 609 MiB of chunks at once was the risk the handoff named; one
+  batch read, one waiting and one in use cost 62 MiB of peak working set, and gave the
+  same 570 reads as sorting all of them at once.
