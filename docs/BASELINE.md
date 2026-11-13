@@ -2,7 +2,7 @@
 
 The numbers the viewer has to beat, measured against the original Need for Speed: Heat
 on the same camera path and the same PC (BRIEF.md, "Success criteria"). Both halves are
-measured on `bench/paths/garage-drive.path` (nfsh headless so far; "The same path").
+measured on `bench/paths/garage-drive.path` ("The same path").
 
 ## Machine
 
@@ -55,7 +55,7 @@ Midday, zone 495 with the roads and ground under it, 1280x720. Times in ms.
   warm-up and then three runs.
 - The window's warm-up ran slower (14.81 ms mean) than the three runs after it.
 
-## The same path, 2026-11-12 (nfsh 0.32.0)
+## The same path, 2026-11-13 (nfsh 0.33.0)
 
 `bench/baseline.sh bench/paths/garage-drive.path 494`: the original's recorded drive (25 s,
 1,505 frames headless) through zone 494, which `nfsh level D:\nfsh-store X,Z` gives as
@@ -65,19 +65,56 @@ Times in ms.
 
 | Path | Mode | Mean | Median | p99 | 1% low | Max | Load, warm (s) | Load, first (s) |
 |------|------|------|--------|-----|--------|-----|----------------|-----------------|
-| garage-drive | headless | 17.68 (57 FPS) | 17.01 | 31.80 | 33.69 (30 FPS) | 40.61 | 49.71 (49.71, 52.10, 42.87) | 52.96 |
+| garage-drive | window | 6.97 (143 FPS) | 6.76 | 14.43 | 16.20 (62 FPS) | 21.06 | 42.08 (42.08, 41.26, 42.55) | 47.84 |
+| garage-drive | headless, 0.32.0 | 17.68 (57 FPS) | 17.01 | 31.80 | 33.69 (30 FPS) | 40.61 | 49.71 (49.71, 52.10, 42.87) | 52.96 |
+| garage-drive | headless, one run | 7.19 (139 FPS) | 6.86 | 11.92 | 14.05 (71 FPS) | 16.78 | | 41.42 |
 | garage-drive | Heat, Low, window | | 114.0 (8.8 FPS) | p95 145.1 | | 188.0 | 88.8 (Play Solo to the garage) | |
 
-- **6.7 times the original's frame rate by the median** (17.0 against 114.0 ms), but
-  not the same things drawn: nfsh draws one zone with its roads and ground, no car,
-  traffic, sky dome, neighbouring zones, particles or post-processing; Heat at Low
-  draws all of them. The window run, the one comparable with Heat's, isn't done yet:
-  it opens a window on the owner's screen.
-- **Load is five times zone 495's** (about 50 s against 10 s headless). Zone 494 spans
-  about 700 m by 700 m; which part of its load (reading, uploading, pipelines) costs
-  most isn't measured yet.
-- The third run's 1% low (47.20 ms) and max (77.14 ms) stand out from the other two;
-  the medians use all three.
+- **The window run: 16.9 times the original's frame rate by the median** (6.76 against
+  114.0 ms), and a 1% low of 16.2 ms, under Heat's best frame (92.8 ms at the garage). Not
+  the same things drawn: nfsh draws one zone with its roads and ground, no car, traffic,
+  sky dome, neighbouring zones, particles or post-processing; Heat at Low draws all of
+  them.
+- **Headless is now as fast as the window.** One headless run after the window runs
+  took 6.86 ms by the median, where 0.32.0's three runs the day before took 17.0 ms on
+  the same build of the renderer. What slowed those runs (another program on the GPU,
+  the iGPU's clocks) isn't known; three headless runs on an idle PC would settle it.
+- **Each window run loaded cold, about 42 s**, though they ran one after another. A
+  later window run, after two headless ones, loaded in 9.9 s: the window isn't what
+  empties the file cache. What does isn't known (the PC has 7.9 GB, and WSL's own memory
+  grows and shrinks).
+
+### Where zone 494's load goes
+
+The viewer prints each stage's time and, since 0.34.0, what it read from the store
+(`nfsh view` on stderr). Runs on an idle PC, headless unless marked; the stages after
+the upload (lighting, the GPU, the pipelines and the first frame) are what is left of
+the load.
+
+| Run | Read (meshes, ground) | Upload (textures) | The rest | Load |
+|-----|-----------------------|-------------------|----------|------|
+| cold | 20.0 s | 16.6 s | 4.8 s | 41.4 s |
+| warm | 3.2 s | 8.3 s | 1.1 s | 12.6 s |
+| warm | 3.2 s | 6.8 s | 2.1 s | 12.1 s |
+| window, cold | 14.4 s | 20.5 s | 2.7 s | 37.6 s |
+
+| Zone | Read stage | Upload stage |
+|------|------------|--------------|
+| 494 | 37.0 MiB in 9,889 reads (3.8 KiB a read) | 608.9 MiB in 1,800 reads (346 KiB a read) |
+| 495 | 43.9 MiB in 9,558 reads (4.7 KiB a read) | 509.0 MiB in 1,185 reads (440 KiB a read) |
+
+- **Zone 494 isn't slow to load; a cold cache is.** Warm, it loads in about 12 s,
+  near zone 495's 8 to 11 s; 0.32.0's "about 50 s" were cold loads. The store holds
+  0.63 GiB for this zone, of 23 GiB.
+- **Cold, the read stage costs about 17 s for 37 MiB**: about 1.7 ms more a read for
+  its 9,889 small reads, far more than the drive's bandwidth needs (37 MiB is about a
+  second at 30 MB/s). Per-read latency on the USB drive (D:, a Sabrent; Windows doesn't
+  say whether it is an SSD or a disk) is the likely cost. Fewer, larger reads in the
+  packs' order would test it, and are what the disc needs anyway (org rules, "On a
+  disc").
+- Cold, the textures add 8 to 14 s for 609 MiB, about 45 to 75 MB/s.
+- The three runs that followed, while the owner was using the PC, took 46 to 62 s and
+  aren't in the table; their read counts were the same.
 
 ## The original's half
 
@@ -143,7 +180,7 @@ What was found about the matrix:
 
 | Criterion | State |
 |-----------|-------|
-| Lower average and 1%-low frame times on the same path | on garage-drive.path: Heat 114.0 ms median at Low (window), nfsh 17.0 ms median, 33.7 ms 1% low (headless, one zone; the window run is still to do) |
+| Lower average and 1%-low frame times on the same path | on garage-drive.path, both in a window: Heat 114.0 ms median at Low, nfsh 6.76 ms median and 16.2 ms 1% low (one zone, no car, traffic or sky dome) |
 | The same look by automated screenshot comparison | not started: Heat's frames can now be taken at a known camera; nfsh can't yet draw where they were taken |
-| Lower load time to the first frame of Palm City | Heat 88.8 s (Play Solo to the garage); nfsh 24.2 s window, 10.4 s headless (zone 495 only) |
+| Lower load time to the first frame of Palm City | Heat 88.8 s (Play Solo to the garage); nfsh on zone 494 (the garage's): 42.1 s window with a cold file cache, 12.1 to 12.6 s warm (headless; one zone only) |
 | nfsh's copy of the viewer's data is smaller | nfsh's install, base plus English with every tier, is 18.89 GiB ([SIZES.md](SIZES.md)); the viewer's own share is not split out yet |

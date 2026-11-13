@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::install::Install;
 use crate::reader::Reader;
@@ -140,13 +141,33 @@ impl<'a> Archives<'a> {
     }
 }
 
-#[cfg(unix)]
+/// Bytes and reads of stored entries since the process started, over every thread.
+static READ_BYTES: AtomicU64 = AtomicU64::new(0);
+static READS: AtomicU64 = AtomicU64::new(0);
+
+/// How many stored bytes, in how many reads, the archives (packs or an install's
+/// files) have been read for so far in this process: what a load costs the disk.
+pub fn read_so_far() -> (u64, u64) {
+    (
+        READ_BYTES.load(Ordering::Relaxed),
+        READS.load(Ordering::Relaxed),
+    )
+}
+
+/// Reads exactly `buf.len()` bytes of `file` at `offset`, and counts them.
 pub(crate) fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+    READ_BYTES.fetch_add(buf.len() as u64, Ordering::Relaxed);
+    READS.fetch_add(1, Ordering::Relaxed);
+    read_exact_at(file, buf, offset)
+}
+
+#[cfg(unix)]
+fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
     std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
 }
 
 #[cfg(windows)]
-pub(crate) fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !buf.is_empty() {
         match file.seek_read(buf, offset)? {
