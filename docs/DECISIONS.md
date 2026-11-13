@@ -1321,3 +1321,32 @@ taking screenshots and sending keys and mouse input, the owner's PC not in use m
   pixel of the menu tells exactly when it is up; the title screen and lobby before it
   are menus, not the world.
 
+
+## 2026-11-13: Cold loads read in the packs' order, in rounds
+
+Zone 494's cold read stage was 9,889 small reads in the order the readers asked for
+them; on the owner's USB hard disk each costs a seek (BASELINE.md, "Seeks, not reads").
+Sorted, the same bytes read in under a third of the time, but sorting needs the list
+before reading.
+
+- **Prefetch in rounds** (the owner's choice, over a list recorded from the last load of
+  a zone). Each step collects what it needs and reads that batch in the packs' order
+  into the reader's own memory. Why: fast on the first cold load too, and nothing to
+  write next to a store that may be on a read-only disc.
+- **The textures in the next PR** (the owner's choice): this one does the read stage
+  and the measurements.
+- **Only the meshes' rounds in this PR** (decided by Claude, pending review). Why: they
+  were 13.4 s of the 21 s; the zone's and the roads' walks follow blueprints, so their
+  rounds mean walking again each time a blueprint is found, which costs warm loads
+  time; they are 4.7 s cold and come after the textures.
+- **Neighbours closer than 64 KiB are read in one go** (decided by Claude, pending
+  review). Why: 4 KiB to 1 MiB gaps all read the meshes in about the same time; 64 KiB
+  makes about half as many reads as 4 KiB, which matters more where a seek costs more
+  (a disc), for 1.3 times the bytes.
+- **An install's files are read as asked** (decided by Claude, pending review). Why: an
+  install is copied to the local drive to be played from; a store is what sits on the
+  USB disk or a disc. Its pieces can be sorted the same way when a disc needs it.
+- **`NFSH_READ_TRACE` and `nfsh replay`** (decided by Claude, pending review): every
+  store read written to a file, and read again past Windows' file cache. Why: the only
+  repeatable cold measurement without an administrator; the disc check (org rules)
+  needs the same trace of a recorded path.

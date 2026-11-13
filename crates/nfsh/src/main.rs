@@ -1,9 +1,10 @@
-//! nfsh: a new engine for Need for Speed: Heat. For now it has twelve commands: an
+//! nfsh: a new engine for Need for Speed: Heat. For now it has thirteen commands: an
 //! inventory of the owner's install, a check that every entry of the install or of a
 //! store decompresses, the import into nfsh's own store, the copy of a store into an
 //! install of the parts and tiers a player keeps, the store's partition GUIDs
 //! listed again, an ebx partition printed as text, Palm City's level graph, one
-//! mesh's geometry, one texture, what a store's bytes are, and a window to fly through one zone, and a reader of the original's camera.
+//! mesh's geometry, one texture, what a store's bytes are, a window to fly through one zone, a reader of the original's camera, and a
+//! replay of a store's reads past the file cache.
 
 mod camera;
 mod ebx;
@@ -14,6 +15,7 @@ mod inventory;
 mod level;
 mod mesh;
 mod path;
+mod replay;
 mod sizes;
 mod texture;
 mod verify;
@@ -93,6 +95,12 @@ usage: nfsh camera scan FILE --near X,Y,Z [--radius M]
   turned or moved since the last look, same those that held still, show lists them.
   record polls the camera at ADDRESS read as LAYOUT (as the listing names them) and
   writes a path to PATH, from its first move for S seconds.
+usage: nfsh replay STORE TRACE [--gap BYTES]
+  Reads again what a read trace holds (nfsh writes one to the file $NFSH_READ_TRACE:
+  a FILE OFFSET SIZE line for each read of the store) from the packs of the store in
+  the folder STORE, past Windows' file cache, and times it: the trace's reads on a
+  cold disk. With --gap, they are first sorted by place and merged when no more than
+  BYTES lie between them.
 INSTALL is the game folder (with Data/ and Patch/); default: $NFSH_INSTALL.";
 
 fn main() -> ExitCode {
@@ -117,6 +125,32 @@ fn main() -> ExitCode {
     }
     if let Some(("camera", rest)) = args.split_first().map(|(c, r)| (c.as_str(), r)) {
         return match camera::run(rest) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("nfsh: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if let Some(("replay", rest)) = args.split_first().map(|(c, r)| (c.as_str(), r)) {
+        let gap = match rest {
+            [_, _] => None,
+            [_, _, flag, bytes] if flag == "--gap" => match bytes.parse() {
+                Ok(b) => Some(b),
+                Err(_) => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::from(2);
+                }
+            },
+            _ => {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        };
+        return match replay::run(rest[0].as_ref(), rest[1].as_ref(), gap) {
             Ok(text) => {
                 print!("{text}");
                 ExitCode::SUCCESS

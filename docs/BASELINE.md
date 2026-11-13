@@ -68,6 +68,8 @@ Times in ms.
 | garage-drive | window | 6.97 (143 FPS) | 6.76 | 14.43 | 16.20 (62 FPS) | 21.06 | 42.08 (42.08, 41.26, 42.55) | 47.84 |
 | garage-drive | headless, 0.32.0 | 17.68 (57 FPS) | 17.01 | 31.80 | 33.69 (30 FPS) | 40.61 | 49.71 (49.71, 52.10, 42.87) | 52.96 |
 | garage-drive | headless, one run | 7.19 (139 FPS) | 6.86 | 11.92 | 14.05 (71 FPS) | 16.78 | | 41.42 |
+| garage-drive | headless, 0.34.0, idle | 6.83 (146 FPS) | 6.57 | 10.35 | 11.96 (84 FPS) | 13.70 | 8.02 (8.35, 7.76, 8.02) | 7.79 |
+| garage-drive | headless, 0.35.0, idle | 6.41 (156 FPS) | 6.28 | 10.98 | 12.22 (82 FPS) | 14.07 | 8.30 (8.46, 8.10, 8.30) | 37.29 |
 | garage-drive | Heat, Low, window | | 114.0 (8.8 FPS) | p95 145.1 | | 188.0 | 88.8 (Play Solo to the garage) | |
 
 - **The window run: 16.9 times the original's frame rate by the median** (6.76 against
@@ -75,10 +77,12 @@ Times in ms.
   the same things drawn: nfsh draws one zone with its roads and ground, no car, traffic,
   sky dome, neighbouring zones, particles or post-processing; Heat at Low draws all of
   them.
-- **Headless is now as fast as the window.** One headless run after the window runs
-  took 6.86 ms by the median, where 0.32.0's three runs the day before took 17.0 ms on
-  the same build of the renderer. What slowed those runs (another program on the GPU,
-  the iGPU's clocks) isn't known; three headless runs on an idle PC would settle it.
+- **Headless is as fast as the window; 0.32.0's 17.0 ms doesn't come back.** Three
+  headless runs each of 0.34.0 and 0.35.0 on an idle PC, one after the other on
+  2026-11-13, took 6.57 and 6.28 ms by the median (rows below), like the one run after
+  the window runs (6.86 ms). The renderer is the same as 0.32.0's, so its 17.0 ms was the
+  PC that day, not nfsh: something else was using the GPU, or the iGPU ran at lower
+  clocks. Not known which.
 - **Each window run loaded cold, about 42 s**, though they ran one after another. A
   later window run, after two headless ones, loaded in 9.9 s: the window isn't what
   empties the file cache. What does isn't known (the PC has 7.9 GB, and WSL's own memory
@@ -106,15 +110,71 @@ the load.
 - **Zone 494 isn't slow to load; a cold cache is.** Warm, it loads in about 12 s,
   near zone 495's 8 to 11 s; 0.32.0's "about 50 s" were cold loads. The store holds
   0.63 GiB for this zone, of 23 GiB.
-- **Cold, the read stage costs about 17 s for 37 MiB**: about 1.7 ms more a read for
-  its 9,889 small reads, far more than the drive's bandwidth needs (37 MiB is about a
-  second at 30 MB/s). Per-read latency on the USB drive (D:, a Sabrent; Windows doesn't
-  say whether it is an SSD or a disk) is the likely cost. Fewer, larger reads in the
-  packs' order would test it, and are what the disc needs anyway (org rules, "On a
-  disc").
-- Cold, the textures add 8 to 14 s for 609 MiB, about 45 to 75 MB/s.
+- **Cold, the read stage costs about 17 s for 37 MiB.** The textures add 8 to 14 s for
+  609 MiB, about 45 to 75 MB/s.
 - The three runs that followed, while the owner was using the PC, took 46 to 62 s and
   aren't in the table; their read counts were the same.
+
+### Seeks, not reads: the read stage in the packs' order (0.35.0)
+
+A cold file cache can't be had on demand (emptying Windows' needs an administrator), so
+the cold half is measured with `nfsh replay`: nfsh writes each store read to the file
+`NFSH_READ_TRACE` names, and `nfsh replay STORE TRACE` reads the same bytes again with
+the cache bypassed (`FILE_FLAG_NO_BUFFERING`, whole 4 KiB sectors), as many times as
+wanted. As traced, zone 494's read stage replays in 21.1 to 23.9 s, close to its cold
+17 to 21 s in the viewer.
+
+**D: is a hard disk.** Read in 1 MiB pieces one after another it gives 93 MiB/s; 500
+random 4 KiB reads anywhere in the store take 9.3 ms each, and within 50 MB of each
+other 7.0 ms. An SSD, even over USB, answers a random read in well under 1 ms. So what a
+cold load pays for is the distance between reads, and their order, more than their
+number.
+
+| The read stage's reads (zone 494, unbuffered) | Reads | MiB read | Time |
+|---|---|---|---|
+| as nfsh 0.34.0 reads them | 9,889 | 75.7 | 21.1-23.9 s |
+| the same, sorted, merged when they touch | 6,001 | 59.1 | 7.5 s |
+| merged across gaps up to 4 KiB | 2,000 | 46.9 | 6.5 s |
+| merged across gaps up to 64 KiB | 1,067 | 62.8 | 6.4 s |
+| merged across gaps up to 1 MiB | 604 | 193.6 | 6.2-6.5 s |
+| in 0.34.0's order, through a cache of 64 MiB in 64 KiB pieces | 1,600 | 126.9 | 12.9 s |
+| as nfsh 0.35.0 reads them | 7,549 | 78.6 | 12.4-14.7 s |
+
+(The MiB column counts whole 4 KiB sectors, as a read past the cache must.)
+
+- **The hypothesis holds, with the seek in place of the read:** sorted, the same bytes
+  read in under a third of the time. Past a 4 KiB gap, merging more saves little: the
+  ~6 s left are seeks from one pack to the next (the stage reads from 18 of the 23
+  packs) and the bytes themselves. Caching nearby bytes without sorting saves less than
+  half, because the reads hop between packs.
+- **0.35.0 reads each zone's meshes in three rounds**, each in the packs' order with
+  neighbours merged across 64 KiB: the meshes' partitions, then their mesh sets and lod
+  groups, then every LOD's chunk. The meshes were 3,169 of the stage's reads and 13.4 s
+  of its cold time; now 829 reads and 5.0 s. Each mesh's partition was also read three
+  times; now once.
+
+| Part of the read stage, cold (unbuffered) | Reads | As read | Sorted, 64 KiB gaps |
+|---|---|---|---|
+| the zone's own placements | 254 | 1.3 s | |
+| the roads near it (every drivable-surface zone walked) | 6,000 | 3.4 s | 105 reads, 0.8 s |
+| meshes, 0.34.0 | 3,169 | 13.4 s (in the viewer) | |
+| meshes, 0.35.0 (three rounds) | 829 | 5.0 s | |
+| ground layers | 284 | 1.6 s | 45 reads, 0.2 s |
+| ground tiles | 182 | 1.5 s | 169 reads, 1.1 s |
+| textures (the upload stage) | 1,802 | 17.3 s | 552 reads, 9.2 s |
+
+- **In the viewer, cold:** the read stage took 20.4 and 21.3 s in two cold loads of
+  0.34.0 and 13.8 s in 0.35.0's, which drew the same 2,103 placements in 3,432 draws.
+  The whole load was 46.3 and 47.8 s, then 45.3 and 37.3 s: the texture stage, not yet
+  sorted, varied from 21 to 27 s.
+- **Warm, it costs nothing measurable:** 8.0 s (0.34.0) and 8.3 s (0.35.0) by the median
+  of three loads each, the runs within 7.8 to 8.5 s. The rounds parse each partition and
+  mesh set twice; that is at most the 0.3 s between them.
+- **Left:** the textures (17.3 to 9.2 s sorted), the roads and the zone's own walk (4.7
+  s, 0.8 s or so sorted: the walk follows blueprints, so its rounds mean walking again
+  each time one is found), the layers and the ground tiles. On a disc, where a seek costs
+  more, laying each zone's entries out together is the next step after that (org rules,
+  "On a disc").
 
 ## The original's half
 
