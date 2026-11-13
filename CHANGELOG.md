@@ -4,6 +4,17 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.36.0] - 2026-11-13
+
+### Changed
+
+- **A cold load reads a zone's textures in the packs' order, while it uploads them.**
+  `nfsh view` finds every texture first, uploads them in the order they lie in the packs,
+  and reads them on a second thread 64 MiB at a time: zone 494's textures went from 1,800
+  reads and 19 to 21 s on a cold cache to 570 reads and 11 s, and its whole cold load
+  from 35 to 39 s to about 28.5 s. The picture is the same, byte for byte; warm loads take
+  as long as before, and the load's peak memory grows by about 60 MiB.
+
 ## [0.35.0] - 2026-11-13
 
 ### Changed

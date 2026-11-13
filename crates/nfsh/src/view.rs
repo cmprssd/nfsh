@@ -17,7 +17,7 @@ use frostbite::lighting::{self, Lighting};
 use frostbite::mesh::Meshes;
 use frostbite::store::Store;
 use frostbite::terrain::{self, Chunks, Ground, Tree};
-use frostbite::texture::Textures;
+use frostbite::texture::{Asset, Textures};
 use nfsh_render::scene::{self, Scene};
 use nfsh_render::zone::{DetailTextures, Loaded};
 use nfsh_render::{Camera, FrameLoop, Gpu, Light, Presented, Swapchain, Target, ZoneRenderer, vk};
@@ -228,36 +228,11 @@ fn renderer(
 ) -> Result<ZoneRenderer, String> {
     let start = Instant::now();
     let disk = frostbite::cas::read_so_far();
-    let mut textures = Textures::new(store).map_err(|e| e.to_string())?;
-    let mut by_name = |name: &str| -> frostbite::Result<Loaded> {
-        let texture = textures.by_name(name)?;
-        let (texture, pixels) = textures.pixels(&texture)?;
-        Ok((name.to_owned(), texture, pixels))
-    };
-    let detail = scene
-        .detail
-        .iter()
-        .map(|d| DetailTextures {
-            diffuse: by_name(&d.texture),
-            normal: d.normal.as_deref().map(&mut by_name),
-        })
-        .collect();
-    let far: Vec<_> = scene::far_maps(&scene.detail)
-        .iter()
-        .map(|name| by_name(name))
-        .collect();
-    let far_count = far.len();
-    let load = |guid: &[u8; 16]| -> frostbite::Result<Loaded> {
-        let (name, texture) = textures.by_partition(guid)?;
-        let (texture, pixels) = textures
-            .pixels(&texture)
-            .map_err(|e| frostbite::Error(format!("{name}: {e}")))?;
-        Ok((name, texture, pixels))
-    };
-    let renderer =
-        ZoneRenderer::new(gpu, scene, format, load, detail, far).map_err(|e| e.to_string())?;
+    // The chunks are read on another thread while the textures are decoded and
+    // uploaded here; the scope ends once both are done.
+    let renderer = std::thread::scope(|scope| upload(gpu, store, scene, format, scope))?;
     let normals = scene.detail.iter().filter(|d| d.normal.is_some()).count();
-    let ground = scene.detail.len() + normals + far_count;
+    let ground = scene.detail.len() + normals + scene::far_maps(&scene.detail).len();
     let wanted = scene.textures.len() + ground;
     eprintln!(
         "{} textures ({} of them ground detail), {:.1} MiB uploaded in {:.1} s; {}",
@@ -271,6 +246,74 @@ fn renderer(
         eprintln!("  drawn grey: {texture}: {why}");
     }
     Ok(renderer)
+}
+
+/// [`renderer`]'s textures, read ahead on a thread of `scope`, and the upload.
+fn upload<'scope>(
+    gpu: &std::sync::Arc<Gpu>,
+    store: &'scope Store,
+    scene: &Scene,
+    format: vk::Format,
+    scope: &'scope std::thread::Scope<'scope, '_>,
+) -> Result<ZoneRenderer, String> {
+    let mut textures = Textures::new(store).map_err(|e| e.to_string())?;
+    let far_maps = scene::far_maps(&scene.detail);
+    let order = plan_textures(&mut textures, scope, scene, &far_maps);
+    let mut by_name = |name: &str| -> frostbite::Result<Loaded> {
+        let texture = textures.by_name(name)?;
+        let (texture, pixels) = textures.pixels(&texture)?;
+        Ok((name.to_owned(), texture, pixels))
+    };
+    let detail = scene
+        .detail
+        .iter()
+        .map(|d| DetailTextures {
+            diffuse: by_name(&d.texture),
+            normal: d.normal.as_deref().map(&mut by_name),
+        })
+        .collect();
+    let far: Vec<_> = far_maps.iter().map(|name| by_name(name)).collect();
+    let load = |guid: &[u8; 16]| -> frostbite::Result<Loaded> {
+        let (name, texture) = textures.by_partition(guid)?;
+        let (texture, pixels) = textures
+            .pixels(&texture)
+            .map_err(|e| frostbite::Error(format!("{name}: {e}")))?;
+        Ok((name, texture, pixels))
+    };
+    ZoneRenderer::new(gpu, scene, format, load, &order, detail, far).map_err(|e| e.to_string())
+}
+
+/// Finds every texture `renderer` loads (the ground's detail and far maps, then the
+/// scene's) and has `textures` read their chunks on a thread of `scope` in that order,
+/// the scene's in the packs' order: the order to upload the scene's textures in, by
+/// index.
+fn plan_textures<'scope>(
+    textures: &mut Textures<'scope>,
+    scope: &'scope std::thread::Scope<'scope, '_>,
+    scene: &Scene,
+    far_maps: &[String],
+) -> Vec<usize> {
+    let mut assets = Vec::new();
+    for d in &scene.detail {
+        assets.push(Asset::Name(&d.texture));
+        assets.extend(d.normal.as_deref().map(Asset::Name));
+    }
+    assets.extend(far_maps.iter().map(|n| Asset::Name(n)));
+    let ground = assets.len();
+    assets.extend(scene.textures.iter().map(Asset::Partition));
+    let chunks = textures.locate(&assets);
+    let (ground, own) = chunks.split_at(ground);
+    let order = pack_order(own);
+    let queue = ground.iter().chain(order.iter().map(|&i| &own[i]));
+    textures.read_ahead(scope, queue.flatten().copied());
+    order
+}
+
+/// The indices of `chunks` in the packs' order, those not found last.
+fn pack_order(chunks: &[Option<frostbite::Location>]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..chunks.len()).collect();
+    order.sort_by_key(|&i| (chunks[i].is_none(), chunks[i]));
+    order
 }
 
 /// What has been read from the store since `then`, a [`frostbite::cas::read_so_far`].
@@ -729,6 +772,23 @@ impl ApplicationHandler for App<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn textures_upload_in_the_packs_order_those_not_found_last() {
+        let at = |cas, offset| {
+            Some(frostbite::Location {
+                cas: frostbite::CasRef {
+                    patch: false,
+                    package: 0,
+                    cas,
+                },
+                offset,
+                size: 1,
+            })
+        };
+        let chunks = [at(1, 0), None, at(0, 9), at(0, 2)];
+        assert_eq!(pack_order(&chunks), [3, 2, 0, 1]);
+    }
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()

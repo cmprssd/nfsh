@@ -18,6 +18,8 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, sync_channel};
+use std::thread::Scope;
 
 use crate::cas::{Archives, Decoder};
 use crate::ebx::Partition;
@@ -324,6 +326,73 @@ impl Store {
             None => Ok(false),
         }
     }
+
+    /// Reads the entries at `locations` on a thread of `scope` while they are used: in
+    /// batches of up to `batch_bytes` stored bytes in the order given, each read in
+    /// the packs' order ([`crate::cas::spans`]). Each batch comes with how many of
+    /// `locations` have been read so far (what failed to read is left out, to fail
+    /// again when asked for). One batch is read while one waits, so the reader holds
+    /// three at most with the one it is using. `None` for an install: its files are
+    /// read as asked.
+    pub fn read_behind<'scope>(
+        &'scope self,
+        scope: &'scope Scope<'scope, '_>,
+        locations: Vec<Location>,
+        batch_bytes: u64,
+    ) -> Option<Receiver<(usize, Frames)>> {
+        if self.placement.is_some() {
+            return None;
+        }
+        let (tx, rx) = sync_channel(1);
+        scope.spawn(move || {
+            let mut archives = self.archives();
+            let mut from = 0;
+            while from < locations.len() {
+                let batch = &locations[from..from + batch_len(&locations[from..], batch_bytes)];
+                let frames = read_spans(&mut archives, batch.iter().copied());
+                from += batch.len();
+                if tx.send((from, frames)).is_err() {
+                    return;
+                }
+            }
+        });
+        Some(rx)
+    }
+}
+
+/// Stored frames, by where they are.
+pub type Frames = Vec<(Location, Vec<u8>)>;
+
+/// How many of `locations`, from the first, come to at most `limit` stored bytes: one
+/// at least, however large.
+fn batch_len(locations: &[Location], limit: u64) -> usize {
+    let mut bytes = 0;
+    locations
+        .iter()
+        .take_while(|l| {
+            let take = bytes == 0 || bytes + u64::from(l.size) <= limit;
+            bytes += u64::from(l.size);
+            take
+        })
+        .count()
+}
+
+/// The stored frames at `locations`, read in the packs' order with neighbours merged
+/// into one read ([`crate::cas::spans`]); those whose read failed are left out.
+fn read_spans(archives: &mut Archives, locations: impl IntoIterator<Item = Location>) -> Frames {
+    let mut frames = Vec::new();
+    for (span, members) in crate::cas::spans(locations, crate::cas::SPAN_GAP) {
+        let Ok(bytes) = archives.span(span) else {
+            continue;
+        };
+        for l in members {
+            let from = (l.offset - span.offset) as usize;
+            if let Some(frame) = bytes.get(from..from + l.size as usize) {
+                frames.push((l, frame.to_vec()));
+            }
+        }
+    }
+    frames
 }
 
 /// A store's entries, read and decompressed; one per thread.
@@ -346,20 +415,28 @@ impl Entries<'_> {
         if self.placed.is_some() {
             return;
         }
-        let wanted = locations
+        let wanted: Vec<Location> = locations
             .into_iter()
-            .filter(|l| !self.ahead.contains_key(l));
-        for (span, members) in crate::cas::spans(wanted, crate::cas::SPAN_GAP) {
-            let Ok(bytes) = self.archives.span(span) else {
-                continue;
-            };
-            for l in members {
-                let from = (l.offset - span.offset) as usize;
-                if let Some(frame) = bytes.get(from..from + l.size as usize) {
-                    self.ahead.insert(l, frame.to_vec());
-                }
-            }
-        }
+            .filter(|l| !self.ahead.contains_key(l))
+            .collect();
+        let frames = read_spans(&mut self.archives, wanted);
+        self.ahead.extend(frames);
+    }
+
+    /// Takes frames read ahead elsewhere ([`Store::read_behind`]) as if read ahead here.
+    pub fn take_ahead(&mut self, frames: Frames) {
+        self.ahead.extend(frames);
+    }
+
+    /// Whether the entry at `location` has been read ahead and not forgotten.
+    pub fn is_ahead(&self, location: Location) -> bool {
+        self.ahead.contains_key(&location)
+    }
+
+    /// Drops what was read ahead of the entry at `location`: a later read goes to the
+    /// disk again.
+    pub fn forget(&mut self, location: Location) {
+        self.ahead.remove(&location);
     }
 
     /// The decompressed entry at `location`; an error when an install left out any of it.
@@ -1654,6 +1731,27 @@ mod tests {
         assert!(entries.read(at(0, e, c + 1)).is_err());
         assert!(entries.read(at(1, 0, 4)).is_err());
 
+        // Read behind, on another thread, a batch at a time in the order given (what
+        // is past the pack is left out), each batch with how many have been read.
+        let batches: Vec<(usize, Frames)> = std::thread::scope(|scope| {
+            let wanted = vec![at(0, e, c), at(1, 0, 4), at(0, 0, e)];
+            store
+                .read_behind(scope, wanted, 1)
+                .unwrap()
+                .iter()
+                .collect()
+        });
+        let stored = std::fs::read(dir.join(pack_name(0))).unwrap();
+        let (first, second) = (stored[..e as usize].to_vec(), stored[e as usize..].to_vec());
+        assert_eq!(
+            batches,
+            [
+                (1, vec![(at(0, e, c), second)]),
+                (2, vec![]),
+                (3, vec![(at(0, 0, e), first)])
+            ]
+        );
+
         // Read ahead, the entries come from memory: the pack can be emptied. What
         // wasn't read ahead, or couldn't be, is read as asked, and fails.
         let mut ahead = store.entries().unwrap();
@@ -1664,7 +1762,23 @@ mod tests {
         assert_eq!(ahead.read(at(0, 0, e)).unwrap(), samples[3]);
         assert!(ahead.read(at(0, 0, e + c)).is_err());
         assert!(ahead.read(at(1, 0, 4)).is_err());
+        // Forgotten, an entry is read from the pack again.
+        assert!(ahead.is_ahead(at(0, e, c)));
+        ahead.forget(at(0, e, c));
+        assert!(!ahead.is_ahead(at(0, e, c)));
+        assert!(ahead.read(at(0, e, c)).is_err());
+        assert_eq!(ahead.read(at(0, 0, e)).unwrap(), samples[3]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_batch_stops_before_the_limit_but_takes_one_at_least() {
+        let sizes = [40, 60, 1, 5].map(|size| at(0, 0, size));
+        assert_eq!(batch_len(&sizes, 100), 2);
+        assert_eq!(batch_len(&sizes, 101), 3);
+        assert_eq!(batch_len(&sizes, 10), 1);
+        assert_eq!(batch_len(&sizes[2..], 1000), 2);
+        assert_eq!(batch_len(&[], 10), 0);
     }
 
     /// A store by hand whose one ebx is the ebx tests' sample partition, listed by two

@@ -8,13 +8,15 @@
 //! and vector parameters), and [`Textures`] finds a texture's res and chunk in nfsh's
 //! store.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::mpsc::Receiver;
+use std::thread::Scope;
 
 use crate::ebx::{Object, Partition, Ref, Value};
 use crate::level::{elements, field, float, instance_object};
 use crate::reader::Reader;
-use crate::store::{Entries, Store, guid_order};
+use crate::store::{Entries, Frames, Store, guid_order};
 use crate::{Location, Result, bail};
 
 /// The res type of a texture: the hash of `Texture` (see [`crate::sb::res_type_hash`]).
@@ -491,7 +493,25 @@ pub struct Textures<'s> {
     res: HashMap<u64, Location>,
     /// Every chunk stored whole, by id.
     chunks: HashMap<[u8; 16], Location>,
+    /// Where each chunk [`Textures::read_ahead`] was given and not yet read is in its
+    /// order.
+    queued: HashMap<Location, usize>,
+    /// The chunks read on another thread, and how many of them have come.
+    behind: Option<Receiver<(usize, Frames)>>,
+    received: usize,
 }
+
+/// A texture asset, by partition or by ebx name.
+#[derive(Debug, Clone, Copy)]
+pub enum Asset<'a> {
+    Partition(&'a [u8; 16]),
+    Name(&'a str),
+}
+
+/// How many stored bytes [`Textures::read_ahead`] reads in one batch: sorted, about as
+/// few reads as all of a zone's textures at once (609 MiB for zone 494), without
+/// holding them all.
+pub const READ_AHEAD: u64 = 64 << 20;
 
 impl<'s> Textures<'s> {
     pub fn new(store: &'s Store) -> Result<Self> {
@@ -500,7 +520,77 @@ impl<'s> Textures<'s> {
             entries: store.entries()?,
             res: store.res_of_type(TEXTURE),
             chunks: store.whole_chunks(),
+            queued: HashMap::new(),
+            behind: None,
+            received: 0,
         })
+    }
+
+    /// Where the pixels of each texture in `assets` are ([`Textures::pixels`]' chunk),
+    /// `None` where they can't be found (left for loading to report). Reads the
+    /// assets' ebx, then their res, ahead in the packs' order: two rounds of sorted,
+    /// merged reads ([`Entries::prefetch`]) instead of a seek for each.
+    pub fn locate(&mut self, assets: &[Asset]) -> Vec<Option<Location>> {
+        let ebx: Vec<Option<Location>> = assets
+            .iter()
+            .map(|a| match *a {
+                Asset::Partition(guid) => {
+                    let copy = self.store.partitions(guid).ok()?.next()?;
+                    self.store.ebx_at(copy).map(|(_, a)| a.location)
+                }
+                Asset::Name(name) => self.store.ebx(name).map(|a| a.location),
+            })
+            .collect();
+        self.entries.prefetch(ebx.iter().flatten().copied());
+        let res: Vec<Option<Location>> = ebx
+            .iter()
+            .map(|l| {
+                let data = self.entries.read((*l)?).ok()?;
+                let id = Partition::parse(&data).ok()?.resource("Resource").ok()?;
+                self.res.get(&id).copied()
+            })
+            .collect();
+        self.entries.prefetch(res.iter().flatten().copied());
+        res.iter()
+            .map(|l| {
+                let data = self.entries.read((*l)?).ok()?;
+                let chunk = Texture::parse(&data).ok()?.chunk;
+                self.chunks.get(&chunk).copied()
+            })
+            .collect()
+    }
+
+    /// Reads the chunks `chunks` on a thread of `scope` while [`Textures::pixels`]
+    /// uses them, in this order ([`Store::read_behind`], [`READ_AHEAD`] stored bytes a
+    /// batch); each is dropped once used. An install's are read as asked.
+    pub fn read_ahead<'scope>(
+        &mut self,
+        scope: &'scope Scope<'scope, '_>,
+        chunks: impl IntoIterator<Item = Location>,
+    ) where
+        's: 'scope,
+    {
+        let mut seen = HashSet::new();
+        let queue: Vec<Location> = chunks.into_iter().filter(|&l| seen.insert(l)).collect();
+        self.queued = queue.iter().enumerate().map(|(i, &l)| (l, i)).collect();
+        self.received = 0;
+        self.behind = self.store.read_behind(scope, queue, READ_AHEAD);
+    }
+
+    /// Waits for the batches up to the one with the queued chunk `location`; nothing
+    /// for one not queued, or once the reading thread is gone.
+    fn receive(&mut self, location: Location) {
+        let Some(&at) = self.queued.get(&location) else {
+            return;
+        };
+        while self.received <= at {
+            let Some(Ok((received, frames))) = self.behind.as_ref().map(Receiver::recv) else {
+                self.behind = None;
+                return;
+            };
+            self.received = received;
+            self.entries.take_ahead(frames);
+        }
     }
 
     /// The texture asset in the partition `guid`, with its name.
@@ -541,7 +631,12 @@ impl<'s> Textures<'s> {
         let Some(&location) = self.chunks.get(&id) else {
             bail!("no whole chunk {id:02x?} in the store");
         };
-        let (data, cut) = self.entries.read_end(location)?;
+        self.receive(location);
+        let read = self.entries.read_end(location);
+        if self.queued.remove(&location).is_some() {
+            self.entries.forget(location);
+        }
+        let (data, cut) = read?;
         let texture = match cut {
             false => texture.clone(),
             true => (1..texture.mips())
