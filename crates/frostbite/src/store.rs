@@ -313,6 +313,7 @@ impl Store {
             archives: self.archives(),
             placed: self.placement.as_ref().map(crate::copy::Placed::new),
             frames: FrameDecoder::new(&self.dictionary)?,
+            ahead: HashMap::new(),
         })
     }
 
@@ -331,9 +332,36 @@ pub struct Entries<'a> {
     /// An install's files, read in place of the packs.
     placed: Option<crate::copy::Placed<'a>>,
     frames: FrameDecoder,
+    /// Stored frames read ahead by [`Entries::prefetch`], by location.
+    ahead: HashMap<Location, Vec<u8>>,
 }
 
 impl Entries<'_> {
+    /// Reads the entries at `locations` ahead, in the packs' order, merging neighbours
+    /// into one read ([`crate::cas::spans`]): many small reads in the order a reader
+    /// asks for them cost a hard disk a seek each. Later reads of them come from
+    /// memory. A read that fails is left to fail again when its entry is asked for; an
+    /// install reads its own files as asked.
+    pub fn prefetch(&mut self, locations: impl IntoIterator<Item = Location>) {
+        if self.placed.is_some() {
+            return;
+        }
+        let wanted = locations
+            .into_iter()
+            .filter(|l| !self.ahead.contains_key(l));
+        for (span, members) in crate::cas::spans(wanted, crate::cas::SPAN_GAP) {
+            let Ok(bytes) = self.archives.span(span) else {
+                continue;
+            };
+            for l in members {
+                let from = (l.offset - span.offset) as usize;
+                if let Some(frame) = bytes.get(from..from + l.size as usize) {
+                    self.ahead.insert(l, frame.to_vec());
+                }
+            }
+        }
+    }
+
     /// The decompressed entry at `location`; an error when an install left out any of it.
     pub fn read(&mut self, location: Location) -> Result<Vec<u8>> {
         match self.read_end(location)? {
@@ -346,6 +374,13 @@ impl Entries<'_> {
     /// its end when its first frames were left out (a texture without its top mips),
     /// with whether any were. Empty when it was left out altogether.
     pub fn read_end(&mut self, location: Location) -> Result<(Vec<u8>, bool)> {
+        if let Some(frame) = self.ahead.get(&location) {
+            let data = self
+                .frames
+                .decode(frame)
+                .map_err(|e| crate::Error(format!("{location:?}: {e}")))?;
+            return Ok((data, false));
+        }
         let (frame, cut) = match &mut self.placed {
             Some(placed) => placed.stored(location)?,
             None => (self.archives.stored(location)?, false),
@@ -1618,6 +1653,17 @@ mod tests {
         assert!(entries.read(at(0, 0, e - 1)).is_err());
         assert!(entries.read(at(0, e, c + 1)).is_err());
         assert!(entries.read(at(1, 0, 4)).is_err());
+
+        // Read ahead, the entries come from memory: the pack can be emptied. What
+        // wasn't read ahead, or couldn't be, is read as asked, and fails.
+        let mut ahead = store.entries().unwrap();
+        ahead.prefetch([at(0, e, c), at(0, 0, e), at(0, e, c), at(1, 0, 4)]);
+        std::fs::write(dir.join(pack_name(0)), b"").unwrap();
+        assert_eq!(ahead.read(at(0, 0, e)).unwrap(), samples[3]);
+        assert_eq!(ahead.read(at(0, e, c)).unwrap(), [7; 5000]);
+        assert_eq!(ahead.read(at(0, 0, e)).unwrap(), samples[3]);
+        assert!(ahead.read(at(0, 0, e + c)).is_err());
+        assert!(ahead.read(at(1, 0, 4)).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

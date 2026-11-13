@@ -214,12 +214,14 @@ impl<'a> Placed<'a> {
             };
             let from = out.len();
             out.resize(from + len as usize, 0);
-            crate::cas::read_at(handle, &mut out[from..], offset).map_err(|e| {
-                crate::Error(format!(
-                    "{}: {len} bytes at {offset:#x}: {e}",
-                    path.display()
-                ))
-            })?;
+            crate::cas::read_at(handle, u16::from(file), &mut out[from..], offset).map_err(
+                |e| {
+                    crate::Error(format!(
+                        "{}: {len} bytes at {offset:#x}: {e}",
+                        path.display()
+                    ))
+                },
+            )?;
         }
         Ok((out, cut))
     }

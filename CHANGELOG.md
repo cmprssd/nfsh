@@ -4,6 +4,27 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.35.0] - 2026-11-13
+
+### Changed
+
+- **A cold load reads a zone's meshes in the packs' order.** `nfsh view` reads them in
+  three rounds (their partitions, then mesh sets and lod groups, then every LOD's
+  chunk), merging neighbours into one read: zone 494's meshes went from 3,169 reads and
+  13.4 s to 829 reads and 5.0 s on a cold cache, and its read stage from about 21 s to
+  14 s. Warm loads take as long as before, about 8 s.
+
+### Added
+
+- `nfsh replay STORE TRACE [--gap BYTES]` reads again what a read trace holds, past
+  Windows' file cache, and times it: a cold disk's cost, as often as wanted. nfsh writes
+  the trace (a `FILE OFFSET SIZE` line for each store read) to the file
+  `NFSH_READ_TRACE` names.
+- Why cold loads were slow (docs/BASELINE.md, "Seeks, not reads"): D: is a hard disk,
+  about 9 ms a random read, and the readers hopped between packs.
+- Three headless runs on an idle PC: 6.3 to 6.6 ms by the median on garage-drive.path;
+  0.32.0's 17.0 ms was the PC that day.
+
 ## [0.34.0] - 2026-11-13
 
 ### Added

@@ -425,13 +425,8 @@ impl Switches {
                 other => bail!("{}: {name} is {other:?}", p.name),
             }
         };
-        let import = match field(asset, o, "LodGroup")? {
-            Some(Value::Class(Ref::Null)) => return Ok(Self::NEVER),
-            Some(Value::Class(Ref::Import(i))) => asset.imports.get(i).copied(),
-            other => bail!("{}: LodGroup is {other:?}", asset.name),
-        };
-        let Some(import) = import else {
-            bail!("{}: LodGroup names a missing import", asset.name);
+        let Some(import) = lod_group(asset)? else {
+            return Ok(Self::NEVER);
         };
         let lod_scale = number(asset, o, "LodScale")?;
         let cull_scale = number(asset, o, "CullScale")?;
@@ -450,6 +445,22 @@ impl Switches {
             cull_area: number(&g, o, "CullScreenArea")?,
             cull_scale,
         })
+    }
+}
+
+/// The import of a mesh asset's lod group; `None` when it names none.
+fn lod_group(asset: &Partition) -> Result<Option<crate::ebx::Import>> {
+    let Some(instance) = asset.instances.first() else {
+        bail!("{}: no instances", asset.name);
+    };
+    let import = match field(asset, asset.object(instance), "LodGroup")? {
+        Some(Value::Class(Ref::Null)) => return Ok(None),
+        Some(Value::Class(Ref::Import(i))) => asset.imports.get(i).copied(),
+        other => bail!("{}: LodGroup is {other:?}", asset.name),
+    };
+    match import {
+        Some(import) => Ok(Some(import)),
+        None => bail!("{}: LodGroup names a missing import", asset.name),
     }
 }
 
@@ -635,6 +646,55 @@ impl<'s> Meshes<'s> {
 
     pub fn store(&self) -> &'s Store {
         self.store
+    }
+
+    /// Reads ahead, in the packs' order, what loading the mesh assets in the partitions
+    /// `guids` reads ([`Meshes::by_partition`], [`Meshes::switches`],
+    /// [`Meshes::materials`], [`Meshes::chunk`]), in the three rounds that each needs
+    /// the one before: the partitions; their mesh sets and lod groups; every LOD's
+    /// chunk. What can't be found or parsed is left for the loading to report.
+    pub fn prefetch(&mut self, guids: &[[u8; 16]]) {
+        let partition = |g: &[u8; 16]| self.partition_location(g);
+        let assets: Vec<Location> = guids.iter().filter_map(partition).collect();
+        self.entries.prefetch(assets.iter().copied());
+
+        let mut sets = Vec::new();
+        let mut groups = Vec::new();
+        for &l in &assets {
+            let Ok(data) = self.entries.read(l) else {
+                continue;
+            };
+            let Ok(p) = Partition::parse(&data) else {
+                continue;
+            };
+            if let Ok(id) = p.resource("MeshSetResource")
+                && let Some(&res) = self.sets.get(&id)
+            {
+                sets.push(res);
+            }
+            if let Ok(Some(import)) = lod_group(&p)
+                && let Some(l) = self.partition_location(&import.partition)
+            {
+                groups.push(l);
+            }
+        }
+        self.entries.prefetch(sets.iter().chain(&groups).copied());
+
+        let mut chunks = Vec::new();
+        for &res in &sets {
+            let Ok(set) = self.entries.read(res).and_then(|d| MeshSet::parse(&d)) else {
+                continue;
+            };
+            let ids = set.lods.iter().filter_map(|lod| lod.chunk);
+            chunks.extend(ids.filter_map(|id| self.chunks.get(&id).copied()));
+        }
+        self.entries.prefetch(chunks);
+    }
+
+    /// Where the partition `guid`'s first copy is.
+    fn partition_location(&self, guid: &[u8; 16]) -> Option<Location> {
+        let copy = self.store.partitions(guid).ok()?.next()?;
+        self.store.ebx_at(copy).map(|(_, a)| a.location)
     }
 
     /// The mesh set of the mesh asset in the partition `guid`.

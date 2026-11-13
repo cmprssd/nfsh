@@ -275,6 +275,7 @@ fn renderer(
 
 /// What has been read from the store since `then`, a [`frostbite::cas::read_so_far`].
 fn read_since(then: (u64, u64)) -> String {
+    frostbite::cas::flush_trace();
     let now = frostbite::cas::read_so_far();
     disk_line(now.0 - then.0, now.1 - then.1)
 }
@@ -295,6 +296,8 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
     let mut zone = level.zone(name)?;
     let roads = level.add_drivable_surfaces(&mut zone, ROAD_MARGIN)?;
     let mut meshes = Meshes::new(store)?;
+    let partitions: Vec<[u8; 16]> = zone.meshes.iter().map(|m| m.partition).collect();
+    meshes.prefetch(&partitions);
     let noise = scene::texture_partition(store, scene::ASPHALT_NOISE);
     let mut scene = scene::build(&zone, |m| scene::lods(&mut meshes, m, noise));
     // The ground under the zone; without it the zone is still drawn, and without its
