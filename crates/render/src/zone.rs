@@ -5,6 +5,7 @@
 
 use std::ffi::CStr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use ash::vk;
 use frostbite::lighting::Lighting;
@@ -305,8 +306,9 @@ pub struct ZoneRenderer {
     looks: Option<Buffer>,
     /// Textures drawn grey, with why.
     pub missing: Vec<(String, String)>,
-    /// The pixels uploaded, in bytes.
+    /// The pixels uploaded, in bytes, and the time their images took to make and fill.
     pub texture_bytes: u64,
+    pub texture_upload: Duration,
 }
 
 /// A draw's images, as indices into [`ZoneRenderer`]'s: its colour (binding 0),
@@ -384,6 +386,7 @@ impl ZoneRenderer {
             looks: None,
             missing: Vec::new(),
             texture_bytes: 0,
+            texture_upload: Duration::ZERO,
         };
         if !scene.draws.is_empty() {
             let upload = |usage, bytes: &[u8]| Buffer::upload(gpu, usage, bytes);
@@ -807,7 +810,9 @@ impl ZoneRenderer {
             }
         }
         let count = (data.len() / size) as u32;
+        let start = Instant::now();
         let image = Image::sampled_array(&gpu, format, &mips, (count, size as u64), &data)?;
+        self.texture_upload += start.elapsed();
         self.texture_bytes += data.len() as u64;
         Ok((image, uploaded))
     }
@@ -860,7 +865,9 @@ impl ZoneRenderer {
         let fail = |why: String| (Some(name.clone()), why);
         let format = self.sampled_format(&texture).map_err(fail)?;
         let mips = mips(&texture, data.len()).map_err(fail)?;
+        let start = Instant::now();
         let image = Image::sampled(&self.gpu, format, &mips, &data).map_err(|e| fail(e.0))?;
+        self.texture_upload += start.elapsed();
         self.texture_bytes += data.len() as u64;
         Ok(image)
     }

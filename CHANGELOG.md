@@ -4,6 +4,19 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.38.0] - 2026-11-15
+
+### Changed
+
+- **A warm load decodes a zone's textures on threads.** `nfsh view` decodes each batch
+  of textures read ahead on all but one of the processor's threads while the last one
+  uploads them. Zone 494's texture stage went from 4.3 to 4.5 s to 2.2 to 2.3 s warm,
+  and its whole warm load from about 7.1 s to 4.9 s; cold loads take as long as before
+  (the disk is the limit). The picture is the same, byte for byte; the load's peak memory
+  grows by about 60 MiB.
+- `nfsh view` prints the texture stage's parts: finding the textures, waiting for their
+  chunks, decoding, uploading.
+
 ## [0.37.0] - 2026-11-14
 
 ### Changed

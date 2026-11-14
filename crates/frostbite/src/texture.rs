@@ -12,11 +12,12 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::mpsc::Receiver;
 use std::thread::Scope;
+use std::time::{Duration, Instant};
 
 use crate::ebx::{Object, Partition, Ref, Value};
 use crate::level::{elements, field, float, instance_object};
 use crate::reader::Reader;
-use crate::store::{Entries, Frames, Store, guid_order};
+use crate::store::{Decoded, Entries, Store, guid_order};
 use crate::{Location, Result, bail};
 
 /// The res type of a texture: the hash of `Texture` (see [`crate::sb::res_type_hash`]).
@@ -496,9 +497,15 @@ pub struct Textures<'s> {
     /// Where each chunk [`Textures::read_ahead`] was given and not yet read is in its
     /// order.
     queued: HashMap<Location, usize>,
-    /// The chunks read on another thread, and how many of them have come.
-    behind: Option<Receiver<(usize, Frames)>>,
+    /// The chunks read and decoded on other threads, how many of them have come, and
+    /// those come and not yet used.
+    behind: Option<Receiver<(usize, Decoded)>>,
     received: usize,
+    ready: HashMap<Location, Result<Vec<u8>>>,
+    /// How long [`Textures::pixels`] has waited for chunks read and decoded ahead, and
+    /// spent reading and decoding those that weren't.
+    pub waited: Duration,
+    pub decoded: Duration,
 }
 
 /// A texture asset, by partition or by ebx name.
@@ -513,6 +520,12 @@ pub enum Asset<'a> {
 /// holding them all.
 pub const READ_AHEAD: u64 = 64 << 20;
 
+/// How many threads decode the chunks [`Textures::read_ahead`] reads: all but one of
+/// the processor's, which uploads them.
+pub fn decode_workers() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(1).max(1))
+}
+
 impl<'s> Textures<'s> {
     pub fn new(store: &'s Store) -> Result<Self> {
         Ok(Self {
@@ -523,6 +536,9 @@ impl<'s> Textures<'s> {
             queued: HashMap::new(),
             behind: None,
             received: 0,
+            ready: HashMap::new(),
+            waited: Duration::ZERO,
+            decoded: Duration::ZERO,
         })
     }
 
@@ -560,9 +576,10 @@ impl<'s> Textures<'s> {
             .collect()
     }
 
-    /// Reads the chunks `chunks` on a thread of `scope` while [`Textures::pixels`]
-    /// uses them, in this order ([`Store::read_behind`], [`READ_AHEAD`] stored bytes a
-    /// batch); each is dropped once used. An install's are read as asked.
+    /// Reads the chunks `chunks` on a thread of `scope` and decodes them on others
+    /// ([`decode_workers`]) while [`Textures::pixels`] uses them, in this order
+    /// ([`Store::read_behind`], [`READ_AHEAD`] stored bytes a batch); each is dropped
+    /// once used. An install's are read as asked.
     pub fn read_ahead<'scope>(
         &mut self,
         scope: &'scope Scope<'scope, '_>,
@@ -574,7 +591,11 @@ impl<'s> Textures<'s> {
         let queue: Vec<Location> = chunks.into_iter().filter(|&l| seen.insert(l)).collect();
         self.queued = queue.iter().enumerate().map(|(i, &l)| (l, i)).collect();
         self.received = 0;
-        self.behind = self.store.read_behind(scope, queue, READ_AHEAD);
+        self.ready.clear();
+        self.behind = self
+            .store
+            .read_behind(scope, queue, READ_AHEAD)
+            .and_then(|read| self.store.decode_behind(scope, read, decode_workers()).ok());
     }
 
     /// Waits for the batches up to the one with the queued chunk `location`; nothing
@@ -584,12 +605,12 @@ impl<'s> Textures<'s> {
             return;
         };
         while self.received <= at {
-            let Some(Ok((received, frames))) = self.behind.as_ref().map(Receiver::recv) else {
+            let Some(Ok((received, decoded))) = self.behind.as_ref().map(Receiver::recv) else {
                 self.behind = None;
                 return;
             };
             self.received = received;
-            self.entries.take_ahead(frames);
+            self.ready.extend(decoded);
         }
     }
 
@@ -631,11 +652,16 @@ impl<'s> Textures<'s> {
         let Some(&location) = self.chunks.get(&id) else {
             bail!("no whole chunk {id:02x?} in the store");
         };
+        let start = Instant::now();
         self.receive(location);
-        let read = self.entries.read_end(location);
-        if self.queued.remove(&location).is_some() {
-            self.entries.forget(location);
-        }
+        let received = Instant::now();
+        let read = match self.ready.remove(&location) {
+            Some(decoded) => decoded.map(|data| (data, false)),
+            None => self.entries.read_end(location),
+        };
+        self.waited += received - start;
+        self.decoded += received.elapsed();
+        self.queued.remove(&location);
         let (data, cut) = read?;
         let texture = match cut {
             false => texture.clone(),

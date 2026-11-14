@@ -230,7 +230,7 @@ fn renderer(
     let disk = frostbite::cas::read_so_far();
     // The chunks are read on another thread while the textures are decoded and
     // uploaded here; the scope ends once both are done.
-    let renderer = std::thread::scope(|scope| upload(gpu, store, scene, format, scope))?;
+    let (renderer, split) = std::thread::scope(|scope| upload(gpu, store, scene, format, scope))?;
     let normals = scene.detail.iter().filter(|d| d.normal.is_some()).count();
     let ground = scene.detail.len() + normals + scene::far_maps(&scene.detail).len();
     let wanted = scene.textures.len() + ground;
@@ -242,10 +242,30 @@ fn renderer(
         start.elapsed().as_secs_f64(),
         read_since(disk)
     );
+    let took = start.elapsed();
+    let rest =
+        took.saturating_sub(split.found + split.waited + split.decoded + renderer.texture_upload);
+    eprintln!(
+        "  texture stage: finding {:.1} s, waiting for chunks {:.1} s, decoding here {:.1} s, uploading {:.1} s, the rest {:.1} s",
+        split.found.as_secs_f64(),
+        split.waited.as_secs_f64(),
+        split.decoded.as_secs_f64(),
+        renderer.texture_upload.as_secs_f64(),
+        rest.as_secs_f64()
+    );
     for (texture, why) in &renderer.missing {
         eprintln!("  drawn grey: {texture}: {why}");
     }
     Ok(renderer)
+}
+
+/// Where [`renderer`]'s texture stage went, besides uploading: finding the textures
+/// (their ebx and res, then each one's from memory), waiting for their chunks (read
+/// and decoded on other threads), and decoding here those that weren't.
+struct Split {
+    found: Duration,
+    waited: Duration,
+    decoded: Duration,
 }
 
 /// [`renderer`]'s textures, read ahead on a thread of `scope`, and the upload.
@@ -255,13 +275,19 @@ fn upload<'scope>(
     scene: &Scene,
     format: vk::Format,
     scope: &'scope std::thread::Scope<'scope, '_>,
-) -> Result<ZoneRenderer, String> {
+) -> Result<(ZoneRenderer, Split), String> {
+    let start = Instant::now();
     let mut textures = Textures::new(store).map_err(|e| e.to_string())?;
     let far_maps = scene::far_maps(&scene.detail);
     let order = plan_textures(&mut textures, scope, scene, &far_maps);
-    let mut by_name = |name: &str| -> frostbite::Result<Loaded> {
-        let texture = textures.by_name(name)?;
-        let (texture, pixels) = textures.pixels(&texture)?;
+    let found = std::cell::Cell::new(start.elapsed());
+    let find = |took: Duration| found.set(found.get() + took);
+    let textures = std::cell::RefCell::new(textures);
+    let by_name = |name: &str| -> frostbite::Result<Loaded> {
+        let (texture, took) = timed(|| textures.borrow_mut().by_name(name));
+        find(took);
+        let texture = texture?;
+        let (texture, pixels) = textures.borrow_mut().pixels(&texture)?;
         Ok((name.to_owned(), texture, pixels))
     };
     let detail = scene
@@ -269,18 +295,29 @@ fn upload<'scope>(
         .iter()
         .map(|d| DetailTextures {
             diffuse: by_name(&d.texture),
-            normal: d.normal.as_deref().map(&mut by_name),
+            normal: d.normal.as_deref().map(by_name),
         })
         .collect();
     let far: Vec<_> = far_maps.iter().map(|name| by_name(name)).collect();
     let load = |guid: &[u8; 16]| -> frostbite::Result<Loaded> {
-        let (name, texture) = textures.by_partition(guid)?;
+        let (found, took) = timed(|| textures.borrow_mut().by_partition(guid));
+        find(took);
+        let (name, texture) = found?;
         let (texture, pixels) = textures
+            .borrow_mut()
             .pixels(&texture)
             .map_err(|e| frostbite::Error(format!("{name}: {e}")))?;
         Ok((name, texture, pixels))
     };
-    ZoneRenderer::new(gpu, scene, format, load, &order, detail, far).map_err(|e| e.to_string())
+    let renderer = ZoneRenderer::new(gpu, scene, format, load, &order, detail, far)
+        .map_err(|e| e.to_string())?;
+    let textures = textures.into_inner();
+    let split = Split {
+        found: found.get(),
+        waited: textures.waited,
+        decoded: textures.decoded,
+    };
+    Ok((renderer, split))
 }
 
 /// Finds every texture `renderer` loads (the ground's detail and far maps, then the
