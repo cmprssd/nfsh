@@ -1370,3 +1370,17 @@ textures in the packs' order").
   Why: holding the zone's 609 MiB of chunks at once was the risk the handoff named; one
   batch read, one waiting and one in use cost 62 MiB of peak working set, and gave the
   same 570 reads as sorting all of them at once.
+
+## 2026-11-15: The textures decoded on threads
+
+Warm, zone 494's texture stage was 4.3 to 4.5 s, 3.0 to 3.2 s of it decoding on the
+thread that uploads (BASELINE.md, "The textures decoded on threads").
+
+- **Decode each batch read ahead on all but one of the processor's threads, and hand
+  it over whole** (decided by Claude, pending review). Why: decoding is independent per
+  chunk, and the uploading thread keeps one core; whole batches keep the read-ahead's
+  bookkeeping as it was. The upload order is unchanged, so the picture is byte for byte
+  the same; warm, the stage went to 2.2 to 2.3 s, and cold it is still the disk's time.
+- **The largest chunk left goes next** (decided by Claude, pending review). Why: a
+  zone's chunks range from a few KiB to 16 MiB; taken in order, one thread could be
+  left decoding a large one while the others wait.

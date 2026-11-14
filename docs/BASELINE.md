@@ -311,6 +311,45 @@ nothing:
   in 1.1 s. Cold, nothing shortens this stage short of laying a zone's entries out
   together in the packs.
 
+### The textures decoded on threads (0.38.0)
+
+Warm, the texture stage (4.3 to 4.5 s of a 6.9 to 7.2 s load) was most of zone 494's
+load. 0.38.0's viewer prints its parts (`texture stage: finding … s, waiting for chunks
+… s, decoding here … s, uploading … s, the rest … s`). With 0.37.0's code and only the
+timers added, warm, on an idle PC: finding the textures 0.2 s, waiting for reads 0.1 s,
+**decoding 3.0 to 3.2 s**, uploading 0.7 to 0.8 s, the rest 0.3 s. Decoding was
+three-quarters of the stage, all on the thread that uploads.
+
+0.38.0 adds a stage between the thread that reads the chunks and the one that uploads
+them: each 64 MiB batch, once read, is decoded on all but one of the processor's
+threads (3 of 4 here), each taking the largest chunk left next, and handed over whole.
+The upload order is unchanged.
+
+Zone 494, headless along garage-drive.path, on an idle PC with Chrome closed and 4.2
+GB free, loads alternating with 0.37.0 plus the timers (2026-11-15). Cold loads came
+after reading 12 GiB of other packs from D: (the old 0.4.0 store), different packs each
+time.
+
+| Zone 494 | Texture stage, warm | Load, warm | Texture stage, cold | Load, cold |
+|---|---|---|---|---|
+| 0.37.0 (with the timers) | 4.3, 4.5, 4.5 s | 6.93, 7.17, 7.07 s | 10.6, 10.6 s | 22.16, 22.08 s |
+| 0.38.0: decoded on 3 threads | 2.2, 2.3, 2.3 s | 4.79, 4.99, 4.87 s | 10.6, 10.5 s | 22.06, 21.96 s |
+
+- **Warm, the texture stage halves (4.4 to 2.3 s), and the load goes from about 7.1 to
+  4.9 s.** The upload thread now waits 0.4 to 0.5 s for decoded chunks and decodes
+  nothing itself. Uploading grew from 0.8 to 1.1 to 1.3 s: filling the staging buffers
+  now shares the processor and memory bandwidth with the decoding threads.
+- **Cold, nothing changes:** the stage waits on the disk (8.5 s of 10.5), as it did
+  waiting for reads (5.6 s) plus decoding (2.9 s). Decoding hid behind the reads; it
+  added nothing to the cold load, and only a zone's entries laid out together in the
+  packs would shorten it.
+- **Memory:** the peak working set of a `--shot` load went from 1,992 to 2,050 MiB: a
+  decoded batch waits while one is used.
+- **The same picture:** zone 494's `--shot` is byte for byte 0.37.0's.
+- **What is left warm:** the read stage (about 1.7 s, the meshes' build 1.1 s of it),
+  the texture stage's 2.3 s (now mostly uploading, one staging buffer and one
+  wait for the GPU per texture), and about 0.9 s of pipelines and the first frame.
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)
