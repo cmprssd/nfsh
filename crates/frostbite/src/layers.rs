@@ -273,6 +273,15 @@ fn sampled(store: &Store, shaders: &[Shader], db: &ShaderDb) -> Result<Vec<Sampl
         .map(|r| (r.asset.name.to_lowercase(), r.asset.location))
         .collect();
     let mut entries = store.entries()?;
+    // Every program the loop below reads, read first in the packs' order.
+    entries.prefetch(
+        shaders
+            .iter()
+            .flat_map(|s| db.permutations_of(name_hash(&s.name.to_lowercase())))
+            .filter_map(|p| programs.get(&shaderdb::program_name(&db.programs[p.program as usize])))
+            .copied()
+            .collect::<BTreeSet<_>>(),
+    );
     let mut code: HashMap<u32, Vec<dxbc::Instruction>> = HashMap::new();
     let mut out = Vec::with_capacity(shaders.len());
     for s in shaders {

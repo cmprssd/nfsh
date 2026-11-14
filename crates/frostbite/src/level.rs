@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use crate::ebx::{Object, Partition, Ref, Value};
 use crate::store::{EbxRef, Entries, Store};
-use crate::{Result, bail};
+use crate::{Location, Result, bail};
 
 /// How deep blueprints may nest inside each other before the walk gives up on a
 /// branch (real ones nest a few levels; this only stops a cycle the walk missed).
@@ -282,6 +282,49 @@ pub(crate) fn instance_object(p: &Partition, index: usize) -> Result<Object> {
     }
 }
 
+/// The partitions the walk may read from `p`: those its blueprint references, object
+/// lists and placed meshes import, each with whether it is followed further (a
+/// blueprint) or not (a mesh, whose type is all the walk reads). Every instance of a
+/// followed type counts, reached by the walk or not, so this is what the walk reads
+/// and a little more; what fails to decode is left out.
+fn links(p: &Partition) -> Vec<([u8; 16], bool)> {
+    let mut out = Vec::new();
+    let mut add = |r: Result<Ref>, follow: bool| {
+        if let Ok(Ref::Import(i)) = r
+            && let Some(import) = p.imports.get(i)
+        {
+            out.push((import.partition, follow));
+        }
+    };
+    for index in 0..p.instances.len() {
+        let Ok(o) = instance_object(p, index) else {
+            continue;
+        };
+        let ty = p.type_name(o.type_index);
+        match ty.as_str() {
+            "ObjectBlueprint" => add(class_ref(p, o, "Object"), true),
+            "StaticModelEntityData" => add(class_ref(p, o, "Mesh"), false),
+            "StaticModelGroupEntityData" => {
+                for member in elements(p, o, "MemberDatas").unwrap_or_default() {
+                    if let Value::Struct(m) = member {
+                        add(class_ref(p, m, "MeshAsset"), false);
+                    }
+                }
+            }
+            t if BLUEPRINT_REFERENCES.contains(&t) => add(class_ref(p, o, "Blueprint"), true),
+            t if OBJECT_LISTS.contains(&t) => {
+                for v in elements(p, o, "Objects").unwrap_or_default() {
+                    if let Value::Class(r) = v {
+                        add(Ok(r), true);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 impl<'s> Level<'s> {
     /// A reader for the levels in `store`, preferring copies of partitions in the
     /// superbundle `home` (e.g. `Win32/levels/mainlevel/mainlevel`).
@@ -355,18 +398,7 @@ impl<'s> Level<'s> {
     /// What the zone bundle `name` places: the objects of its root partition's
     /// `SubWorldData`, followed through blueprints, in world space.
     pub fn zone(&mut self, name: &str) -> Result<Zone> {
-        let Some(bundle) = self.bundle(name) else {
-            bail!("no bundle {name} in the store");
-        };
-        let key = bundle_key(name);
-        let Some(asset) = bundle
-            .bundle
-            .ebx
-            .iter()
-            .find(|a| bundle_key(&a.name) == key)
-        else {
-            bail!("bundle {name} has no root partition {key}");
-        };
+        let asset = self.root(name)?;
         let data = self.entries.read(asset.location)?;
         let p =
             Partition::parse(&data).map_err(|e| crate::Error(format!("{}: {e}", asset.name)))?;
@@ -430,18 +462,90 @@ impl<'s> Level<'s> {
     /// Reads the partition `guid`, preferring the home superbundle's copy; `None` if
     /// the store has none.
     fn load(&mut self, guid: &[u8; 16]) -> Result<Option<Loaded>> {
-        let copies: Vec<EbxRef> = self.store.partitions(guid)?.collect();
-        let pick = copies
-            .iter()
-            .find(|c| Some(c.superbundle) == self.home)
-            .or(copies.first());
-        let Some(asset) = pick.and_then(|&c| self.store.ebx_at(c)).map(|(_, a)| a) else {
+        let Some(asset) = self.locate(guid)? else {
             return Ok(None);
         };
         Ok(Some(Loaded {
             data: self.entries.read(asset.location)?,
             name: asset.name.clone(),
         }))
+    }
+
+    /// The copy of the partition `guid` [`Level::load`] reads, if the store has one.
+    fn locate(&self, guid: &[u8; 16]) -> Result<Option<&'s crate::sb::Asset>> {
+        let copies: Vec<EbxRef> = self.store.partitions(guid)?.collect();
+        let pick = copies
+            .iter()
+            .find(|c| Some(c.superbundle) == self.home)
+            .or(copies.first());
+        Ok(pick.and_then(|&c| self.store.ebx_at(c)).map(|(_, a)| a))
+    }
+
+    /// The root partition of the zone bundle `name`, which has the bundle's name.
+    fn root(&self, name: &str) -> Result<&'s crate::sb::Asset> {
+        let Some(bundle) = self.bundle(name) else {
+            bail!("no bundle {name} in the store");
+        };
+        let key = bundle_key(name);
+        match bundle
+            .bundle
+            .ebx
+            .iter()
+            .find(|a| bundle_key(&a.name) == key)
+        {
+            Some(asset) => Ok(asset),
+            None => bail!("bundle {name} has no root partition {key}"),
+        }
+    }
+
+    /// Reads ahead the root partitions of the zone bundles `names` and every partition
+    /// their walks may reach, so that [`Level::zone`] then reads them from memory: in
+    /// rounds, each in the packs' order, a round being what the last one links to
+    /// ([`links`]). Walked as found, they cost a hard disk a seek each. Returns how
+    /// many partitions were read; what fails to read or parse is left for the walk to
+    /// report.
+    pub fn prefetch(&mut self, names: &[String]) -> usize {
+        // A partition is followed when reached as a blueprint, not as a mesh.
+        let mut followed: HashMap<[u8; 16], bool> = HashMap::new();
+        let mut round: Vec<(Location, bool)> = names
+            .iter()
+            .filter_map(|n| self.root(n).ok())
+            .map(|a| (a.location, true))
+            .collect();
+        let mut read = 0;
+        while !round.is_empty() {
+            let fresh: Vec<Location> = round
+                .iter()
+                .map(|r| r.0)
+                .filter(|&l| !self.entries.is_ahead(l))
+                .collect();
+            read += fresh.len();
+            self.entries.prefetch(fresh);
+            let mut next = Vec::new();
+            for (location, follow) in round {
+                if !follow {
+                    continue;
+                }
+                let Ok(data) = self.entries.read(location) else {
+                    continue;
+                };
+                let Ok(p) = Partition::parse(&data) else {
+                    continue;
+                };
+                for (guid, follow) in links(&p) {
+                    let was = followed.get(&guid).copied();
+                    if was == Some(true) || (was.is_some() && !follow) {
+                        continue;
+                    }
+                    followed.insert(guid, follow);
+                    if let Ok(Some(asset)) = self.locate(&guid) {
+                        next.push((asset.location, follow));
+                    }
+                }
+            }
+            round = next;
+        }
+        read
     }
 
     /// Places the objects of the instance `index` of `p` (an object list or an
@@ -878,6 +982,43 @@ mod tests {
     /// resolve.
     #[test]
     fn a_zone_places_its_groups_and_blueprints_in_world_space() {
+        let dir = zone_store("zone");
+        let store = Store::open(&dir).unwrap();
+        let mut level = Level::new(&store, HOME).unwrap();
+        assert_zone_1(&level.zone("Levels/Test/Zone_1").unwrap());
+        assert!(level.zone("levels/test/zone_2").is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Read ahead, a zone's walk reads nothing more: it gives the same zone with the
+    /// packs emptied.
+    #[test]
+    fn a_prefetched_zone_is_walked_from_memory() {
+        let dir = zone_store("prefetch");
+        let store = Store::open(&dir).unwrap();
+        let mut level = Level::new(&store, HOME).unwrap();
+        // The zone, its layer, the barrel and both meshes; not the missing partition,
+        // and the barrel once although the layer imports it twice.
+        let names = [
+            "levels/test/zone_1".to_owned(),
+            "levels/test/nowhere".to_owned(),
+        ];
+        assert_eq!(level.prefetch(&names), 5);
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join(pack_name(0)))
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+        assert_zone_1(&level.zone("levels/test/zone_1").unwrap());
+        // Read again, nothing new.
+        assert_eq!(level.prefetch(&names), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A zone bundle `levels/test/zone_1` whose layer places a blueprint (a barrel)
+    /// twice and a group of two instances; see [`assert_zone_1`].
+    fn zone_store(name: &str) -> PathBuf {
         let zone = types()
             .import([0x20; 16], [0x21; 16])
             .import([0x40; 16], [0x41; 16])
@@ -941,8 +1082,8 @@ mod tests {
                 vec![lt(at(0.0, 1.0, 0.0)), import(0)],
             )
             .build("props/barrel", [0x30; 16]);
-        let dir = store(
-            "zone",
+        store(
+            name,
             &[
                 (
                     "win32/levels/test/zone_1",
@@ -960,11 +1101,10 @@ mod tests {
                     ],
                 ),
             ],
-        );
-        let store = Store::open(&dir).unwrap();
-        let mut level = Level::new(&store, HOME).unwrap();
-        let zone = level.zone("Levels/Test/Zone_1").unwrap();
+        )
+    }
 
+    fn assert_zone_1(zone: &Zone) {
         let names: Vec<&str> = zone.meshes.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, ["meshes/b", "meshes/a"]);
         assert!(zone.meshes.iter().all(|m| m.kind == "RigidMeshAsset"));
@@ -990,8 +1130,6 @@ mod tests {
             zone.skipped,
             BTreeMap::from([("PbrSpotLightEntityData".to_owned(), 1)])
         );
-        assert!(level.zone("levels/test/zone_2").is_err());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A prefab that places itself, and an object list that lists itself: each is cut

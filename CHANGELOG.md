@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.37.0] - 2026-11-14
+
+### Changed
+
+- **A cold load walks a zone's blueprints from memory, and works out the ground on
+  threads.** `nfsh view` reads every partition the walk of the zone and of the roads near
+  it may need first, in rounds, each in the packs' order; the ground's shader programs
+  and tiles are sorted the same way; and the ground's layers and tiles are worked out on
+  threads while the zone is read and its meshes built. Zone 494's read stage went from
+  7,549 reads to 1,280, and from 12.2 to 14.0 s to 8.0 to 8.2 s replayed on a cold disk;
+  in the viewer, loads alternating with 0.36.0's on a busy PC took 8.1 to 9.7 s against
+  14.6 to 19.5 s. The picture is the same, byte for byte.
+- `nfsh view` prints the read stage's parts and how long each took.
+
 ## [0.36.0] - 2026-11-13
 
 ### Changed
