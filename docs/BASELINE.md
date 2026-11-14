@@ -212,6 +212,54 @@ used.
   store) to push the store out of Windows' file cache; each load's read stage (13.8 to
   14.9 s against about 3.6 s warm) shows it was cold.
 
+### The walk in rounds, the ground on threads (0.37.0)
+
+After 0.36.0 the read stage was most of what was left of a cold load: 14 s, against
+about 3.6 s warm. Its parts, cold and replayed unbuffered, were the walk of the zone
+and of every drivable-surface zone for its roads (about 6,250 reads, 4.7 s), the meshes
+(829 reads, 5.0 s), the ground layers (284 reads, 1.6 s) and the ground tiles (182
+reads, 1.5 s).
+
+- **The walk reads ahead in rounds.** Before walking, nfsh reads the root partitions of
+  the zone and of all 205 drivable-surface zones, then, round after round, every
+  partition those link to through the fields the walk follows (an object list's
+  objects, a blueprint's object, a reference's blueprint, a placed mesh), each round in
+  the packs' order with neighbours merged. A mesh's partition is read but not followed.
+  Every instance of a followed type counts, reached by the walk or not, so this reads
+  what the walk reads and a little more; the walk then reads from memory. Zone 494 takes
+  five rounds (67, 6,184, 35, 38 and 5 partitions): 6,329 partitions in 233 reads, 2.3 s
+  replayed.
+- **The ground's reads are sorted too:** the shader programs the layers decode are all
+  known before the first is decoded, so they are read first (the part's 284 reads are
+  now 49, 0.26 s replayed), and the tiles' chunks depend only on the terrain tree and
+  the zone's extent (169 reads, 1.1 s).
+- **The ground is worked out on threads.** Its layers don't depend on the zone and are
+  mostly decoding (1.2 s, a fifth of it reading), so a thread works them out from the
+  start; another reads and builds the ground tiles once the zone's extent is known and
+  its meshes are read, while the meshes are built from memory. The ground is ready
+  within 0.4 s of the meshes, or before them.
+
+| Zone 494's read stage | Reads | Replayed unbuffered | In the viewer, PC in use |
+|---|---|---|---|
+| as 0.36.0 reads it | 7,549 | 12.2-14.0 s | 19.5, 14.6, 15.2 s |
+| the walk and ground sorted, all on one thread (not released) | 1,280 | 8.4 s | 11.5 s |
+| 0.37.0: sorted, the ground on threads | 1,280 | 8.0-8.2 s | 8.8, 9.7, 8.1, 9.2 s |
+
+- **What is left is the meshes' LOD chunks:** 694 of the stage's 1,280 reads, 26 MiB
+  scattered across the packs, about 5 s cold; sorting has already been done for them,
+  and only laying a zone's entries out together in the packs (a repack, the disc's
+  step) would shorten it. Building the meshes takes about 1.3 to 2.2 s after them;
+  reading the chunks on a thread while the meshes are built, as 0.36.0 does for the
+  textures, would save at most that.
+- **The viewer column is not a cold cache on demand:** the PC was in use (another
+  session's work and the owner's), with 1 to 2.5 GB free, and the store didn't stay in
+  Windows' file cache between loads, so every load was close to cold and loads of the
+  two releases alternated. The whole load to the first frame went from 32.9 to 34.0 s
+  to 23.8 to 27.0 s in the alternating pairs.
+- **The same picture:** zone 494's `--shot` is byte for byte 0.36.0's.
+- The read stage prints its parts (`read stage: walk … s, meshes read … s, meshes built
+  … s, waiting for the ground … s; on threads, ground layers … s, ground tiles … s`).
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)

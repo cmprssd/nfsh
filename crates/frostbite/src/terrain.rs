@@ -720,6 +720,25 @@ fn leaf_pages(
     }
 }
 
+/// The chunks [`ground`] reads for `lo`..`hi`, in the order it reads them: those of
+/// every tile with colour overlapping it whose ancestors overlap it too.
+pub fn ground_chunks(tree: &Tree, lo: [f32; 2], hi: [f32; 2]) -> Vec<[u8; 16]> {
+    let mut out = Vec::new();
+    let mut stack = vec![0usize];
+    while let Some(index) = stack.pop() {
+        let Some(tile) = tree.tiles.get(index).filter(|t| t.overlaps(lo, hi)) else {
+            continue;
+        };
+        if let Some((id, _)) = tile.chunk.filter(|_| tile.has_colour()) {
+            out.push(id);
+        }
+        if let Some(children) = tile.children {
+            stack.extend(children.iter().rev().map(|&c| c as usize));
+        }
+    }
+    out
+}
+
 /// The tiles a walk draws from: heights, colour and pages, each its own or an
 /// ancestor's.
 #[derive(Clone, Default)]
@@ -895,6 +914,19 @@ impl<'s> Chunks<'s> {
             entries: store.entries()?,
             chunks: store.whole_chunks(),
         })
+    }
+
+    /// Reads the chunks `ids` ahead, in the packs' order ([`Entries::prefetch`]);
+    /// those the store lacks are left for [`Chunks::read`] to report.
+    ///
+    /// [`Entries::prefetch`]: crate::store::Entries::prefetch
+    pub fn prefetch(&mut self, ids: &[[u8; 16]]) {
+        let locations: Vec<Location> = ids
+            .iter()
+            .filter_map(|id| self.chunks.get(id))
+            .copied()
+            .collect();
+        self.entries.prefetch(locations);
     }
 
     /// The chunk `id` (in bundle order).
@@ -1308,6 +1340,26 @@ mod tests {
             Err(Error("no".into()))
         });
         assert_eq!((g.tiles, g.failed.len()), (0, 1));
+    }
+
+    #[test]
+    fn the_chunks_read_ahead_are_those_the_ground_reads_in_its_order() {
+        for tree in [sample(), sample_with_root(HEIGHTFIELD)] {
+            let tree = Tree::parse(&tree).unwrap();
+            for (lo, hi) in [
+                ([-128.0, -128.0], [128.0, -1.0]),
+                ([-128.0, 0.0], [0.0, 128.0]),
+                ([-500.0; 2], [500.0; 2]),
+                ([300.0; 2], [400.0; 2]),
+            ] {
+                let mut asked = Vec::new();
+                ground(&tree, lo, hi, 16.0, &[], |id| {
+                    asked.push(*id);
+                    Ok(rows())
+                });
+                assert_eq!(ground_chunks(&tree, lo, hi), asked, "{lo:?}..{hi:?}");
+            }
+        }
     }
 
     #[test]

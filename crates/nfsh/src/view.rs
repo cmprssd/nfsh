@@ -332,79 +332,165 @@ fn disk_line(bytes: u64, reads: u64) -> String {
 
 /// The zone's placements and meshes, ready to upload; prints what it read and what
 /// it could not.
+///
+/// The disk and the processor take turns: the ground's layers, mostly decoding and
+/// independent of the zone, are worked out on a thread from the start, and the ground
+/// tiles on another once the zone's extent is known and its meshes are read, while
+/// the meshes are built from memory.
 fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
     let start = Instant::now();
     let disk = frostbite::cas::read_so_far();
-    let mut level = Level::new(store, SUPERBUNDLE)?;
-    let mut zone = level.zone(name)?;
-    let roads = level.add_drivable_surfaces(&mut zone, ROAD_MARGIN)?;
-    let mut meshes = Meshes::new(store)?;
-    let partitions: Vec<[u8; 16]> = zone.meshes.iter().map(|m| m.partition).collect();
-    meshes.prefetch(&partitions);
-    let noise = scene::texture_partition(store, scene::ASPHALT_NOISE);
-    let mut scene = scene::build(&zone, |m| scene::lods(&mut meshes, m, noise));
-    // The ground under the zone; without it the zone is still drawn, and without its
-    // layers' detail the ground is.
-    let detail = match layers::textures(store) {
-        Ok(textures) => scene::ground_detail(&textures),
-        Err(e) => {
-            eprintln!("  ground drawn without detail: {e}");
-            Default::default()
-        }
-    };
-    let ground = xz_bounds(&zone).map(|(lo, hi)| -> frostbite::Result<Ground> {
-        let tree = Tree::read(store)?;
-        let mut chunks = Chunks::new(store)?;
-        let lo = lo.map(|v| v - GROUND_MARGIN);
-        let hi = hi.map(|v| v + GROUND_MARGIN);
-        let layers: Vec<u16> = detail.keys().copied().collect();
-        Ok(terrain::ground(
-            &tree,
-            lo,
-            hi,
-            GROUND_SPACING,
-            &layers,
-            |id| chunks.read(id),
-        ))
-    });
-    match ground {
-        Some(Ok(g)) => {
-            eprintln!(
-                "  ground: {} tiles, {} triangles, detail layers {:?}",
-                g.tiles,
-                g.indices.len() / 3,
-                g.detail
-            );
-            for (tile, why) in &g.failed {
-                eprintln!("  ground tile {tile}: {why}");
+    std::thread::scope(|s| {
+        let layers = s.spawn(|| timed(|| layers::textures(store)));
+        let mut parts = Parts::new();
+        let mut level = Level::new(store, SUPERBUNDLE)?;
+        // The zone and every drivable-surface zone, whose roads near it are added.
+        let mut walked = vec![name.to_owned()];
+        walked.extend(level.drivable_zones());
+        let partitions_read = level.prefetch(&walked);
+        let mut zone = level.zone(name)?;
+        let roads = level.add_drivable_surfaces(&mut zone, ROAD_MARGIN)?;
+        drop(level);
+        parts.done(&format!("walk ({partitions_read} partitions)"));
+        let mut meshes = Meshes::new(store)?;
+        let partitions: Vec<[u8; 16]> = zone.meshes.iter().map(|m| m.partition).collect();
+        meshes.prefetch(&partitions);
+        parts.done("meshes read");
+        let bounds = xz_bounds(&zone);
+        let ground = s.spawn(move || {
+            // Without the layers' detail the ground is still drawn; without the ground,
+            // the zone.
+            let (textures, layers_took) =
+                joined(layers).unwrap_or_else(|e| (Err(frostbite::Error(e)), Duration::ZERO));
+            let detail = match textures {
+                Ok(textures) => scene::ground_detail(&textures),
+                Err(e) => {
+                    eprintln!("  ground drawn without detail: {e}");
+                    Default::default()
+                }
+            };
+            let keys: Vec<u16> = detail.keys().copied().collect();
+            let (ground, tiles_took) =
+                timed(|| bounds.map(|(lo, hi)| ground(store, lo, hi, &keys)));
+            (detail, ground, layers_took, tiles_took)
+        });
+        let noise = scene::texture_partition(store, scene::ASPHALT_NOISE);
+        let mut scene = scene::build(&zone, |m| scene::lods(&mut meshes, m, noise));
+        drop(meshes);
+        parts.done("meshes built");
+        let (detail, ground, layers_took, tiles_took) = joined(ground).unwrap_or_else(|e| {
+            (
+                Default::default(),
+                Some(Err(frostbite::Error(e))),
+                Duration::ZERO,
+                Duration::ZERO,
+            )
+        });
+        parts.done("waiting for the ground");
+        match ground {
+            Some(Ok(g)) => {
+                eprintln!(
+                    "  ground: {} tiles, {} triangles, detail layers {:?}",
+                    g.tiles,
+                    g.indices.len() / 3,
+                    g.detail
+                );
+                for (tile, why) in &g.failed {
+                    eprintln!("  ground tile {tile}: {why}");
+                }
+                let slots = g
+                    .detail
+                    .iter()
+                    .filter_map(|l| detail.get(l).cloned())
+                    .collect();
+                scene::add_ground(&mut scene, &g, slots);
             }
-            let slots = g.detail.iter().map(|l| detail[l].clone()).collect();
-            scene::add_ground(&mut scene, &g, slots);
+            Some(Err(e)) => eprintln!("  ground not drawn: {e}"),
+            None => {}
         }
-        Some(Err(e)) => eprintln!("  ground not drawn: {e}"),
-        None => {}
-    }
-    eprintln!(
-        "{name}: {} placements ({roads} of them drivable surfaces) of {} meshes; {} vertices, {} triangles, {} draws; read in {:.1} s; {}",
-        zone.placements.len(),
-        zone.meshes.len(),
-        scene.positions.len(),
-        scene.triangles(),
-        scene.draws.len(),
-        start.elapsed().as_secs_f64(),
-        read_since(disk)
-    );
-    for (mesh, why) in &scene.failed {
-        eprintln!("  not drawn: {mesh}: {why}");
-    }
-    if !scene.failed.is_empty() {
         eprintln!(
-            "  {} meshes not drawn, {} placements left out",
-            scene.failed.len(),
-            scene.placements_left_out
+            "{name}: {} placements ({roads} of them drivable surfaces) of {} meshes; {} vertices, {} triangles, {} draws; read in {:.1} s; {}",
+            zone.placements.len(),
+            zone.meshes.len(),
+            scene.positions.len(),
+            scene.triangles(),
+            scene.draws.len(),
+            start.elapsed().as_secs_f64(),
+            read_since(disk)
         );
+        eprintln!(
+            "  read stage: {}; on threads, ground layers {:.1} s, ground tiles {:.1} s",
+            parts.done.join(", "),
+            layers_took.as_secs_f64(),
+            tiles_took.as_secs_f64()
+        );
+        for (mesh, why) in &scene.failed {
+            eprintln!("  not drawn: {mesh}: {why}");
+        }
+        if !scene.failed.is_empty() {
+            eprintln!(
+                "  {} meshes not drawn, {} placements left out",
+                scene.failed.len(),
+                scene.placements_left_out
+            );
+        }
+        Ok(scene)
+    })
+}
+
+/// The ground under `lo`..`hi` and [`GROUND_MARGIN`] around it, weighted by the
+/// detail `layers`.
+fn ground(store: &Store, lo: [f32; 2], hi: [f32; 2], layers: &[u16]) -> frostbite::Result<Ground> {
+    let tree = Tree::read(store)?;
+    let mut chunks = Chunks::new(store)?;
+    let lo = lo.map(|v| v - GROUND_MARGIN);
+    let hi = hi.map(|v| v + GROUND_MARGIN);
+    chunks.prefetch(&terrain::ground_chunks(&tree, lo, hi));
+    Ok(terrain::ground(
+        &tree,
+        lo,
+        hi,
+        GROUND_SPACING,
+        layers,
+        |id| chunks.read(id),
+    ))
+}
+
+/// What `f` returns, and how long it took.
+fn timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
+    let start = Instant::now();
+    (f(), start.elapsed())
+}
+
+/// A scoped thread's result; an error if it panicked, so a bug there costs what it
+/// computes, not the load.
+fn joined<T>(thread: std::thread::ScopedJoinHandle<T>) -> Result<T, String> {
+    thread
+        .join()
+        .map_err(|_| "a loading thread panicked".to_owned())
+}
+
+/// How long each part of the read stage's own thread took, in order.
+struct Parts {
+    done: Vec<String>,
+    since: Instant,
+}
+
+impl Parts {
+    fn new() -> Self {
+        Self {
+            done: Vec::new(),
+            since: Instant::now(),
+        }
     }
-    Ok(scene)
+
+    /// Ends the part `what`, which began where the last one ended.
+    fn done(&mut self, what: &str) {
+        let now = Instant::now();
+        let took = (now - self.since).as_secs_f64();
+        self.done.push(format!("{what} {took:.1} s"));
+        self.since = now;
+    }
 }
 
 /// Draws the overview of the zone once, without a window, and writes it as a PNG.
