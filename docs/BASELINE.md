@@ -85,8 +85,9 @@ Times in ms.
   clocks. Not known which.
 - **Each window run loaded cold, about 42 s**, though they ran one after another. A
   later window run, after two headless ones, loaded in 9.9 s: the window isn't what
-  empties the file cache. What does isn't known (the PC has 7.9 GB, and WSL's own memory
-  grows and shrinks).
+  empties the file cache. Most likely other programs' memory does: on 2026-11-14,
+  loads stayed cold with Chrome open (2.5 GB free) and warm without it (5 GB free;
+  see the idle-PC table under 0.37.0).
 
 ### Where zone 494's load goes
 
@@ -259,6 +260,56 @@ reads, 1.5 s).
 - **The same picture:** zone 494's `--shot` is byte for byte 0.36.0's.
 - The read stage prints its parts (`read stage: walk … s, meshes read … s, meshes built
   … s, waiting for the ground … s; on threads, ground layers … s, ground tiles … s`).
+
+**On an idle PC (2026-11-14).** Zone 494, headless along garage-drive.path, 0.37.0
+against 0.36.0, loads alternating, with Chrome closed and 4.9 to 5.1 GB free. Cold
+loads followed reading 12 GiB of other packs from D: (the old 0.4.0 store, different
+packs each time).
+
+| Zone 494 | Read stage, warm | Load, warm | Read stage, cold | Load, cold |
+|---|---|---|---|---|
+| 0.36.0 | 2.5, 2.5, 2.6 s | 7.35, 7.45, 7.68 s | 14.1, 13.9 s | 27.36, 26.79 s |
+| 0.37.0 | 1.7, 4.6, 1.7 s | 6.74, 9.66, 6.67 s | 8.7, 8.7 s | 21.62, 21.65 s |
+
+- **Cold, 0.37.0 saves 5.3 s of the read stage and 5.4 s of the load**, as the
+  replayed reads foretold (12.2-14.0 s to 8.0-8.2 s). The cold texture stage is 10.4
+  to 10.5 s in both.
+- **Warm, the read stage goes from 2.5 s to 1.7 s.** The build of the meshes (1.1 s)
+  is now most of it. The 4.6 s load was partly cold: its walk took 3.3 s against
+  0.4 s, its ground layers 3.1 s against 0.6 s. It came right after a cold load of
+  0.36.0, whose reads differ.
+- **The store stays in the file cache when the PC has memory to spare.** With Chrome
+  open (2.5 GB free) every load of the evening was close to cold, and warm loads took
+  20 to 25 s. With 5 GB free they took 6.7 to 7.7 s. The earlier "the store doesn't
+  stay cached" was memory pressure from other programs.
+- The warm load's texture stage (4.2 to 4.4 s) is now its largest part.
+
+### The meshes' chunks read behind their decoding (tried, not released)
+
+The idea was to read the LOD chunks (694 reads, about 5 s cold) on a second thread,
+as 0.36.0 does for textures, while the meshes are decoded in their chunks' order, each
+once its last chunk had come, and then put the scene together in the zone's order. The
+ground tiles' chunks were read first on the main thread, so the disk read one thing at
+a time. Zone 494's `--shot` was byte for byte 0.37.0's, so it worked, but it saved
+nothing:
+
+| Zone 494's read stage, alternating, PC in use | Reads | Read stage |
+|---|---|---|
+| 0.37.0 | 1,280 | 9.4, 8.6, 8.7 s |
+| the chunks read behind (2 MiB batches) | 1,312 | 9.2, 9.4, 9.6 s |
+
+- **The disk is the limit, and 0.37.0 already keeps it busy.** The build's 1.8 s
+  hides behind 0.37.0's ground tiles thread, which reads its 169 reads (about 1.1 s
+  cold) at the same time. Reading behind hid the decoding (about 1.2 s), but the ground
+  tiles' reads moved onto the main line (1.0-1.2 s), and putting the scene together
+  (0.6 s) can't start before the last model has come. The disk's own time (mesh sets
+  0.5 s, ground tiles 1.1 s, chunks about 4.5 s) is the floor, and both versions sit
+  within about 0.6 s of it.
+- None of these loads was warm: the meshes' reads took 4.5-4.9 s each time, as
+  cold, with 2.5 GB free and Chrome busy. Warm, there is nothing to hide the build
+  behind. On the idle PC, 0.37.0's warm loads read the meshes in 0.1 s and build them
+  in 1.1 s. Cold, nothing shortens this stage short of laying a zone's entries out
+  together in the packs.
 
 ## The original's half
 
