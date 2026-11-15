@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.41.0] - 2026-11-15
+
+### Changed
+
+- **The ground's tiles are read while its layers are worked out, and walked faster.**
+  `nfsh view` reads the ground tiles under a zone as soon as the zone's extent is known,
+  no longer waiting for the ground's detail layers, which only weight them. The walk
+  that turns the tiles into the ground's mesh no longer allocates for each vertex. Zone
+  494's read stage no longer waits for the ground when warm (0.2 s before) and waits
+  0.3 s less when cold. The picture is the same, byte for byte, with the same reads
+  and peak memory.
+
 ## [0.40.0] - 2026-11-15
 
 ### Changed
