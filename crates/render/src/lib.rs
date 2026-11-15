@@ -14,7 +14,7 @@ pub use ash::vk;
 pub use camera::Camera;
 pub use frame::{FRAMES_IN_FLIGHT, FrameLoop, Presented};
 pub use gpu::{DeviceKind, Error, Gpu, Result};
-pub use resource::{Buffer, Image, Mip, Target};
+pub use resource::{Buffer, Image, Mip, Target, Uploader};
 pub use scene::Scene;
 pub use swapchain::Swapchain;
 pub use zone::{Light, ZoneRenderer};

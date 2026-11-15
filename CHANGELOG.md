@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.39.0] - 2026-11-15
+
+### Changed
+
+- **A zone's textures are uploaded in batches.** `nfsh view` copies them through one
+  reused staging buffer in two halves, several textures to a submit, while the GPU copies
+  the other half. It no longer makes a staging buffer and waits for the GPU for each
+  texture. Uploading zone 494's 600 textures went from 1.2 to 1.3 s to 0.6 to 0.7 s warm.
+  The texture stage saves only 0.1 to 0.2 s, because it now waits on decoding. Cold loads
+  take as long as before. The load's peak memory is about 35 MiB lower, and the picture is
+  the same, byte for byte.
+
 ## [0.38.0] - 2026-11-15
 
 ### Changed

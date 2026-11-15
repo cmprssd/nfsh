@@ -16,7 +16,7 @@ use crate::cull::{self, Bounds, Frustum};
 
 use crate::Camera;
 use crate::gpu::{Error, Gpu, Result};
-use crate::resource::{Buffer, DEPTH_FORMAT, Image, Mip};
+use crate::resource::{Buffer, DEPTH_FORMAT, Image, Mip, Uploader};
 use crate::scene::{Draw, Instance, Lods, Scene, Shading};
 
 const VERT: (&[u8], &CStr) = (
@@ -311,6 +311,10 @@ pub struct ZoneRenderer {
     pub texture_upload: Duration,
 }
 
+/// Each of the texture uploader's two staging halves, in bytes: a texture larger than
+/// this goes up on its own.
+const UPLOAD_HALF: u64 = 32 << 20;
+
 /// A draw's images, as indices into [`ZoneRenderer`]'s: its colour (binding 0),
 /// asphalt's other layers (bindings 2 to 7) and its normal map (10), grey (a flat
 /// normal) where it has none. Every set also binds the ground's map (8) and detail
@@ -505,12 +509,15 @@ impl ZoneRenderer {
             &[128, 128, 128, 255],
         )?;
         r.images.push(grey);
+        // Declared after `r`, so dropped first on failure: it waits for its copies
+        // before their images go.
+        let mut uploader = Uploader::new(gpu, UPLOAD_HALF)?;
         // Each of the scene's textures' image; the grey one for those that failed.
         // Loaded in `order`, they are numbered and listed in the scene's: the draws are
         // sorted by their images, and the order of draws that tie in depth shows.
         let mut uploaded: Vec<Option<_>> = scene.textures.iter().map(|_| None).collect();
         for i in load_order(order, scene.textures.len()) {
-            uploaded[i] = Some(r.upload(load(&scene.textures[i])));
+            uploaded[i] = Some(r.upload(&mut uploader, load(&scene.textures[i])));
         }
         let mut texture_images = Vec::with_capacity(uploaded.len());
         for (guid, upload) in scene.textures.iter().zip(uploaded) {
@@ -528,12 +535,15 @@ impl ZoneRenderer {
             }
         }
         let ([ground, ground_normals, ground_far], detail_look) =
-            r.upload_detail(scene, detail, far)?;
+            r.upload_detail(&mut uploader, scene, detail, far)?;
         let ground_image = r.images.len();
         r.images.push(ground);
         r.images.push(ground_normals);
         r.images.push(ground_far);
-        let (map, map_look) = r.upload_ground_map(scene.ground_map.as_ref())?;
+        let (map, map_look) = r.upload_ground_map(&mut uploader, scene.ground_map.as_ref())?;
+        let start = Instant::now();
+        uploader.finish()?;
+        r.texture_upload += start.elapsed();
         let map_image = r.images.len();
         r.images.push(map);
 
@@ -699,6 +709,7 @@ impl ZoneRenderer {
     /// one; each is listed in `missing`.
     fn upload_detail(
         &mut self,
+        uploader: &mut Uploader,
         scene: &Scene,
         detail: Vec<DetailTextures>,
         far: Vec<frostbite::Result<Loaded>>,
@@ -716,11 +727,12 @@ impl ZoneRenderer {
             .unzip();
         let mut means = [None; 8];
         let (diffuse, drawn) =
-            self.upload_layers(diffuse.into_iter().map(Some), |slot, t, data| {
+            self.upload_layers(uploader, diffuse.into_iter().map(Some), |slot, t, data| {
                 means[slot] = Some(bc1_mean(t, data).ok_or("not BC1: no average colour")?);
                 Ok(())
             })?;
         let (normals, bent) = self.upload_layers(
+            uploader,
             normals
                 .into_iter()
                 .zip(&drawn)
@@ -728,8 +740,11 @@ impl ZoneRenderer {
             |_, _, _| Ok(()),
         )?;
         let maps = crate::scene::far_maps(&scene.detail);
-        let (far, far_drawn) =
-            self.upload_layers(maps.iter().cloned().zip(far).map(Some), |_, _, _| Ok(()))?;
+        let (far, far_drawn) = self.upload_layers(
+            uploader,
+            maps.iter().cloned().zip(far).map(Some),
+            |_, _, _| Ok(()),
+        )?;
         for (slot, (d, mean)) in scene.detail.iter().zip(means).enumerate() {
             if let Some(mean) = mean.filter(|_| drawn[slot]) {
                 look.0[slot / 4][slot % 4] = d.scale;
@@ -758,6 +773,7 @@ impl ZoneRenderer {
     /// or one that fails (listed in `missing`), is zeros. With none, one grey layer.
     fn upload_layers(
         &mut self,
+        uploader: &mut Uploader,
         slots: impl Iterator<Item = Option<(String, frostbite::Result<Loaded>)>>,
         mut check: impl FnMut(usize, &Texture, &[u8]) -> std::result::Result<(), String>,
     ) -> Result<(Image, Vec<bool>)> {
@@ -790,7 +806,6 @@ impl ZoneRenderer {
             }
         }
         let uploaded = layers.iter().map(Option::is_some).collect();
-        let gpu = self.gpu.clone();
         let Some((format, mips, size)) = like else {
             let grey = [Mip {
                 offset: 0,
@@ -798,8 +813,7 @@ impl ZoneRenderer {
                 height: 1,
             }];
             let data = [128, 128, 128, 255];
-            let image =
-                Image::sampled_array(&gpu, vk::Format::R8G8B8A8_UNORM, &grey, (1, 4), &data)?;
+            let image = uploader.sampled_array(vk::Format::R8G8B8A8_UNORM, &grey, (1, 4), &data)?;
             return Ok((image, uploaded));
         };
         let mut data = Vec::with_capacity(size * layers.len());
@@ -811,7 +825,7 @@ impl ZoneRenderer {
         }
         let count = (data.len() / size) as u32;
         let start = Instant::now();
-        let image = Image::sampled_array(&gpu, format, &mips, (count, size as u64), &data)?;
+        let image = uploader.sampled_array(format, &mips, (count, size as u64), &data)?;
         self.texture_upload += start.elapsed();
         self.texture_bytes += data.len() as u64;
         Ok((image, uploaded))
@@ -820,8 +834,11 @@ impl ZoneRenderer {
     /// Uploads the ground's map as a four-layer array: its colours, its weights (four
     /// in each of two layers), then its normals; with its look: its corner and one
     /// over its size. Without a map, one grey texel without weights or a normal.
-    fn upload_ground_map(&mut self, map: Option<&GroundMap>) -> Result<(Image, [f32; 4])> {
-        let gpu = self.gpu.clone();
+    fn upload_ground_map(
+        &mut self,
+        uploader: &mut Uploader,
+        map: Option<&GroundMap>,
+    ) -> Result<(Image, [f32; 4])> {
         let format = vk::Format::R8G8B8A8_UNORM;
         let Some(m) = map.filter(|m| m.width > 0 && m.height > 0) else {
             let one = [Mip {
@@ -831,7 +848,7 @@ impl ZoneRenderer {
             }];
             let data = [128, 128, 128, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             return Ok((
-                Image::sampled_array(&gpu, format, &one, (4, 4), &data)?,
+                uploader.sampled_array(format, &one, (4, 4), &data)?,
                 [0.0; 4],
             ));
         };
@@ -850,7 +867,7 @@ impl ZoneRenderer {
             width: m.width as u32,
             height: m.height as u32,
         }];
-        let image = Image::sampled_array(&gpu, format, &mip, (4, texels as u64 * 4), &data)?;
+        let image = uploader.sampled_array(format, &mip, (4, texels as u64 * 4), &data)?;
         self.texture_bytes += data.len() as u64;
         let size = [m.width, m.height].map(|n| n as f32 * m.texel);
         Ok((image, [m.min[0], m.min[1], 1.0 / size[0], 1.0 / size[1]]))
@@ -859,6 +876,7 @@ impl ZoneRenderer {
     /// Uploads one loaded texture; on failure, its name if known and why.
     fn upload(
         &mut self,
+        uploader: &mut Uploader,
         loaded: frostbite::Result<Loaded>,
     ) -> std::result::Result<Image, (Option<String>, String)> {
         let (name, texture, data) = loaded.map_err(|e| (None, e.0))?;
@@ -866,7 +884,9 @@ impl ZoneRenderer {
         let format = self.sampled_format(&texture).map_err(fail)?;
         let mips = mips(&texture, data.len()).map_err(fail)?;
         let start = Instant::now();
-        let image = Image::sampled(&self.gpu, format, &mips, &data).map_err(|e| fail(e.0))?;
+        let image = uploader
+            .sampled(format, &mips, &data)
+            .map_err(|e| fail(e.0))?;
         self.texture_upload += start.elapsed();
         self.texture_bytes += data.len() as u64;
         Ok(image)
