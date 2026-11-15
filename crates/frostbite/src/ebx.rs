@@ -799,6 +799,7 @@ pub(crate) mod tests {
         Str(&'static str),
         /// A class reference as stored: 0, instance + 1, or 0x80000000 | import.
         Ref(u32),
+        Bool(bool),
         /// A struct's field values, in its type's order.
         Struct(Vec<V>),
         Array(Vec<V>),
@@ -811,6 +812,8 @@ pub(crate) mod tests {
         U32,
         Str,
         Ref,
+        /// One byte: declare bools after a type's other fields.
+        Bool,
         Struct(&'static str),
         Array(&'static str),
     }
@@ -868,6 +871,7 @@ pub(crate) mod tests {
         fn width(&self, f: F) -> usize {
             match f {
                 F::Struct(name) => self.size(name),
+                F::Bool => 1,
                 _ => 4,
             }
         }
@@ -893,6 +897,7 @@ pub(crate) mod tests {
             match (f, v) {
                 (F::F32, V::F32(x)) => put32(out, x.to_bits()),
                 (F::U32, V::U32(n)) | (F::Ref, V::Ref(n)) => put32(out, *n),
+                (F::Bool, V::Bool(b)) => out.push(u8::from(*b)),
                 (F::Str, V::Str(s)) => {
                     put32(out, strings.len() as u32);
                     strings.extend_from_slice(s.as_bytes());
@@ -958,6 +963,7 @@ pub(crate) mod tests {
                         F::U32 => (0x10, 0),
                         F::Str => (0x07, 0),
                         F::Ref => (0x03, 0),
+                        F::Bool => (0x0a, 0),
                         F::Struct(t) => (0x02, self.type_index(t)),
                         F::Array(t) => (0x04, self.type_index(t)),
                     };

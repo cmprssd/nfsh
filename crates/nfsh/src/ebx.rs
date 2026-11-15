@@ -19,7 +19,17 @@ pub fn run(dir: &Path, name: &str) -> Result<String> {
         )));
     };
     let data = store.entries()?.read(asset.location)?;
-    text(&Partition::parse(&data)?)
+    let p = Partition::parse(&data)?;
+    // Each import's partition by name, where the store lists it.
+    let names: Vec<Option<String>> = p
+        .imports
+        .iter()
+        .map(|i| {
+            let at = store.partitions(&i.partition).ok()?.next()?;
+            Some(store.ebx_at(at)?.1.name.clone())
+        })
+        .collect();
+    text(&p, &names)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -30,8 +40,9 @@ fn guid(g: &[u8; 16]) -> String {
     hex(g)
 }
 
-/// The partition as text: its imports, then each instance with its fields.
-pub fn text(p: &Partition) -> Result<String> {
+/// The partition as text: its imports (with their partitions' `names`, where known),
+/// then each instance with its fields.
+pub fn text(p: &Partition, names: &[Option<String>]) -> Result<String> {
     let mut out = String::new();
     let _ = writeln!(out, "partition {} {}", p.name, guid(&p.header.guid));
     let _ = writeln!(
@@ -43,9 +54,13 @@ pub fn text(p: &Partition) -> Result<String> {
         p.arrays.len()
     );
     for (i, import) in p.imports.iter().enumerate() {
+        let name = match names.get(i) {
+            Some(Some(name)) => format!(" {name}"),
+            _ => String::new(),
+        };
         let _ = writeln!(
             out,
-            "import {i}: {}/{}",
+            "import {i}: {}/{}{name}",
             guid(&import.partition),
             guid(&import.instance)
         );

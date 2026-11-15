@@ -18,12 +18,13 @@ use std::time::{Duration, Instant};
 use frostbite::layers;
 use frostbite::level::xz_bounds;
 use frostbite::level::{Level, Zone};
-use frostbite::lighting::{self, Lighting};
+use frostbite::lighting::{self, Lighting, Sky as SkyData};
 use frostbite::mesh::Meshes;
 use frostbite::store::Store;
 use frostbite::terrain::{self, Chunks, Ground, Tree};
 use frostbite::texture::{Asset, Textures, decode_workers};
 use nfsh_render::scene::{self, Scene};
+use nfsh_render::sky::{self, Sky};
 use nfsh_render::zone::{DetailTextures, Loaded};
 use nfsh_render::{Camera, FrameLoop, Gpu, Light, Presented, Swapchain, Target, ZoneRenderer, vk};
 use winit::application::ApplicationHandler;
@@ -62,6 +63,8 @@ pub struct Options {
     pub vsync: bool,
     /// Start at tealnight rather than midday.
     pub night: bool,
+    /// Leave the sky out (black behind everything), its textures not loaded.
+    pub no_sky: bool,
     /// Where the camera starts, and its yaw and pitch in degrees, rather than the
     /// overview.
     pub camera: Option<[f32; 5]>,
@@ -83,17 +86,19 @@ fn camera(s: &str) -> Option<[f32; 5]> {
     v.iter().all(|n| n.is_finite()).then_some(v)
 }
 
-/// Parses `STORE ZONE [--shot PNG] [--vsync] [--night] [--camera X,Y,Z,YAW,PITCH]
-/// [--path FILE [--headless [--frames DIR]]]`: a path is not a screenshot, only a path
+/// Parses `STORE ZONE [--shot PNG] [--vsync] [--night] [--no-sky]
+/// [--camera X,Y,Z,YAW,PITCH] [--path FILE [--headless [--frames DIR]]]`: a path is not a screenshot, only a path
 /// is drawn headless, and only a headless path writes its frames.
 pub fn options(args: &[String]) -> Option<Options> {
     let (mut positional, mut shot, mut vsync, mut night) = (Vec::new(), None, false, false);
+    let mut no_sky = false;
     let (mut start, mut path, mut headless, mut frames) = (None, None, false, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--vsync" => vsync = true,
             "--night" => night = true,
+            "--no-sky" => no_sky = true,
             "--camera" => start = Some(camera(it.next()?)?),
             "--shot" => shot = Some(PathBuf::from(it.next()?)),
             "--path" => path = Some(PathBuf::from(it.next()?)),
@@ -118,6 +123,7 @@ pub fn options(args: &[String]) -> Option<Options> {
         shot,
         vsync,
         night,
+        no_sky,
         camera: start,
         path,
         headless,
@@ -133,29 +139,142 @@ fn start_camera(o: &Options, scene: &Scene, (width, height): (u32, u32)) -> Came
     }
 }
 
-/// The times of day the viewer switches between: their names and light.
+/// The times of day the viewer switches between: their names, light and sky.
 struct Times {
     names: [&'static str; 2],
     lights: [Light; 2],
+    /// Each time's sky, exposed for its light; none when it has none or it can't be
+    /// read.
+    skies: [Option<(sky::Look, SkyData)>; 2],
 }
 
 impl Times {
     /// Midday and tealnight from `store`; a time whose lighting can't be read is lit
-    /// by [`Lighting::FALLBACK`], and says so.
+    /// by [`Lighting::FALLBACK`], one whose sky can't is drawn without one, and each
+    /// says so.
     fn read(store: &Store) -> Self {
         let read = |name: &str, partition: &str| {
             let l = Lighting::read(store, partition).unwrap_or_else(|e| {
                 eprintln!("  {name}: {e}; lit by a default sun instead");
                 Lighting::FALLBACK
             });
-            Light::new(&l)
+            let sky = SkyData::read(store, partition).unwrap_or_else(|e| {
+                eprintln!("  {name}'s sky: {e}; none drawn");
+                None
+            });
+            (Light::new(&l), sky.map(|s| (sky::Look::new(&s, &l), s)))
         };
+        let [(day, day_sky), (night, night_sky)] = [
+            read("midday", lighting::MIDDAY),
+            read("tealnight", lighting::TEALNIGHT),
+        ];
         Self {
             names: ["midday", "tealnight"],
-            lights: [
-                read("midday", lighting::MIDDAY),
-                read("tealnight", lighting::TEALNIGHT),
-            ],
+            lights: [day, night],
+            skies: [day_sky, night_sky],
+        }
+    }
+
+    /// Which times' skies a viewer starting at `o`'s time needs: that one, or both
+    /// when it can switch; none without a sky.
+    fn wanted(o: &Options, switches: bool) -> [bool; 2] {
+        let night = o.night;
+        [
+            !o.no_sky && (switches || !night),
+            !o.no_sky && (switches || night),
+        ]
+    }
+}
+
+/// What a frame draws: the zone, then the sky behind it.
+struct Drawn {
+    zone: ZoneRenderer,
+    sky: Option<Sky>,
+}
+
+impl Drawn {
+    /// Records the zone and its sky at `times`' `time`, inside rendering begun at
+    /// `extent`.
+    fn record(
+        &self,
+        cmd: vk::CommandBuffer,
+        camera: &Camera,
+        extent: vk::Extent2D,
+        times: &Times,
+        time: usize,
+    ) {
+        self.zone.record(cmd, camera, extent, &times.lights[time]);
+        if let Some(sky) = &self.sky {
+            sky.record(cmd, camera, time);
+        }
+    }
+}
+
+/// The skies of `times` that `wanted` asks for (by time), their textures from `store`;
+/// none when none is wanted or it can't be made. Says what it loaded and what failed.
+fn skies(
+    gpu: &std::sync::Arc<Gpu>,
+    store: &Store,
+    times: &Times,
+    format: vk::Format,
+    wanted: [bool; 2],
+) -> Option<Sky> {
+    if !wanted.contains(&true) {
+        return None;
+    }
+    let start = Instant::now();
+    let mut textures = match Textures::new(store) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("sky: {e}; none drawn");
+            return None;
+        }
+    };
+    let mut failed = Vec::new();
+    let mut load = |guid: Option<[u8; 16]>| -> Option<Loaded> {
+        let guid = guid?;
+        let read = textures.by_partition(&guid).and_then(|(name, texture)| {
+            let (texture, pixels) = textures
+                .pixels(&texture)
+                .map_err(|e| frostbite::Error(format!("{name}: {e}")))?;
+            Ok((name, texture, pixels))
+        });
+        read.map_err(|e| failed.push(e.0)).ok()
+    };
+    let domes: Vec<_> = times
+        .skies
+        .iter()
+        .zip(wanted)
+        .map(|(sky, wanted)| {
+            let (look, data) = sky.as_ref().filter(|_| wanted)?;
+            let textures = sky::Textures {
+                panorama: load(data.panorama),
+                gradient: load(data.gradient),
+                mask: load(data.mask),
+            };
+            Some((*look, textures))
+        })
+        .collect();
+    let count = domes.iter().flatten().count();
+    let made = Sky::new(gpu, format, domes);
+    eprintln!(
+        "sky: {count} of {} wanted in {:.2} s",
+        wanted.iter().filter(|&&w| w).count(),
+        start.elapsed().as_secs_f64()
+    );
+    for why in failed {
+        eprintln!("  sky drawn without: {why}");
+    }
+    match made {
+        Ok(sky) => {
+            for (texture, why) in &sky.missing {
+                eprintln!("  sky drawn without: {texture}: {why}");
+            }
+            Some(sky)
+        }
+        Err(e) => {
+            eprintln!("  no sky: {e}");
+            None
         }
     }
 }
@@ -204,10 +323,11 @@ fn headless(
     started: Instant,
 ) -> Result<String, String> {
     let gpu = Gpu::new_headless().map_err(|e| e.to_string())?;
-    let renderer = renderer(&gpu, store, scene, Target::COLOR_FORMAT)?;
+    let wanted = Times::wanted(o, false);
+    let renderer = renderer(&gpu, store, scene, Target::COLOR_FORMAT, times, wanted)?;
     let mut target = Target::new(&gpu, SIZE.0, SIZE.1).map_err(|e| e.to_string())?;
     let extent = target.color.extent;
-    let light = &times.lights[usize::from(o.night)];
+    let time = usize::from(o.night);
     let frames = (path.duration() / HEADLESS_STEP).floor() as usize + 1;
     if let Some(dir) = &o.frames {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -218,7 +338,7 @@ fn headless(
         let camera = Camera::new([x, y, z], yaw, pitch, SIZE.0, SIZE.1);
         let begin = Instant::now();
         let pixels = target
-            .render(|cmd| renderer.record(cmd, &camera, extent, light))
+            .render(|cmd| renderer.record(cmd, &camera, extent, times, time))
             .map_err(|e| e.to_string())?;
         let end = Instant::now();
         // Written after the frame is timed: the times stay the frames' own.
@@ -253,7 +373,9 @@ fn renderer(
     store: &Store,
     scene: &Scene,
     format: vk::Format,
-) -> Result<ZoneRenderer, String> {
+    times: &Times,
+    skies_wanted: [bool; 2],
+) -> Result<Drawn, String> {
     let start = Instant::now();
     let disk = frostbite::cas::read_so_far();
     // The chunks are read on another thread while the textures are decoded and
@@ -284,7 +406,11 @@ fn renderer(
     for (texture, why) in &renderer.missing {
         eprintln!("  drawn grey: {texture}: {why}");
     }
-    Ok(renderer)
+    let sky = skies(gpu, store, times, format, skies_wanted);
+    Ok(Drawn {
+        zone: renderer,
+        sky,
+    })
 }
 
 /// Where [`renderer`]'s texture stage went, besides uploading: finding the textures
@@ -663,13 +789,14 @@ fn shot(
 ) -> Result<String, String> {
     let night = o.night;
     let gpu = Gpu::new_headless().map_err(|e| e.to_string())?;
-    let renderer = renderer(&gpu, store, scene, Target::COLOR_FORMAT)?;
+    let wanted = Times::wanted(o, false);
+    let renderer = renderer(&gpu, store, scene, Target::COLOR_FORMAT, times, wanted)?;
     let mut target = Target::new(&gpu, SIZE.0, SIZE.1).map_err(|e| e.to_string())?;
     let camera = start_camera(o, scene, SIZE);
     let extent = target.color.extent;
-    let light = &times.lights[usize::from(night)];
+    let time = usize::from(night);
     let pixels = target
-        .render(|cmd| renderer.record(cmd, &camera, extent, light))
+        .render(|cmd| renderer.record(cmd, &camera, extent, times, time))
         .map_err(|e| e.to_string())?;
     write_png(png, SIZE, &pixels)?;
     Ok(format!(
@@ -768,7 +895,7 @@ struct App<'a> {
 /// The open window and what draws into it. Fields drop in order: the GPU's users
 /// before the window they present to.
 struct View {
-    renderer: ZoneRenderer,
+    renderer: Drawn,
     frames: FrameLoop,
     swapchain: Swapchain,
     window: Window,
@@ -797,7 +924,15 @@ impl App<'_> {
         let swapchain =
             Swapchain::new(&gpu, surface, (size.width, size.height), self.options.vsync)
                 .map_err(|e| e.to_string())?;
-        let renderer = renderer(&gpu, self.store, self.scene, swapchain.format)?;
+        let wanted = Times::wanted(self.options, true);
+        let renderer = renderer(
+            &gpu,
+            self.store,
+            self.scene,
+            swapchain.format,
+            self.times,
+            wanted,
+        )?;
         eprintln!(
             "{}: {:?}, {:?}, {}x{}",
             gpu.name,
@@ -827,14 +962,15 @@ impl App<'_> {
 }
 
 impl View {
-    /// Moves the camera, draws and presents a frame lit by `light`, and updates the
-    /// title. Returns the time since the previous frame.
+    /// Moves the camera, draws and presents a frame at `times`' `time`, and updates
+    /// the title. Returns the time since the previous frame.
     /// With `path` (the path and when its first frame began), the camera is where the
     /// path is at this time instead of where the keys take it.
     fn frame(
         &mut self,
         title: &str,
-        light: &Light,
+        times: &Times,
+        time: usize,
         path: Option<(&CameraPath, Instant)>,
     ) -> nfsh_render::Result<Duration> {
         let now = Instant::now();
@@ -855,7 +991,7 @@ impl View {
         (self.camera.width, self.camera.height) = (extent.width, extent.height);
         let (renderer, camera) = (&self.renderer, &self.camera);
         match self.frames.present(&self.swapchain, |cmd, extent| {
-            renderer.record(cmd, camera, extent, light)
+            renderer.record(cmd, camera, extent, times, time)
         })? {
             Presented::Drawn { gpu_ms } => {
                 self.shown.1.push(dt.as_secs_f64() * 1000.0);
@@ -968,7 +1104,7 @@ impl ApplicationHandler for App<'_> {
                 let path = self
                     .path
                     .map(|p| (p, self.first_frame.map_or(now, |f| f.1)));
-                let dt = match view.frame(&title, &self.times.lights[time], path) {
+                let dt = match view.frame(&title, self.times, time, path) {
                     Ok(dt) => dt,
                     Err(e) => return self.fail(event_loop, e),
                 };
@@ -1061,6 +1197,14 @@ mod tests {
         assert!(options(&args("store 495 --camera 1,2,3,4")).is_none());
         assert!(options(&args("store 495 --camera 1,2,3,4,x")).is_none());
         assert!(options(&args("store 495 --camera 1,2,3,4,NaN")).is_none());
+        // The sky is on unless turned off; a viewer that can switch times wants both.
+        let o = options(&args("store 495 --night --no-sky")).unwrap();
+        assert!(o.no_sky && o.night);
+        assert_eq!(Times::wanted(&o, true), [false, false]);
+        let o = options(&args("store 495 --night")).unwrap();
+        assert!(!o.no_sky);
+        assert_eq!(Times::wanted(&o, false), [false, true]);
+        assert_eq!(Times::wanted(&o, true), [true, true]);
         let o = options(&args("store 495 --path p.path --headless --night")).unwrap();
         assert_eq!((o.path, o.headless), (Some(PathBuf::from("p.path")), true));
         let o = options(&args("store 495 --path p.path")).unwrap();

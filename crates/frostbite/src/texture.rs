@@ -472,7 +472,7 @@ fn parameter_name(p: &Partition, o: Object) -> Result<String> {
 }
 
 /// The partition a reference to another partition's instance names; `None` for null.
-fn import(p: &Partition, v: Option<Value>) -> Result<Option<[u8; 16]>> {
+pub(crate) fn import(p: &Partition, v: Option<Value>) -> Result<Option<[u8; 16]>> {
     match v {
         Some(Value::Class(Ref::Null)) => Ok(None),
         Some(Value::Class(Ref::Import(n))) => match p.imports.get(n) {

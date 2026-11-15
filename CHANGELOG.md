@@ -4,6 +4,19 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **The sky.** `nfsh view` draws the time of day's sky behind everything, where the
+  viewer used to clear to black: Heat's own photographed panorama of the upper half of
+  the sky, over its gradient below the horizon, and the sun's disc, as bright as the
+  data says (its textures times `LuminanceScale` are cd/m²) and exposed like the rest.
+  Midday is a clear blue sky with cumulus near the horizon, tealnight a teal sky with
+  stars. `--no-sky` leaves it out (black, its textures not loaded), the first of the
+  rendering features' off switches.
+- **`nfsh ebx` names each import's partition**, where the store lists it.
+
 ## [0.43.0] - 2026-11-15
 
 ### Added

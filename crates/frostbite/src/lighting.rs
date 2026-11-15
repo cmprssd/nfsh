@@ -1,10 +1,12 @@
-//! A time of day's lighting: the sun, the sky's colours and the exposure, from a
-//! visual environment partition (a `VisualEnvironmentBlueprint` and its components).
-//! See `docs/FORMATS.md`, "Lighting".
+//! A time of day's lighting: the sun, the sky's colours and the exposure, and the sky
+//! drawn behind everything, from a visual environment partition (a
+//! `VisualEnvironmentBlueprint` and its components). See `docs/FORMATS.md`,
+//! "Lighting" and "Sky".
 
-use crate::ebx::Partition;
+use crate::ebx::{Object, Partition, Value};
 use crate::level::{field, float, vec3};
 use crate::store::Store;
+use crate::texture::import;
 use crate::{Result, bail};
 
 /// Palm City's midday visual environment (bundle `tod_day3`).
@@ -79,10 +81,7 @@ impl Lighting {
 
     /// The visual environment in the ebx `name` of `store`.
     pub fn read(store: &Store, name: &str) -> Result<Self> {
-        let Some(asset) = store.ebx(name) else {
-            bail!("no ebx named {name} in the store");
-        };
-        let data = store.entries()?.read(asset.location)?;
+        let data = environment(store, name)?;
         let p = Partition::parse(&data).map_err(|e| crate::Error(format!("{name}: {e}")))?;
         Self::parse(&p)
     }
@@ -112,6 +111,92 @@ impl Lighting {
     /// camera's 1 / (1.2 × 2^EV) at [`Lighting::ev`].
     pub fn exposure(&self) -> f32 {
         1.0 / (1.2 * self.ev().exp2())
+    }
+}
+
+/// The visual environment `name`'s bytes in `store`.
+fn environment(store: &Store, name: &str) -> Result<Vec<u8>> {
+    let Some(asset) = store.ebx(name) else {
+        bail!("no ebx named {name} in the store");
+    };
+    store
+        .entries()?
+        .read(asset.location)
+        .map_err(|e| crate::Error(format!("{name}: {e}")))
+}
+
+/// The sky drawn behind everything: a photographed panorama of the upper half of the
+/// sky, laid over a gradient of the whole sky where its mask lets it, and the sun's
+/// disc (a visual environment's `SkyComponentData`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sky {
+    /// `PanoramicTexture`, `SkyGradientTexture` and `PanoramicAlphaTexture`: each a
+    /// `TextureAsset`'s partition.
+    pub panorama: Option<[u8; 16]>,
+    pub gradient: Option<[u8; 16]>,
+    pub mask: Option<[u8; 16]>,
+    /// `LuminanceScale`: what the textures' values are multiplied by to give
+    /// luminance in cd/m² (983 at midday, 30 at night).
+    pub luminance_scale: f32,
+    /// `PanoramicRotation`, in turns: the bearing of the panorama's left edge.
+    pub rotation: f32,
+    /// `PanoramicUVMinX`, `…MinY`, `…MaxX`, `…MaxY`: the part of the panorama laid
+    /// over the dome, left to right and zenith to horizon.
+    pub uv: [f32; 4],
+    /// `DrawSunDisc`, `SunSize` (the disc's angular radius, in radians) and
+    /// `SunScale` (its luminance in cd/m² before the sun's colour; 0 draws none).
+    pub sun_disc: bool,
+    pub sun_size: f32,
+    pub sun_scale: f32,
+}
+
+impl Sky {
+    /// Reads the `SkyComponentData` of the visual environment `p`; `None` when it
+    /// has none or it isn't enabled.
+    pub fn parse(p: &Partition) -> Result<Option<Self>> {
+        let found = p
+            .instances
+            .iter()
+            .map(|i| p.object(i))
+            .find(|o| p.type_name(o.type_index) == "SkyComponentData");
+        let Some(sky) = found else {
+            return Ok(None);
+        };
+        if !boolean(p, sky, "Enable")? {
+            return Ok(None);
+        }
+        let texture = |name| import(p, field(p, sky, name)?);
+        let f = |name| float(p, sky, name);
+        Ok(Some(Self {
+            panorama: texture("PanoramicTexture")?,
+            gradient: texture("SkyGradientTexture")?,
+            mask: texture("PanoramicAlphaTexture")?,
+            luminance_scale: f("LuminanceScale")?,
+            rotation: f("PanoramicRotation")?,
+            uv: [
+                f("PanoramicUVMinX")?,
+                f("PanoramicUVMinY")?,
+                f("PanoramicUVMaxX")?,
+                f("PanoramicUVMaxY")?,
+            ],
+            sun_disc: boolean(p, sky, "DrawSunDisc")?,
+            sun_size: f("SunSize")?,
+            sun_scale: f("SunScale")?,
+        }))
+    }
+
+    /// The sky of the visual environment in the ebx `name` of `store`.
+    pub fn read(store: &Store, name: &str) -> Result<Option<Self>> {
+        let data = environment(store, name)?;
+        let p = Partition::parse(&data).map_err(|e| crate::Error(format!("{name}: {e}")))?;
+        Self::parse(&p)
+    }
+}
+
+fn boolean(p: &Partition, o: Object, name: &str) -> Result<bool> {
+    match field(p, o, name)? {
+        Some(Value::Bool(b)) => Ok(b),
+        other => bail!("{}: {name} is {other:?}, not a bool", p.name),
     }
 }
 
@@ -213,6 +298,80 @@ mod tests {
         assert_eq!(none.ev(), 0.0);
     }
 
+    /// A visual environment with only a sky, enabled or not.
+    fn sky(enabled: bool) -> Vec<u8> {
+        Builder::default()
+            .ty("Vec2", false, &[("x", F::F32), ("y", F::F32)])
+            .ty("VisualEnvironmentBlueprint", true, &[])
+            .ty(
+                "SkyComponentData",
+                true,
+                &[
+                    ("PanoramicTexture", F::Ref),
+                    ("SkyGradientTexture", F::Ref),
+                    ("PanoramicAlphaTexture", F::Ref),
+                    ("LuminanceScale", F::F32),
+                    ("PanoramicRotation", F::F32),
+                    ("PanoramicUVMinX", F::F32),
+                    ("PanoramicUVMinY", F::F32),
+                    ("PanoramicUVMaxX", F::F32),
+                    ("PanoramicUVMaxY", F::F32),
+                    ("SunSize", F::F32),
+                    ("SunScale", F::F32),
+                    ("Enable", F::Bool),
+                    ("DrawSunDisc", F::Bool),
+                ],
+            )
+            .import([7; 16], [8; 16])
+            .import([9; 16], [10; 16])
+            .instance("VisualEnvironmentBlueprint", [1; 16], vec![])
+            .instance(
+                "SkyComponentData",
+                [2; 16],
+                vec![
+                    V::Ref(0x8000_0001),
+                    V::Ref(0x8000_0000),
+                    V::Ref(0),
+                    V::F32(983.0),
+                    V::F32(0.44),
+                    V::F32(0.0),
+                    V::F32(-0.02),
+                    V::F32(1.0),
+                    V::F32(1.0),
+                    V::F32(0.001),
+                    V::F32(1e7),
+                    V::Bool(enabled),
+                    V::Bool(true),
+                ],
+            )
+            .build("lighting/sky_ve", [4; 16])
+    }
+
+    #[test]
+    fn reads_the_sky_and_its_textures() {
+        let data = sky(true);
+        let s = Sky::parse(&Partition::parse(&data).unwrap()).unwrap();
+        assert_eq!(
+            s,
+            Some(Sky {
+                panorama: Some([9; 16]),
+                gradient: Some([7; 16]),
+                mask: None,
+                luminance_scale: 983.0,
+                rotation: 0.44,
+                uv: [0.0, -0.02, 1.0, 1.0],
+                sun_disc: true,
+                sun_size: 0.001,
+                sun_scale: 1e7,
+            })
+        );
+        let data = sky(false);
+        assert_eq!(Sky::parse(&Partition::parse(&data).unwrap()).unwrap(), None);
+        // No sky at all is none either.
+        let data = environment();
+        assert_eq!(Sky::parse(&Partition::parse(&data).unwrap()).unwrap(), None);
+    }
+
     #[test]
     fn a_partition_without_the_components_is_an_error() {
         // The builder's empty array names type 2, so three types at least.
@@ -247,5 +406,23 @@ mod tests {
         // Each at the top of its range: the sun meters brighter than it allows.
         assert_eq!(day.ev(), 15.0);
         assert_eq!(night.ev(), 2.25);
+        // Their skies (2026-11-15): a photographed panorama each, in cd/m² over
+        // LuminanceScale, with a gradient and a mask.
+        let day = Sky::read(&store, MIDDAY).unwrap().unwrap();
+        let night = Sky::read(&store, TEALNIGHT).unwrap().unwrap();
+        assert_eq!((day.luminance_scale, day.rotation), (983.0, 0.44));
+        assert_eq!(day.uv, [0.0, -0.02, 1.0, 1.0]);
+        assert_eq!(
+            (day.sun_disc, day.sun_size, day.sun_scale),
+            (true, 0.001, 1e7)
+        );
+        assert_eq!((night.luminance_scale, night.rotation), (30.0, 0.719));
+        assert_eq!(
+            (night.sun_disc, night.sun_size, night.sun_scale),
+            (true, 0.002, 50.0)
+        );
+        for s in [day, night] {
+            assert!(s.panorama.is_some() && s.gradient.is_some() && s.mask.is_some());
+        }
     }
 }
