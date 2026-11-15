@@ -101,7 +101,7 @@ pub struct Frame {
 
 /// Where an ebx is listed in a store: indices into [`Store::superbundles`], its
 /// bundles, and their ebx.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EbxRef {
     pub superbundle: u32,
     pub bundle: u32,
@@ -140,6 +140,43 @@ fn each_ebx(superbundles: &[Superbundle]) -> impl Iterator<Item = (EbxRef, &Asse
     })
 }
 
+/// Every ebx's partition GUID (`partitions`, in index order) with where it is listed,
+/// sorted, on every core: placed by the GUID's first byte, then each run of first bytes
+/// sorted on its own thread. GUIDs are random, so the runs are even.
+fn by_guid(partitions: &[[u8; 16]], superbundles: &[Superbundle]) -> Vec<([u8; 16], EbxRef)> {
+    let mut starts = [0usize; 257];
+    for g in partitions {
+        starts[usize::from(g[0]) + 1] += 1;
+    }
+    for b in 0..256 {
+        starts[b + 1] += starts[b];
+    }
+    let mut out = vec![([0; 16], EbxRef::default()); partitions.len()];
+    let mut next = starts;
+    for (&guid, (at, _)) in partitions.iter().zip(each_ebx(superbundles)) {
+        let b = usize::from(guid[0]);
+        out[next[b]] = (guid, at);
+        next[b] += 1;
+    }
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    std::thread::scope(|s| {
+        let (mut rest, mut done) = (out.as_mut_slice(), 0);
+        for t in 1..=threads {
+            // Cut at the first-byte boundary nearest above an even share.
+            let want = starts[256] * t / threads;
+            let cut = starts
+                .iter()
+                .copied()
+                .find(|&at| at >= want)
+                .unwrap_or(starts[256]);
+            let (run, after) = rest.split_at_mut(cut - done);
+            (rest, done) = (after, cut);
+            s.spawn(move || run.sort_unstable());
+        }
+    });
+    out
+}
+
 impl Store {
     /// Opens the store in `dir`, checking that every pack the index names is there and
     /// whole.
@@ -147,13 +184,7 @@ impl Store {
         let path = dir.join(INDEX);
         let bytes = std::fs::read(&path).map_err(|e| io_error(&path, e))?;
         let index = decode(&bytes).map_err(|e| crate::Error(format!("{}: {e}", path.display())))?;
-        let mut by_guid: Vec<([u8; 16], EbxRef)> = index
-            .partitions
-            .iter()
-            .zip(each_ebx(&index.superbundles))
-            .map(|(&guid, (at, _))| (guid, at))
-            .collect();
-        by_guid.sort_unstable();
+        let by_guid = by_guid(&index.partitions, &index.superbundles);
         let mut store = Self {
             dir: dir.to_owned(),
             superbundles: index.superbundles,
@@ -1335,7 +1366,27 @@ pub fn encode(index: &Index) -> Vec<u8> {
 
 struct IndexReader<'a> {
     r: Reader<'a>,
-    packs: Vec<u64>,
+    packs: &'a [u64],
+}
+
+/// The bytes after an asset's name: its SHA-1, original size and location.
+const ASSET_REST: usize = 20 + 4 + LOCATION;
+/// A location: a pack, an offset and a size.
+const LOCATION: usize = 1 + 4 + 4;
+/// A bundle's chunk: its id, SHA-1, logical offset and size, and location.
+const BUNDLE_CHUNK: usize = 16 + 20 + 4 + 4 + LOCATION;
+/// A superbundle's chunk: its id, layer and location.
+const SUPERBUNDLE_CHUNK: usize = 16 + 1 + LOCATION;
+
+/// The bundles are decoded on every core in runs of about this many bytes of the index.
+const BUNDLE_BATCH: u64 = 1 << 20;
+
+/// Where a superbundle lies in an index: its name, each bundle's bytes, and where its
+/// chunk list starts.
+struct Outline {
+    name: String,
+    bundles: Vec<std::ops::Range<usize>>,
+    chunks: usize,
 }
 
 impl IndexReader<'_> {
@@ -1415,19 +1466,61 @@ impl IndexReader<'_> {
             },
         })
     }
-    fn superbundle(&mut self) -> Result<Superbundle> {
+    fn superbundle_chunk(&mut self) -> Result<ChunkEntry> {
+        let id = self.r.array()?;
+        let layer = self.layer()?;
+        let location = self.location()?;
+        Ok(ChunkEntry {
+            chunk: TocChunk { id, location },
+            layer,
+        })
+    }
+    fn skip(&mut self, n: usize) -> Result<()> {
+        self.r.bytes(n).map(|_| ())
+    }
+    /// Steps over a length and that many bytes: a name, or a bundle's metadata.
+    fn skip_bytes(&mut self) -> Result<()> {
+        let len = self.r.u32_be()? as usize;
+        self.skip(len)
+    }
+    /// Steps over a count and that many items of `size` bytes each.
+    fn skip_fixed(&mut self, size: usize) -> Result<()> {
+        let count = self.r.u32_be()? as usize;
+        match count.checked_mul(size) {
+            Some(len) => self.skip(len),
+            None => bail!("{count} items run past the end"),
+        }
+    }
+    /// Steps over a count and that many assets, each followed by `extra` bytes.
+    fn skip_assets(&mut self, extra: usize) -> Result<()> {
+        for _ in 0..self.r.u32_be()? {
+            self.skip_bytes()?;
+            self.skip(ASSET_REST + extra)?;
+        }
+        Ok(())
+    }
+    /// Steps over a bundle as [`Self::bundle`] reads it, allocating nothing.
+    fn skip_bundle(&mut self) -> Result<()> {
+        self.skip_bytes()?;
+        self.skip(1)?;
+        self.skip_bytes()?;
+        self.skip_assets(0)?;
+        self.skip_assets(4 + 16 + 8)?;
+        self.skip_fixed(BUNDLE_CHUNK)
+    }
+    /// A superbundle's outline, stepping over its bundles and chunks.
+    fn outline(&mut self) -> Result<Outline> {
         let name = self.string()?;
-        let bundles = self.list(Self::bundle)?;
-        let chunks = self.list(|i| {
-            let id = i.r.array()?;
-            let layer = i.layer()?;
-            let location = i.location()?;
-            Ok(ChunkEntry {
-                chunk: TocChunk { id, location },
-                layer,
-            })
-        })?;
-        Ok(Superbundle {
+        let count = self.r.u32_be()?;
+        let mut bundles = Vec::new();
+        for _ in 0..count {
+            let start = self.r.pos();
+            self.skip_bundle()?;
+            bundles.push(start..self.r.pos());
+        }
+        let chunks = self.r.pos();
+        self.skip_fixed(SUPERBUNDLE_CHUNK)?;
+        Ok(Outline {
             name,
             bundles,
             chunks,
@@ -1435,8 +1528,64 @@ impl IndexReader<'_> {
     }
 }
 
+/// The superbundles `outlines` finds in `bytes`, their bundles (nearly all of an
+/// index) decoded on every core: most of the work is a string for each asset's name.
+fn superbundles(
+    bytes: &[u8],
+    packs: &[u64],
+    outlines: Vec<Outline>,
+    batch: u64,
+) -> Result<Vec<Superbundle>> {
+    let reader = |at| -> Result<IndexReader> {
+        Ok(IndexReader {
+            r: Reader::at(bytes, at)?,
+            packs,
+        })
+    };
+    let spans: Vec<_> = outlines.iter().flat_map(|o| o.bundles.clone()).collect();
+    let runs = batches(&spans, |s| s.len() as u64, batch);
+    let decoded = in_parallel(
+        &runs,
+        || Ok(()),
+        |(), run| {
+            let mut bundles = Vec::with_capacity(run.len());
+            for span in *run {
+                // A run can go on into the next superbundle, after this one's chunks.
+                let mut i = reader(span.start)?;
+                bundles.push(i.bundle()?);
+                // The outline stepped over the same lengths.
+                if i.r.pos() != span.end {
+                    bail!(
+                        "a bundle at {:#x} does not end where it was outlined",
+                        span.start
+                    );
+                }
+            }
+            Ok(bundles)
+        },
+    )?;
+    let mut bundles = decoded.into_iter().flatten();
+    outlines
+        .into_iter()
+        .map(|o| {
+            let bundles = bundles.by_ref().take(o.bundles.len()).collect();
+            let chunks = reader(o.chunks)?.list(IndexReader::superbundle_chunk)?;
+            Ok(Superbundle {
+                name: o.name,
+                bundles,
+                chunks,
+            })
+        })
+        .collect()
+}
+
 /// Reads an index back.
 pub fn decode(bytes: &[u8]) -> Result<Index> {
+    decode_in_runs(bytes, BUNDLE_BATCH)
+}
+
+/// [`decode`], its bundles decoded in runs of about `batch` bytes.
+fn decode_in_runs(bytes: &[u8], batch: u64) -> Result<Index> {
     let mut r = Reader::new(bytes);
     if r.bytes(MAGIC.len()).ok() != Some(MAGIC.as_slice()) {
         bail!("not an nfsh store index");
@@ -1447,17 +1596,19 @@ pub fn decode(bytes: &[u8]) -> Result<Index> {
             "store version {version}; this nfsh reads versions {VERSION_WITHOUT_GUIDS} to {VERSION}"
         );
     }
-    let mut i = IndexReader {
-        r,
-        packs: Vec::new(),
-    };
-    i.packs = i.list(|i| i.r.u64_be())?;
-    if i.packs.len() > 256 {
-        bail!("{} packs; at most 256", i.packs.len());
+    let mut i = IndexReader { r, packs: &[] };
+    let packs = i.list(|i| i.r.u64_be())?;
+    if packs.len() > 256 {
+        bail!("{} packs; at most 256", packs.len());
     }
+    let mut i = IndexReader {
+        r: i.r,
+        packs: &packs,
+    };
     let len = i.r.u32_be()? as usize;
     let dictionary = i.r.bytes(len)?.to_vec();
-    let superbundles = i.list(IndexReader::superbundle)?;
+    let outlines = i.list(IndexReader::outline)?;
+    let superbundles = superbundles(bytes, &packs, outlines, batch)?;
     let partitions = match version {
         VERSION_WITHOUT_GUIDS => Vec::new(),
         _ => i.list(|i| i.r.array())?,
@@ -1476,7 +1627,7 @@ pub fn decode(bytes: &[u8]) -> Result<Index> {
         }
         _ => (Vec::new(), Vec::new()),
     };
-    check_frames(&i.packs, &parts, &frames)?;
+    check_frames(&packs, &parts, &frames)?;
     let ebx = each_ebx(&superbundles).count();
     if !partitions.is_empty() && partitions.len() != ebx {
         bail!("{} partition GUIDs for {ebx} ebx", partitions.len());
@@ -1485,7 +1636,7 @@ pub fn decode(bytes: &[u8]) -> Result<Index> {
         bail!("{} bytes after the index", bytes.len() - i.r.pos());
     }
     Ok(Index {
-        packs: i.packs,
+        packs,
         dictionary,
         superbundles,
         partitions,
@@ -1594,6 +1745,79 @@ mod tests {
             parts: Vec::new(),
             frames: Vec::new(),
         }
+    }
+
+    /// `sample()`'s superbundle three times over with 0, 1 and 3 bundles, the bundles'
+    /// ebx renamed so each is told apart.
+    fn several() -> Vec<Superbundle> {
+        let one = sample().remove(0);
+        (0..3)
+            .map(|s: usize| {
+                let mut sb = one.clone();
+                sb.name = format!("sb{s}");
+                sb.bundles = (0..[0, 1, 3][s])
+                    .map(|b| {
+                        let mut bundle = one.bundles[0].clone();
+                        bundle.name = format!("sb{s}/b{b}");
+                        let ebx = bundle.bundle.ebx[0].clone();
+                        bundle.bundle.ebx = (0..b + 1)
+                            .map(|e| Asset {
+                                name: format!("sb{s}/b{b}/e{e}"),
+                                ..ebx.clone()
+                            })
+                            .collect();
+                        bundle
+                    })
+                    .collect();
+                sb
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bundles_read_back_in_order_however_the_runs_fall() {
+        let mut several_sbs = index(vec![30, 35]);
+        several_sbs.superbundles = several();
+        several_sbs.partitions = (0..each_ebx(&several_sbs.superbundles).count() as u8)
+            .map(|n| [n; 16])
+            .collect();
+        let bytes = encode(&several_sbs);
+        // Runs of one bundle, of a few that go on into the next superbundle, and one run.
+        for batch in [1, 150, u64::MAX] {
+            assert_eq!(
+                decode_in_runs(&bytes, batch),
+                Ok(several_sbs.clone()),
+                "{batch}"
+            );
+        }
+        for len in 0..bytes.len() {
+            assert!(
+                decode_in_runs(&bytes[..len], 1).is_err(),
+                "truncated to {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn partitions_are_sorted_by_guid_and_then_where_they_are_listed() {
+        let sbs = several();
+        let ebx = each_ebx(&sbs).count();
+        // First bytes spread over the range, with repeats, and whole GUIDs repeated.
+        let partitions: Vec<[u8; 16]> = (0..ebx)
+            .map(|n| {
+                let mut g = [(n % 4) as u8; 16];
+                g[0] = [200, 3, 200, 0, 255, 3, 7][n % 7];
+                g
+            })
+            .collect();
+        let mut expected: Vec<_> = partitions
+            .iter()
+            .zip(each_ebx(&sbs))
+            .map(|(&g, (at, _))| (g, at))
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(by_guid(&partitions, &sbs), expected);
+        assert_eq!(by_guid(&[], &[]), []);
     }
 
     fn frame(size: u32, part: u8, tier: u8) -> Frame {
