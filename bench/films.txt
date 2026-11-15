@@ -3,4 +3,4 @@
 # per line: name, zone, path, time of day (midday or tealnight), and what it shows.
 speedway        495  speedway.path      midday     40 s through the speedway: from above the stands down to the track, along the barrels and back up
 speedway-night  495  speedway.path      tealnight  The same flight at night
-garage-drive    494  garage-drive.path  midday     Heat's chase camera, recorded from the original game, leaving the field by the garage
+garage-drive    494  garage-drive.path  midday     Heat's chase camera, recorded from the original game, leaving the field by the garage (no car drawn yet)

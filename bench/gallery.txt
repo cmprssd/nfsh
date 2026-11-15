@@ -10,7 +10,7 @@ track-low          495  3780,83.5,3010,40,-4    midday     Low over the track
 track-wide         495  3600,220,2800,40,-35    midday     The track and infield, wide
 barrels-night      495  3886,82,3141,20,-12     tealnight  The barrels at night
 garage-overview    494  -                       midday     The garage's zone from above
-garage-chase       494  4512.2,64.3,2546,220,-2.6  midday  Where Heat's chase camera rested by the garage
+palms              494  4461,72,2484,220,-8     midday     Palms on the breakwater by the garage
 garage-high        494  4512,140,2546,220,-35   midday     Above the garage
-field              494  4542,65.4,2537.5,78,-4.4  midday   The field east of the raceway
+field              494  4542,65.4,2537.5,78,-4.4  midday   The field east of the raceway, out to where the ground ends
 garage-night       494  4512,140,2546,220,-35   tealnight  Above the garage at night: the moon is overhead, so open ground stays lit

@@ -38,6 +38,9 @@ a { color: var(--fg); text-decoration-thickness: 1px; text-underline-offset: 2px
 .muted { color: var(--muted); }
 .eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 section { display: grid; gap: 18px; min-width: 0; }
+/* A grid item is as wide as its content unless told otherwise: wide strips and charts
+   scroll inside their section instead of widening the page. */
+section > *, header > * { min-width: 0; }
 header { display: grid; gap: 18px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
 .tile { background: var(--panel); padding: 14px 16px; display: grid; gap: 4px; align-content: start; }
@@ -489,7 +492,7 @@ function versus(R) {
 function lines(target, series, unit, aria, floor0 = true) {
   const rel = [...new Set(series.flatMap((s) => s.points.map((p) => p.release)))].sort(cmpv);
   if (rel.length < 2) return;
-  const W = 520, H = 230, L = 44, R = 84, T = 12, B = 34;
+  const W = 520, H = 240, L = 44, R = 84, T = 24, B = 34;
   const all = series.flatMap((s) => s.points.map((p) => p.value));
   let lo = floor0 ? 0 : Math.min(...all), hi = Math.max(...all);
   const pad = (hi - lo) * 0.08 || 1; if (!floor0) lo -= pad; hi += pad;
@@ -501,7 +504,7 @@ function lines(target, series, unit, aria, floor0 = true) {
     s.append(svg("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), class: "grid" }));
     label(s, { x: L - 6, y: y(v) + 4, "text-anchor": "end" }, v >= 100 ? Math.round(v) : v.toFixed(1));
   }
-  label(s, { x: L - 6, y: T - 2, "text-anchor": "end" }, unit);
+  label(s, { x: L - 6, y: T - 12, "text-anchor": "end" }, unit);
   rel.forEach((r, j) => { if (rel.length < 12 || j % 2 === 0 || j === rel.length - 1) label(s, { x: x(r), y: H - B + 16, "text-anchor": "middle" }, r.replace(/\.0$/, "")); });
   for (const se of series) {
     const pts = se.points.slice().sort((a, b) => cmpv(a.release, b.release));
@@ -554,7 +557,8 @@ function sizes(results, i) {
   // Disc labels alternate between two lines, so close capacities don't overlap.
   discs.forEach(([n, g], j) => {
     const ln = svg("line", { x1: x(g), x2: x(g), y1: T - (j % 2 ? 6 : 22), y2: H - 4, "stroke-dasharray": "3 3" }); ln.style.stroke = "var(--ink2)"; s.append(ln);
-    label(s, { x: x(g) + 4, y: T - (j % 2 ? 10 : 26) }, `${n}, ${g} GiB`);
+    const end = x(g) > W * 0.8;  // near the right edge, the label reads leftwards
+    label(s, { x: x(g) + (end ? -4 : 4), y: T - (j % 2 ? 10 : 26), "text-anchor": end ? "end" : "start" }, `${n}, ${g} GiB`);
   });
   bars.forEach((b, j) => {
     const yy = T + j * rowH;

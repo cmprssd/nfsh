@@ -41,7 +41,8 @@ grep -v '^#' bench/films.txt | awk 'NF' | while read -r name zone path time _; d
 	echo "== $name"
 	timeout 3600 "$nfsh" view "$store" "$zone" --path "$(wslpath -w "$work/bench/film.path")" --headless \
 		--frames "$(wslpath -w "$frames")" "${night[@]}" </dev/null >/dev/null 2>&1 || { echo "   $name: not drawn"; continue; }
-	"$ffmpeg" -loglevel error -y -framerate 30 -i "$frames/%05d.png" -c:v libx264 -preset slow -crf 22 \
+	# -nostdin: ffmpeg would otherwise read the rest of films.txt as its commands.
+	"$ffmpeg" -nostdin -loglevel error -y -framerate 30 -i "$frames/%05d.png" -c:v libx264 -preset slow -crf 28 \
 		-pix_fmt yuv420p -movflags +faststart "$out/$name.mp4"
 	cp "$frames/00030.png" "$out/$name-poster.png"  # one second in: the video's still
 	rm -rf "$frames"

@@ -1424,5 +1424,6 @@ And, decided by Claude, pending review:
   later headless one. Why: Heat's was taken in a window; BASELINE.md compares them so.
 - **The Rust lines and tests are two charts**, no longer one chart with two scales. Why: a
   second scale invites reading the crossing of the lines as meaning something.
-- **The videos are H.264 MP4 at CRF 22**, about 4 MB a film. Why: every browser plays them,
-  and the page stays well under GitHub Pages' limits.
+- **The videos are H.264 MP4 at CRF 28**, about 15 MB for the 40 s speedway film. Why:
+  every browser plays them; at CRF 22 that film was 47 MB, and CRF 28 looked the same
+  side by side on the asphalt (the finest detail drawn).
