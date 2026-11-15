@@ -64,6 +64,13 @@ pub enum Layout {
     Bc5,
 }
 
+/// Each block format's fields, `(offset, length)` in the order [`Layout::gather`] writes
+/// them: BC1's colour end points then indices; BC3's alpha end points, colour end points,
+/// alpha indices, colour indices; BC5's two channels the same way.
+const BC1_FIELDS: [(usize, usize); 2] = [(0, 4), (4, 4)];
+const BC3_FIELDS: [(usize, usize); 4] = [(0, 2), (8, 4), (2, 6), (12, 4)];
+const BC5_FIELDS: [(usize, usize); 4] = [(0, 2), (8, 2), (2, 6), (10, 6)];
+
 impl Layout {
     /// The layout for blocks of the format `name` (`BC1_SRGB`...): BC4, BC6H and BC7 stay
     /// plain, gathering saves little or nothing on them (`docs/SIZES.md`).
@@ -95,9 +102,9 @@ impl Layout {
     fn fields(self) -> Option<(usize, &'static [(usize, usize)])> {
         Some(match self {
             Self::Plain => return None,
-            Self::Bc1 => (8, &[(0, 4), (4, 4)]),
-            Self::Bc3 => (16, &[(0, 2), (8, 4), (2, 6), (12, 4)]),
-            Self::Bc5 => (16, &[(0, 2), (8, 2), (2, 6), (10, 6)]),
+            Self::Bc1 => (8, &BC1_FIELDS),
+            Self::Bc3 => (16, &BC3_FIELDS),
+            Self::Bc5 => (16, &BC5_FIELDS),
         })
     }
 
@@ -119,21 +126,16 @@ impl Layout {
         out
     }
 
-    /// Undoes [`Self::gather`]: `gathered` back into `out`, of the same length.
+    /// Undoes [`Self::gather`]: `gathered` back into `out`, of the same length, in one
+    /// pass over `out` with the fields' sizes known when compiled (six times as fast as
+    /// a pass for each field, docs/BASELINE.md).
     pub fn scatter(self, gathered: &[u8], out: &mut [u8]) {
-        let Some((block, fields)) = self.fields() else {
-            out.copy_from_slice(gathered);
-            return;
-        };
-        let whole = gathered.len() / block * block;
-        let mut from = 0;
-        for &(offset, length) in fields {
-            for b in out[..whole].chunks_exact_mut(block) {
-                b[offset..offset + length].copy_from_slice(&gathered[from..from + length]);
-                from += length;
-            }
+        match self {
+            Self::Plain => out.copy_from_slice(gathered),
+            Self::Bc1 => scatter_blocks::<8, 2>(gathered, out, BC1_FIELDS),
+            Self::Bc3 => scatter_blocks::<16, 4>(gathered, out, BC3_FIELDS),
+            Self::Bc5 => scatter_blocks::<16, 4>(gathered, out, BC5_FIELDS),
         }
-        out[whole..].copy_from_slice(&gathered[whole..]);
     }
 
     /// The skippable frame that says the next frame is in this layout.
@@ -144,6 +146,31 @@ impl Layout {
         m[8] = self.code();
         m
     }
+}
+
+/// [`Layout::scatter`] for blocks of `B` bytes with the `F` fields `fields` (as
+/// [`Layout::fields`] lists them): field `f` of block `i` is at `i * length` in its run,
+/// the runs back to back in the fields' order, then the bytes after the last whole block.
+#[inline(always)]
+fn scatter_blocks<const B: usize, const F: usize>(
+    gathered: &[u8],
+    out: &mut [u8],
+    fields: [(usize, usize); F],
+) {
+    let (blocks, rest) = out.as_chunks_mut::<B>();
+    let n = blocks.len();
+    let mut runs: [&[u8]; F] = [&[]; F];
+    let mut from = 0;
+    for (run, &(_, length)) in runs.iter_mut().zip(&fields) {
+        *run = &gathered[from..from + n * length];
+        from += n * length;
+    }
+    for (i, block) in blocks.iter_mut().enumerate() {
+        for (run, &(offset, length)) in runs.iter().zip(&fields) {
+            block[offset..offset + length].copy_from_slice(&run[i * length..(i + 1) * length]);
+        }
+    }
+    rest.copy_from_slice(&gathered[from..]);
 }
 
 /// Writes frames; one per thread.
