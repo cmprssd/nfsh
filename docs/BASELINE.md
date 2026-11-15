@@ -475,10 +475,26 @@ Tried against the new buffers, on branches kept locally, neither released:
   - **But it holds 482 MiB more at its peak**, freed memory kept for later, and cold
     loads got 2 to 10 s slower: on this 8 GB PC that memory comes out of the file cache
     the cold load is reading through. Not released: it costs cold.
-- **What could still help:** the allocator's saving without its memory (mimalloc told to
-  give freed memory back sooner, or reuse kept to the decode buffers), zstd built with
-  its assembly decoder (clang on Windows; zstd-sys turns it off there), and the rest of a
-  warm load: the meshes' build (1.1 s) and pipelines plus the first frame (about 0.9 s).
+- **mimalloc giving freed memory back sooner** (its `purge_delay` option: 1 s by default
+  in mimalloc 3, which the crate builds). Loads alternating, the PC idle 5 minutes first
+  (2026-11-15), three warm-up rounds discarded:
+
+| Zone 494 | Load, warm | Load, cold | Peak working set (`--shot`; cold loads) |
+|---|---|---|---|
+| 0.39.0 | 4.52, 4.36, 4.68, 4.45 s (median 4.49) | 21.81, 21.90 s | 2,016 MiB; 2,016, 2,017 MiB |
+| mimalloc, purge after 10 ms | 4.35, 4.38, 4.34, 4.60 s (median 4.37) | 21.89, 21.89 s | 2,023 to 2,038 MiB; 2,116, 2,109 MiB |
+| mimalloc, purge after 1 s (its default) | 4.37, 4.00, 4.21, 4.03 s (median 4.12) | | 2,352 to 2,510 MiB |
+
+  - **The saving is the memory it keeps.** Purged after 10 ms (0 ms and 100 ms peak at
+    2,017 and 2,044 MiB), the peak is back and cold is as fast as 0.39.0's, but the warm
+    saving falls from about 0.35 s to about 0.1 s, within these loads' spread, and a cold
+    load still peaks about 95 MiB higher. Not released: mimalloc stays on
+    `tried/mimalloc`.
+  - **The one-pass scatter is kept** (0.05 s against 0.33 s for 352 MiB on one thread,
+    byte for byte the same; the blocks' field tables are shared with the gather).
+- **What could still help:** zstd built with its assembly decoder (clang on Windows;
+  zstd-sys turns it off there), and the rest of a warm load: the meshes' build (1.1 s)
+  and pipelines plus the first frame (about 0.9 s).
 
 ## The original's half
 
