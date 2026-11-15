@@ -7,17 +7,20 @@
 //! path (crate::path) instead, and the frame times along it and the time to the first
 //! frame are printed at its end; `--headless` draws that path without a window.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use frostbite::layers;
-use frostbite::level::Level;
 use frostbite::level::xz_bounds;
+use frostbite::level::{Level, Zone};
 use frostbite::lighting::{self, Lighting};
 use frostbite::mesh::Meshes;
 use frostbite::store::Store;
 use frostbite::terrain::{self, Chunks, Ground, Tree};
-use frostbite::texture::{Asset, Textures};
+use frostbite::texture::{Asset, Textures, decode_workers};
 use nfsh_render::scene::{self, Scene};
 use nfsh_render::zone::{DetailTextures, Loaded};
 use nfsh_render::{Camera, FrameLoop, Gpu, Light, Presented, Swapchain, Target, ZoneRenderer, vk};
@@ -373,7 +376,7 @@ fn disk_line(bytes: u64, reads: u64) -> String {
 /// The disk and the processor take turns: the ground's layers, mostly decoding and
 /// independent of the zone, are worked out on a thread from the start, and the ground
 /// tiles on another once the zone's extent is known and its meshes are read, while
-/// the meshes are built from memory.
+/// the meshes are built from memory ([`build`], on threads of their own).
 fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
     let start = Instant::now();
     let disk = frostbite::cas::read_so_far();
@@ -412,7 +415,7 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
             (detail, ground, layers_took, tiles_took)
         });
         let noise = scene::texture_partition(store, scene::ASPHALT_NOISE);
-        let mut scene = scene::build(&zone, |m| scene::lods(&mut meshes, m, noise));
+        let mut scene = build(store, &zone, &mut meshes, noise);
         drop(meshes);
         parts.done("meshes built");
         let (detail, ground, layers_took, tiles_took) = joined(ground).unwrap_or_else(|e| {
@@ -472,6 +475,72 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
             );
         }
         Ok(scene)
+    })
+}
+
+/// The scene of `zone`'s meshes: each planned here from `meshes` ([`scene::plan`]),
+/// decompressed and decoded on [`decode_workers`] threads in that order
+/// ([`scene::decode`]), and added to the scene here as each is done, in order. A mesh
+/// left undecoded by a panicking thread is listed as not drawn.
+fn build(store: &Store, zone: &Zone, meshes: &mut Meshes, noise: Option<[u8; 16]>) -> Scene {
+    let order = scene::drawn_meshes(zone);
+    let plans: Vec<Mutex<Option<_>>> = order
+        .iter()
+        .map(|&m| Mutex::new(Some(scene::plan(meshes, &zone.meshes[m]))))
+        .collect();
+    let (plans, next) = (&plans, &AtomicUsize::new(0));
+    let (done, models) = mpsc::channel();
+    std::thread::scope(|s| {
+        let workers: Vec<_> = (0..decode_workers())
+            .map(|_| {
+                let done = done.clone();
+                s.spawn(move || {
+                    let mut entries = store.entries();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(plan) = plans.get(i) else { break };
+                        let plan = plan.lock().ok().and_then(|mut p| p.take());
+                        let model = match (plan, &mut entries) {
+                            (Some(Ok(plan)), Ok(entries)) => {
+                                scene::decode(plan, entries, store, noise)
+                            }
+                            (Some(Err(e)), _) => Err(e),
+                            (_, Err(e)) => Err(e.clone()),
+                            (None, _) => Err(frostbite::Error("decoded twice".into())),
+                        };
+                        if done.send((i, model)).is_err() {
+                            break;
+                        }
+                    }
+                })
+            })
+            .collect();
+        drop(done);
+        // The models that came ahead of the one the scene is waiting for, by index.
+        let mut ahead = HashMap::new();
+        let mut n = 0;
+        let scene = scene::build(zone, |mesh| {
+            let i = n;
+            n += 1;
+            if order.get(i).map(|&m| &zone.meshes[m]) != Some(mesh) {
+                return Err(frostbite::Error("loaded out of order".into()));
+            }
+            loop {
+                if let Some(model) = ahead.remove(&i) {
+                    return model;
+                }
+                match models.recv() {
+                    Ok((at, model)) => _ = ahead.insert(at, model),
+                    Err(_) => return Err(frostbite::Error("a mesh thread panicked".into())),
+                }
+            }
+        });
+        for worker in workers {
+            if let Err(e) = joined(worker) {
+                eprintln!("  {e}");
+            }
+        }
+        scene
     })
 }
 

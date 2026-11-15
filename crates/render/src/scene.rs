@@ -6,7 +6,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use frostbite::level::{Mesh, Transform, Zone};
-use frostbite::mesh::{Geometry, Meshes, Switches};
+use frostbite::mesh::{Geometry, Meshes, StoredChunk, Switches};
+use frostbite::store::{Entries, Store};
 use frostbite::terrain::{Ground, GroundMap};
 use frostbite::texture::Material;
 
@@ -451,6 +452,19 @@ fn instance(t: &Transform) -> Instance {
     ]
 }
 
+/// The meshes of `zone` that it places, by index, in their order: those [`build`]
+/// loads, in the order it loads them.
+pub fn drawn_meshes(zone: &Zone) -> Vec<usize> {
+    let mut placed = vec![false; zone.meshes.len()];
+    for p in &zone.placements {
+        // Level::zone only makes valid indices; a bad one is left out, not a panic.
+        if let Some(at) = placed.get_mut(p.mesh) {
+            *at = true;
+        }
+    }
+    (0..placed.len()).filter(|&m| placed[m]).collect()
+}
+
 /// The draws for `zone`, its meshes from `load`. A mesh that fails to load, or has no
 /// triangles, is left out and listed.
 pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Model>) -> Scene {
@@ -464,10 +478,8 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Model
         }
     }
     let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-    for (mesh, transforms) in zone.meshes.iter().zip(&by_mesh) {
-        if transforms.is_empty() {
-            continue;
-        }
+    for m in drawn_meshes(zone) {
+        let (mesh, transforms) = (&zone.meshes[m], &by_mesh[m]);
         let Model { sections, switches } = match load(mesh) {
             Ok(m) => m,
             Err(e) => {
@@ -689,8 +701,27 @@ pub fn add_ground(scene: &mut Scene, ground: &Ground, detail: Vec<Detail>) {
 /// `noise` (the partition of [`ASPHALT_NOISE`]) where its material names none. A
 /// section whose material is out of range is drawn grey. A mesh whose lod group can't
 /// be read keeps its first LOD only, drawn at any distance; one whose later LOD can't
-/// be read keeps the LODs before it.
+/// be read keeps the LODs before it. [`plan`] then [`decode`], on one thread.
 pub fn lods(meshes: &mut Meshes, mesh: &Mesh, noise: Option<[u8; 16]>) -> frostbite::Result<Model> {
+    let plan = plan(meshes, mesh)?;
+    let store = meshes.store();
+    decode(plan, &mut store.entries()?, store, noise)
+}
+
+/// What [`decode`] needs of a mesh asset to make its [`Model`], found by [`plan`].
+#[derive(Debug)]
+pub struct Plan {
+    switches: Switches,
+    materials: Vec<Material>,
+    /// The LODs to decode, each with its number, until one fails: the first an
+    /// install keeps, then as many as the mesh switches between.
+    lods: Vec<(u8, frostbite::mesh::Lod, frostbite::Result<StoredChunk>)>,
+}
+
+/// The mesh asset `mesh`'s set, LOD switches and materials, and its LODs' chunks as
+/// `meshes` read them ahead: the reads [`lods`] makes in one order, so that
+/// [`decode`], the decompressing and decoding, can run on other threads.
+pub fn plan(meshes: &mut Meshes, mesh: &Mesh) -> frostbite::Result<Plan> {
     let set = meshes.by_partition(&mesh.partition)?;
     if set.lods.is_empty() {
         return Err(frostbite::Error(format!("{}: no LODs", mesh.name)));
@@ -703,49 +734,76 @@ pub fn lods(meshes: &mut Meshes, mesh: &Mesh, noise: Option<[u8; 16]>) -> frostb
         set.lods.len().min(usize::from(u8::MAX))
     };
     let materials = meshes.materials(&mesh.partition)?;
-    let mut sections = Vec::new();
-    let mut read = 0;
-    for (k, lod) in set.lods.iter().take(u8::MAX.into()).enumerate() {
-        if read == wanted {
-            break;
-        }
-        match lod_sections(meshes, &materials, lod, k as u8, noise) {
-            Ok(s) => {
-                sections.extend(s);
-                read += 1;
-            }
-            // An install can leave out a mesh's first LODs: it is drawn from the first
-            // it has, at their distances too ([`Lods::first`]).
-            Err(_) if read == 0 && meshes.left_out(lod) => {}
-            Err(e) if read == 0 => return Err(e),
-            // The LODs read so far are drawn on past this one's distance.
-            Err(_) => break,
-        }
-    }
-    if read == 0 {
+    // An install can leave out a mesh's first LODs (their chunks can't be read): it is
+    // drawn from the first it has, at their distances too ([`Lods::first`]).
+    let lods: Vec<_> = set
+        .lods
+        .into_iter()
+        .take(u8::MAX.into())
+        .enumerate()
+        .skip_while(|(_, lod)| meshes.left_out(lod))
+        .take(wanted)
+        .map(|(k, lod)| {
+            let chunk = meshes.stored_chunk(&lod);
+            (k as u8, lod, chunk)
+        })
+        .collect();
+    if lods.is_empty() {
         return Err(frostbite::Error(format!(
             "{}: every LOD is left out of this install",
             mesh.name
         )));
     }
-    Ok(Model { sections, switches })
+    Ok(Plan {
+        switches,
+        materials,
+        lods,
+    })
 }
 
-/// The sections of `lod`, the `k`th LOD of a mesh with `materials`.
+/// The model [`plan`] found, its chunks decompressed by `entries` (one of `store`'s,
+/// the thread's own); asphalt takes `noise` as in [`lods`]. The first LOD that fails
+/// fails the mesh; a later one ends it, the LODs before drawn on past its distance.
+pub fn decode(
+    plan: Plan,
+    entries: &mut Entries,
+    store: &Store,
+    noise: Option<[u8; 16]>,
+) -> frostbite::Result<Model> {
+    let mut sections = Vec::new();
+    for (n, (k, lod, chunk)) in plan.lods.iter().enumerate() {
+        let read = chunk
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|c| c.read(entries));
+        match read.and_then(|data| lod_sections(store, &plan.materials, lod, *k, &data, noise)) {
+            Ok(s) => sections.extend(s),
+            Err(e) if n == 0 => return Err(e),
+            Err(_) => break,
+        }
+    }
+    Ok(Model {
+        sections,
+        switches: plan.switches,
+    })
+}
+
+/// The sections of `lod`, the `k`th LOD of a mesh with `materials`, from its chunk
+/// `data`.
 fn lod_sections(
-    meshes: &mut Meshes,
+    store: &Store,
     materials: &[Material],
     lod: &frostbite::mesh::Lod,
     k: u8,
+    data: &[u8],
     noise: Option<[u8; 16]>,
 ) -> frostbite::Result<Vec<Section>> {
-    let data = meshes.chunk(lod)?;
     lod.sections
         .iter()
         .map(|s| {
             let material = materials.get(s.material as usize);
             let look = material.and_then(|m| {
-                let shader = m.shader.and_then(|g| meshes.store().partition_name(&g));
+                let shader = m.shader.and_then(|g| store.partition_name(&g));
                 look(shader.unwrap_or_default(), m)
             });
             let (layers, normal_map) = match (look, material) {
@@ -755,7 +813,7 @@ fn lod_sections(
             };
             Ok(Section {
                 lod: k,
-                geometry: lod.section(s, &data)?,
+                geometry: lod.section(s, data)?,
                 texture: look.map(|l| l.0),
                 layers,
                 normal_map,
@@ -968,6 +1026,22 @@ mod tests {
         assert!(scene.textures.is_empty());
         assert_eq!(scene.bounds, Some(([0.0; 3], [20.0, 0.0, 0.0])));
         assert!(scene.failed.is_empty());
+    }
+
+    #[test]
+    fn the_drawn_meshes_are_those_build_loads_in_its_order() {
+        let zone = Zone {
+            meshes: vec![mesh("a"), mesh("unplaced"), mesh("c"), mesh("d")],
+            placements: vec![at(3, 0.0), at(0, 0.0), at(9, 0.0), at(3, 1.0), at(2, 0.0)],
+            ..Zone::default()
+        };
+        let mut loaded = Vec::new();
+        build(&zone, |m| {
+            loaded.push(m.name.clone());
+            Ok(Model::whole(vec![triangle()]))
+        });
+        assert_eq!(drawn_meshes(&zone), [0, 2, 3]);
+        assert_eq!(loaded, ["a", "c", "d"]);
     }
 
     #[test]
