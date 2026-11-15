@@ -375,8 +375,9 @@ fn disk_line(bytes: u64, reads: u64) -> String {
 ///
 /// The disk and the processor take turns: the ground's layers, mostly decoding and
 /// independent of the zone, are worked out on a thread from the start, and the ground
-/// tiles on another once the zone's extent is known and its meshes are read, while
-/// the meshes are built from memory ([`build`], on threads of their own).
+/// tiles are read on another once the zone's extent is known and its meshes are read
+/// (and walked once the layers are done, which weight them), while the meshes are
+/// built from memory ([`build`], on threads of their own).
 fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
     let start = Instant::now();
     let disk = frostbite::cas::read_so_far();
@@ -398,6 +399,10 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
         parts.done("meshes read");
         let bounds = xz_bounds(&zone);
         let ground = s.spawn(move || {
+            // The tiles are read while the layers are still worked out: they need the
+            // layers only to be weighted.
+            let (tiles, read_took) =
+                timed(|| bounds.map(|(lo, hi)| GroundTiles::read(store, lo, hi)));
             // Without the layers' detail the ground is still drawn; without the ground,
             // the zone.
             let (textures, layers_took) =
@@ -410,9 +415,8 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
                 }
             };
             let keys: Vec<u16> = detail.keys().copied().collect();
-            let (ground, tiles_took) =
-                timed(|| bounds.map(|(lo, hi)| ground(store, lo, hi, &keys)));
-            (detail, ground, layers_took, tiles_took)
+            let (ground, walk_took) = timed(|| tiles.map(|t| t.map(|t| t.ground(&keys))));
+            (detail, ground, layers_took, read_took + walk_took)
         });
         let noise = scene::texture_partition(store, scene::ASPHALT_NOISE);
         let mut scene = build(store, &zone, &mut meshes, noise);
@@ -544,22 +548,44 @@ fn build(store: &Store, zone: &Zone, meshes: &mut Meshes, noise: Option<[u8; 16]
     })
 }
 
-/// The ground under `lo`..`hi` and [`GROUND_MARGIN`] around it, weighted by the
-/// detail `layers`.
-fn ground(store: &Store, lo: [f32; 2], hi: [f32; 2], layers: &[u16]) -> frostbite::Result<Ground> {
-    let tree = Tree::read(store)?;
-    let mut chunks = Chunks::new(store)?;
-    let lo = lo.map(|v| v - GROUND_MARGIN);
-    let hi = hi.map(|v| v + GROUND_MARGIN);
-    chunks.prefetch(&terrain::ground_chunks(&tree, lo, hi));
-    Ok(terrain::ground(
-        &tree,
-        lo,
-        hi,
-        GROUND_SPACING,
-        layers,
-        |id| chunks.read(id),
-    ))
+/// The ground's tiles under an area and [`GROUND_MARGIN`] around it, read and
+/// decompressed but not yet walked: the walk needs the detail layers, which are worked
+/// out at the same time on another thread.
+struct GroundTiles<'s> {
+    tree: Tree,
+    reader: Chunks<'s>,
+    lo: [f32; 2],
+    hi: [f32; 2],
+    /// Each chunk the walk reads, as read (or why it could not be).
+    chunks: HashMap<[u8; 16], frostbite::Result<Vec<u8>>>,
+}
+
+impl<'s> GroundTiles<'s> {
+    fn read(store: &'s Store, lo: [f32; 2], hi: [f32; 2]) -> frostbite::Result<Self> {
+        let tree = Tree::read(store)?;
+        let mut reader = Chunks::new(store)?;
+        let lo = lo.map(|v| v - GROUND_MARGIN);
+        let hi = hi.map(|v| v + GROUND_MARGIN);
+        let ids = terrain::ground_chunks(&tree, lo, hi);
+        reader.prefetch(&ids);
+        let chunks = ids.iter().map(|id| (*id, reader.read(id))).collect();
+        Ok(Self {
+            tree,
+            reader,
+            lo,
+            hi,
+            chunks,
+        })
+    }
+
+    /// The ground, weighted by the detail `layers`.
+    fn ground(mut self, layers: &[u16]) -> Ground {
+        terrain::ground(&self.tree, self.lo, self.hi, GROUND_SPACING, layers, |id| {
+            // One not read ahead (none should be) is read now.
+            let (chunks, reader) = (&mut self.chunks, &mut self.reader);
+            chunks.remove(id).unwrap_or_else(|| reader.read(id))
+        })
+    }
 }
 
 /// What `f` returns, and how long it took.
