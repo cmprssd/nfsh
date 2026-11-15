@@ -239,45 +239,25 @@ impl FrameDecoder {
 
     /// The entry in `stored`, which must be exactly one or more whole frames.
     pub fn decode(&mut self, stored: &[u8]) -> Result<Vec<u8>> {
-        let mut frames = Vec::new();
-        let mut rest = stored;
-        let mut total = 0u64;
-        while !rest.is_empty() || frames.is_empty() {
-            let layout = match rest.get(..4) {
-                Some(m) if m == LAYOUT_MAGIC.to_le_bytes() => {
-                    let Some(&[_, _, _, _, 1, 0, 0, 0, code]) = rest.get(..9) else {
-                        bail!("a damaged layout marker");
-                    };
-                    let Some(layout) = Layout::of_code(code) else {
-                        bail!("layout {code}; this nfsh reads 1 to 3");
-                    };
-                    rest = &rest[9..];
-                    layout
-                }
-                _ => Layout::Plain,
-            };
-            let size = match zstd_safe::get_frame_content_size(rest) {
-                Ok(Some(size)) => size,
-                _ => bail!("not a zstd frame with its size"),
-            };
-            total += size;
-            if total > MAX_ENTRY {
-                bail!("an entry of {total} bytes; at most {MAX_ENTRY}");
-            }
-            let Ok(len) = zstd_safe::find_frame_compressed_size(rest) else {
-                bail!("the {} bytes are not whole frames", stored.len());
-            };
-            if len == 0 || len > rest.len() {
-                bail!("the {} bytes are not whole frames", stored.len());
-            }
-            let (frame, after) = rest.split_at(len);
-            frames.push((frame, size as usize, layout));
-            rest = after;
+        let frames = split_frames(stored)?;
+        let mut out = vec![0; frames.size];
+        self.decode_to(&frames, &mut out, &mut Vec::new())?;
+        Ok(out)
+    }
+
+    /// The entry `frames` into `out`, exactly [`Split::size`] bytes long, gathering
+    /// fields in `gathered`.
+    pub fn decode_to(
+        &mut self,
+        frames: &Split<'_>,
+        out: &mut [u8],
+        gathered: &mut Vec<u8>,
+    ) -> Result<()> {
+        if out.len() != frames.size {
+            bail!("{} bytes to decode into, not {}", out.len(), frames.size);
         }
-        let mut out = vec![0; total as usize];
         let mut pos = 0;
-        let mut gathered = Vec::new();
-        for (frame, size, layout) in frames {
+        for &(frame, size, layout) in &frames.frames {
             let d = match (
                 zstd_safe::get_dict_id_from_frame(frame),
                 &mut self.dictionary,
@@ -295,7 +275,7 @@ impl FrameDecoder {
                     .decompress_to_buffer(frame, &mut gathered[..])
                     .map_err(zstd_error)?;
                 if done == size {
-                    layout.scatter(&gathered, to);
+                    layout.scatter(gathered, to);
                 }
                 done
             };
@@ -304,8 +284,57 @@ impl FrameDecoder {
             }
             pos += size;
         }
-        Ok(out)
+        Ok(())
     }
+}
+
+/// An entry's frames, found in its stored bytes, with the size they decode to.
+pub struct Split<'a> {
+    frames: Vec<(&'a [u8], usize, Layout)>,
+    pub size: usize,
+}
+
+/// The frames of the entry `stored`, which must be exactly one or more whole frames.
+pub fn split_frames(stored: &[u8]) -> Result<Split<'_>> {
+    let mut frames = Vec::new();
+    let mut rest = stored;
+    let mut total = 0u64;
+    while !rest.is_empty() || frames.is_empty() {
+        let layout = match rest.get(..4) {
+            Some(m) if m == LAYOUT_MAGIC.to_le_bytes() => {
+                let Some(&[_, _, _, _, 1, 0, 0, 0, code]) = rest.get(..9) else {
+                    bail!("a damaged layout marker");
+                };
+                let Some(layout) = Layout::of_code(code) else {
+                    bail!("layout {code}; this nfsh reads 1 to 3");
+                };
+                rest = &rest[9..];
+                layout
+            }
+            _ => Layout::Plain,
+        };
+        let size = match zstd_safe::get_frame_content_size(rest) {
+            Ok(Some(size)) => size,
+            _ => bail!("not a zstd frame with its size"),
+        };
+        total += size;
+        if total > MAX_ENTRY {
+            bail!("an entry of {total} bytes; at most {MAX_ENTRY}");
+        }
+        let Ok(len) = zstd_safe::find_frame_compressed_size(rest) else {
+            bail!("the {} bytes are not whole frames", stored.len());
+        };
+        if len == 0 || len > rest.len() {
+            bail!("the {} bytes are not whole frames", stored.len());
+        }
+        let (frame, after) = rest.split_at(len);
+        frames.push((frame, size as usize, layout));
+        rest = after;
+    }
+    Ok(Split {
+        frames,
+        size: total as usize,
+    })
 }
 
 #[cfg(test)]

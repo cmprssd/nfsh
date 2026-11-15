@@ -70,7 +70,7 @@ fn bc1(format: u32, block: [u8; 8]) -> Loaded {
         chunk: [0; 16],
         group: "Props".into(),
     };
-    (format!("bc1_{format:#x}"), texture, block.repeat(3))
+    (format!("bc1_{format:#x}"), texture, block.repeat(3).into())
 }
 
 /// Solid red: both end colours red (5:6:5), every index 0.
@@ -373,7 +373,7 @@ fn textures_that_fail_are_drawn_grey_and_listed() {
         Box::new(|_: &[u8; 16]| Ok(bc1(0x3A, RED))),
         Box::new(|_: &[u8; 16]| {
             let (name, t, data) = bc1(0x37, RED);
-            Ok((name, t, data[..8].to_vec()))
+            Ok((name, t, data[..8].to_vec().into()))
         }),
     ] {
         let (m, missing) = middle(textured(2, Shading::Colour), load);
@@ -512,7 +512,7 @@ fn a_ground_layer_adds_its_diffuse_as_detail() {
     let dark = [120, 0, 0, 255];
     let (plain, _) = ground_row(dark, Vec::new(), Vec::new());
     let loaded = vec![DetailTextures {
-        diffuse: Ok(("stripes".to_string(), texture, data)),
+        diffuse: Ok(("stripes".to_string(), texture, data.into())),
         normal: None,
     }];
     let (row, missing) = ground_row(dark, detail(), loaded);

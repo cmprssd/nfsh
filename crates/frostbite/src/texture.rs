@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::Scope;
 use std::time::{Duration, Instant};
@@ -17,6 +18,7 @@ use std::time::{Duration, Instant};
 use crate::ebx::{Object, Partition, Ref, Value};
 use crate::level::{elements, field, float, instance_object};
 use crate::reader::Reader;
+use crate::staging::{Bytes, Ring};
 use crate::store::{Decoded, Entries, Store, guid_order};
 use crate::{Location, Result, bail};
 
@@ -501,7 +503,7 @@ pub struct Textures<'s> {
     /// those come and not yet used.
     behind: Option<Receiver<(usize, Decoded)>>,
     received: usize,
-    ready: HashMap<Location, Result<Vec<u8>>>,
+    ready: HashMap<Location, Result<Bytes>>,
     /// How long [`Textures::pixels`] has waited for chunks read and decoded ahead, and
     /// spent reading and decoding those that weren't.
     pub waited: Duration,
@@ -578,12 +580,14 @@ impl<'s> Textures<'s> {
 
     /// Reads the chunks `chunks` on a thread of `scope` and decodes them on others
     /// ([`decode_workers`]) while [`Textures::pixels`] uses them, in this order
-    /// ([`Store::read_behind`], [`READ_AHEAD`] stored bytes a batch); each is dropped
-    /// once used. An install's are read as asked.
+    /// ([`Store::read_behind`], [`READ_AHEAD`] stored bytes a batch), into slots of
+    /// `ring` where it has room; each is dropped once used. An install's are read as
+    /// asked.
     pub fn read_ahead<'scope>(
         &mut self,
         scope: &'scope Scope<'scope, '_>,
         chunks: impl IntoIterator<Item = Location>,
+        ring: Option<Arc<Ring>>,
     ) where
         's: 'scope,
     {
@@ -595,7 +599,11 @@ impl<'s> Textures<'s> {
         self.behind = self
             .store
             .read_behind(scope, queue, READ_AHEAD)
-            .and_then(|read| self.store.decode_behind(scope, read, decode_workers()).ok());
+            .and_then(|read| {
+                self.store
+                    .decode_behind(scope, read, decode_workers(), ring)
+                    .ok()
+            });
     }
 
     /// Waits for the batches up to the one with the queued chunk `location`; nothing
@@ -647,7 +655,7 @@ impl<'s> Textures<'s> {
     /// The chunk holding `texture`'s pixels, checked to be exactly its mips, with the
     /// texture they are: an install that left out its top mips gives the smaller
     /// texture its other mips make ([`Texture::without_top`]).
-    pub fn pixels(&mut self, texture: &Texture) -> Result<(Texture, Vec<u8>)> {
+    pub fn pixels(&mut self, texture: &Texture) -> Result<(Texture, Bytes)> {
         let id = texture.chunk;
         let Some(&location) = self.chunks.get(&id) else {
             bail!("no whole chunk {id:02x?} in the store");
@@ -657,7 +665,10 @@ impl<'s> Textures<'s> {
         let received = Instant::now();
         let read = match self.ready.remove(&location) {
             Some(decoded) => decoded.map(|data| (data, false)),
-            None => self.entries.read_end(location),
+            None => self
+                .entries
+                .read_end(location)
+                .map(|(d, cut)| (d.into(), cut)),
         };
         self.waited += received - start;
         self.decoded += received.elapsed();

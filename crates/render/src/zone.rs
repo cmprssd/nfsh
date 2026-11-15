@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use ash::vk;
 use frostbite::lighting::Lighting;
+use frostbite::staging::Bytes;
 use frostbite::terrain::GroundMap;
 use frostbite::texture::{Kind, Texture, bc1_mean};
 
@@ -280,7 +281,7 @@ pub fn mips(t: &Texture, data_len: usize) -> std::result::Result<Vec<Mip>, Strin
 }
 
 /// A texture's name, its header and its chunk's bytes.
-pub type Loaded = (String, Texture, Vec<u8>);
+pub type Loaded = (String, Texture, Bytes);
 
 /// A ground detail layer's textures: its diffuse map, and its normal map if it has
 /// one ([`crate::scene::Detail`]).
@@ -530,6 +531,10 @@ impl ZoneRenderer {
         // Declared after `r`, so dropped first on failure: it waits for its copies
         // before their images go.
         let mut uploader = Uploader::new(gpu, UPLOAD_HALF)?;
+        // The ground's detail first: read first, it would otherwise hold the start of
+        // the staging ring (`Bytes::Staged`) while the scene's textures go up.
+        let ([ground, ground_normals, ground_far], detail_look) =
+            r.upload_detail(&mut uploader, scene, detail, far)?;
         // Each of the scene's textures' image; the grey one for those that failed.
         // Loaded in `order`, they are numbered and listed in the scene's: the draws are
         // sorted by their images, and the order of draws that tie in depth shows.
@@ -552,8 +557,6 @@ impl ZoneRenderer {
                 None => texture_images.push(0),
             }
         }
-        let ([ground, ground_normals, ground_far], detail_look) =
-            r.upload_detail(&mut uploader, scene, detail, far)?;
         let ground_image = r.images.len();
         r.images.push(ground);
         r.images.push(ground_normals);
@@ -784,7 +787,7 @@ impl ZoneRenderer {
     ) -> Result<(Image, Vec<bool>)> {
         // The first usable layer's format, mips and size; then every slot's bytes.
         let mut like: Option<(vk::Format, Vec<Mip>, usize)> = None;
-        let mut layers: Vec<Option<Vec<u8>>> = Vec::new();
+        let mut layers: Vec<Option<Bytes>> = Vec::new();
         for (slot, texture) in slots.enumerate() {
             let Some((name, loaded)) = texture else {
                 layers.push(None);
@@ -824,7 +827,7 @@ impl ZoneRenderer {
         let mut data = Vec::with_capacity(size * layers.len());
         for layer in layers {
             match layer {
-                Some(bytes) => data.extend(bytes),
+                Some(bytes) => data.extend_from_slice(&bytes),
                 None => data.resize(data.len() + size, 0),
             }
         }
@@ -888,12 +891,12 @@ impl ZoneRenderer {
         let fail = |why: String| (Some(name.clone()), why);
         let format = self.sampled_format(&texture).map_err(fail)?;
         let mips = mips(&texture, data.len()).map_err(fail)?;
-        let start = Instant::now();
+        let (start, bytes) = (Instant::now(), data.len() as u64);
         let image = uploader
-            .sampled(format, &mips, &data)
+            .sampled(format, &mips, data)
             .map_err(|e| fail(e.0))?;
         self.texture_upload += start.elapsed();
-        self.texture_bytes += data.len() as u64;
+        self.texture_bytes += bytes;
         Ok(image)
     }
 

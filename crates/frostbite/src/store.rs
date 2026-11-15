@@ -19,16 +19,18 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::Scope;
 
 use crate::cas::{Archives, Decoder};
 use crate::ebx::Partition;
-use crate::frames::{self, FrameDecoder, FrameEncoder};
+use crate::frames::{self, FrameDecoder, FrameEncoder, split_frames};
 use crate::install::{BundleEntry, ChunkEntry, Install, Layer, Superbundle};
 use crate::mesh::MeshSet;
 use crate::plan::{self, Fate, Finder, Listing};
 use crate::reader::Reader;
 use crate::sb::{Asset, Bundle, Chunk, Res, bundle_chunk_size, res_type_hash};
+use crate::staging::{Bytes, Ring};
 use crate::texture::{self, Texture};
 use crate::toc::TocChunk;
 use crate::{CasRef, Location, Result, bail};
@@ -392,12 +394,14 @@ impl Store {
 
     /// Decodes the batches `read` brings ([`Store::read_behind`]) on `workers` threads
     /// of `scope`, each batch whole and with how many locations have been read, in the
-    /// order they come. One batch is decoded while one waits.
+    /// order they come; into slots of `ring` where it has room. One batch is decoded
+    /// while one waits.
     pub fn decode_behind<'scope>(
         &'scope self,
         scope: &'scope Scope<'scope, '_>,
         read: Receiver<(usize, Frames)>,
         workers: usize,
+        ring: Option<Arc<Ring>>,
     ) -> Result<Receiver<(usize, Decoded)>> {
         let mut decoders = (0..workers.max(1))
             .map(|_| FrameDecoder::new(&self.dictionary))
@@ -405,10 +409,8 @@ impl Store {
         let (tx, rx) = sync_channel(1);
         scope.spawn(move || {
             for (read_so_far, frames) in read {
-                if tx
-                    .send((read_so_far, decode_all(&mut decoders, &frames)))
-                    .is_err()
-                {
+                let decoded = decode_all(&mut decoders, &frames, ring.as_ref());
+                if tx.send((read_so_far, decoded)).is_err() {
                     return;
                 }
             }
@@ -421,27 +423,55 @@ impl Store {
 pub type Frames = Vec<(Location, Vec<u8>)>;
 
 /// Decoded entries, by where they are, or why they couldn't be.
-pub type Decoded = Vec<(Location, Result<Vec<u8>>)>;
+pub type Decoded = Vec<(Location, Result<Bytes>)>;
 
 /// `frames` decoded, one thread per decoder, each taking the largest frame left next
-/// so none is left with a large one at the end. A frame whose thread panicked is left
-/// out, to be read again when asked for.
-fn decode_all(decoders: &mut [FrameDecoder], frames: &Frames) -> Decoded {
-    let mut largest_first: Vec<&(Location, Vec<u8>)> = frames.iter().collect();
-    largest_first.sort_by_key(|(_, f)| std::cmp::Reverse(f.len()));
+/// so none is left with a large one at the end. Each goes into a slot of `ring`, given
+/// in the frames' order (the order they are used in, so the ring is given back about
+/// as it fills), or into memory of its own once the ring is full. A frame whose
+/// thread panicked is left out, to be read again when asked for.
+fn decode_all(decoders: &mut [FrameDecoder], frames: &Frames, ring: Option<&Arc<Ring>>) -> Decoded {
+    let work: Vec<_> = frames
+        .iter()
+        .map(|(l, frame)| {
+            let split = split_frames(frame).map_err(|e| crate::Error(format!("{l:?}: {e}")));
+            let slot = split.as_ref().ok().and_then(|s| ring?.slot(s.size));
+            Mutex::new(Some((*l, split, slot)))
+        })
+        .collect();
+    let mut largest_first: Vec<usize> = (0..frames.len()).collect();
+    largest_first.sort_by_key(|&i| std::cmp::Reverse(frames[i].1.len()));
     let next = AtomicUsize::new(0);
     std::thread::scope(|s| {
         let threads: Vec<_> = decoders
             .iter_mut()
             .map(|decoder| {
-                let (next, frames) = (&next, &largest_first);
+                let (next, work, largest_first) = (&next, &work, &largest_first);
                 s.spawn(move || {
-                    let mut out = Vec::new();
-                    while let Some((l, frame)) = frames.get(next.fetch_add(1, Ordering::Relaxed)) {
-                        let data = decoder
-                            .decode(frame)
-                            .map_err(|e| crate::Error(format!("{l:?}: {e}")));
-                        out.push((*l, data));
+                    let (mut out, mut gathered) = (Vec::new(), Vec::new());
+                    while let Some(&i) = largest_first.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        let taken = work[i]
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .take();
+                        let Some((l, split, slot)) = taken else {
+                            continue;
+                        };
+                        let data = split.and_then(|split| {
+                            let mut bytes = match slot {
+                                Some(slot) => Bytes::Staged(slot),
+                                None => Bytes::Heap(vec![0; split.size]),
+                            };
+                            let to = match &mut bytes {
+                                Bytes::Staged(slot) => slot.bytes_mut(),
+                                Bytes::Heap(v) => &mut v[..],
+                            };
+                            decoder
+                                .decode_to(&split, to, &mut gathered)
+                                .map_err(|e| crate::Error(format!("{l:?}: {e}")))?;
+                            Ok(bytes)
+                        });
+                        out.push((l, data));
                     }
                     out
                 })
@@ -2053,52 +2083,85 @@ mod tests {
 
         // Decoded behind on two threads, each batch whole; a frame that doesn't decode
         // comes with why.
-        let decoded: Vec<(usize, Decoded)> = std::thread::scope(|scope| {
-            let read = vec![
-                (1, vec![(at(0, e, c), stored[e as usize..].to_vec())]),
-                (1, vec![]),
-                (
-                    3,
-                    vec![
-                        (at(0, 0, e), stored[..e as usize].to_vec()),
-                        (at(0, 0, 3), b"bad".to_vec()),
-                        (at(0, e, c), stored[e as usize..].to_vec()),
-                    ],
-                ),
-            ];
-            let (tx, rx) = sync_channel(0);
-            scope.spawn(move || read.into_iter().for_each(|b| tx.send(b).unwrap()));
-            store.decode_behind(scope, rx, 2).unwrap().iter().collect()
-        });
+        let decode = |ring: Option<Arc<Ring>>| -> Vec<(usize, Decoded)> {
+            std::thread::scope(|scope| {
+                let read = vec![
+                    (1, vec![(at(0, e, c), stored[e as usize..].to_vec())]),
+                    (1, vec![]),
+                    (
+                        3,
+                        vec![
+                            (at(0, 0, e), stored[..e as usize].to_vec()),
+                            (at(0, 0, 3), b"bad".to_vec()),
+                            (at(0, e, c), stored[e as usize..].to_vec()),
+                        ],
+                    ),
+                ];
+                let (tx, rx) = sync_channel(0);
+                scope.spawn(move || read.into_iter().for_each(|b| tx.send(b).unwrap()));
+                store
+                    .decode_behind(scope, rx, 2, ring)
+                    .unwrap()
+                    .iter()
+                    .collect()
+            })
+        };
         let ok = |d: &Decoded| -> Vec<(Location, Vec<u8>)> {
             let mut d: Vec<_> = d
                 .iter()
-                .filter_map(|(l, r)| Some((*l, r.as_ref().ok()?.clone())))
+                .filter_map(|(l, r)| Some((*l, r.as_ref().ok()?.to_vec())))
                 .collect();
             d.sort_by_key(|(l, _)| (l.offset, l.size));
             d
         };
-        assert_eq!(
-            decoded
-                .iter()
-                .map(|(n, d)| (*n, d.len()))
-                .collect::<Vec<_>>(),
-            [(1, 1), (1, 0), (3, 3)]
-        );
-        assert_eq!(ok(&decoded[0].1), [(at(0, e, c), vec![7; 5000])]);
-        assert_eq!(
-            ok(&decoded[2].1),
-            [
-                (at(0, 0, e), samples[3].clone()),
-                (at(0, e, c), vec![7; 5000])
-            ]
-        );
-        assert!(
-            decoded[2]
-                .1
-                .iter()
-                .any(|(l, r)| *l == at(0, 0, 3) && r.is_err())
-        );
+        // Without a ring; then into one with room for the first 5,000 bytes and the
+        // small entry after them, so the second 5,000 go into memory of their own.
+        // SAFETY: a Vec's heap memory stays put when the Vec moves.
+        let ring = unsafe {
+            Ring::new(
+                vec![0u8; (5120 + samples[3].len()).next_multiple_of(crate::staging::ALIGN)],
+                |v| &mut v[..],
+            )
+        };
+        let staged = |d: &Decoded, l: Location| {
+            d.iter()
+                .any(|(at, r)| *at == l && matches!(r, Ok(Bytes::Staged(_))))
+        };
+        for (decoded, ring) in [
+            (decode(None), None),
+            (decode(Some(ring.clone())), Some(&ring)),
+        ] {
+            assert_eq!(
+                decoded
+                    .iter()
+                    .map(|(n, d)| (*n, d.len()))
+                    .collect::<Vec<_>>(),
+                [(1, 1), (1, 0), (3, 3)]
+            );
+            assert_eq!(ok(&decoded[0].1), [(at(0, e, c), vec![7; 5000])]);
+            assert_eq!(
+                ok(&decoded[2].1),
+                [
+                    (at(0, 0, e), samples[3].clone()),
+                    (at(0, e, c), vec![7; 5000])
+                ]
+            );
+            assert!(
+                decoded[2]
+                    .1
+                    .iter()
+                    .any(|(l, r)| *l == at(0, 0, 3) && r.is_err())
+            );
+            let ringed = ring.is_some();
+            assert_eq!(staged(&decoded[0].1, at(0, e, c)), ringed);
+            assert_eq!(staged(&decoded[2].1, at(0, 0, e)), ringed);
+            assert!(!staged(&decoded[2].1, at(0, e, c)));
+            if let Some(ring) = ring {
+                assert!(ring.held() > 5000);
+                drop(decoded);
+                assert_eq!(ring.held(), 0);
+            }
+        }
 
         // Read ahead, the entries come from memory: the pack can be emptied. What
         // wasn't read ahead, or couldn't be, is read as asked, and fails.

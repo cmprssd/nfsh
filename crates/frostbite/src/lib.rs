@@ -18,6 +18,7 @@ pub mod plan;
 pub mod reader;
 pub mod sb;
 pub mod shaderdb;
+pub mod staging;
 pub mod store;
 pub mod terrain;
 pub mod texture;
