@@ -414,6 +414,72 @@ from its tag (2026-11-15, morning, the PC idle, 3.4 GB free).
   first. Then the rest of a warm load: the meshes' build (1.1 s) and pipelines plus the
   first frame (about 0.9 s).
 
+### What limits decoding the textures (measured; tried, not released)
+
+The last section suspected memory bandwidth. Measured with a throwaway mode of the
+viewer: zone 494's 600 texture chunks (609 MiB stored, 860 MiB decoded) read into memory
+first, then decoded in the load's 64 MiB batches on 1 to 4 threads, three times each,
+the Windows build on an idle PC (2026-11-15; an i5-7400T, 4 cores without
+hyperthreading, one 8 GB stick of DDR4-2400, so one memory channel). "Reused" decodes
+each thread's chunks into one buffer of its own instead of a new one for each; "copy"
+copies 860 MiB between two 64 MiB buffers, split over the threads.
+
+| Zone 494, 860 MiB | 1 thread | 2 | 3 | 4 |
+|---|---|---|---|---|
+| Decoded into new buffers (as a load does) | 3.20 s | 2.04 s | 1.67 s | 1.58 s |
+| Decoded into reused buffers | 2.49 s | 1.45 s | 1.13 s | 1.05 s |
+| Copied | 0.15 s | 0.16 s | 0.18 s | 0.19 s |
+| The Linux build, same PC: new buffers | 2.02 to 2.28 s | 1.22 s | 0.96 to 1.03 s | 0.92 to 0.98 s |
+| The Linux build: reused buffers | 1.76 s | 1.07 s | 0.85 s | 0.80 s |
+
+(The Linux rows were taken with the faster scatter below in both builds; with it the
+Windows build's 3-thread decoding into new buffers is 1.58 s.)
+
+- **Memory bandwidth isn't what limits decoding.** One thread copying already fills the
+  memory channel (about 5.8 GB/s each way); four decoding threads move a fraction of
+  that, and a fourth thread still adds 5 to 8%.
+- **Two costs are the Windows build's own.** The same processor decodes the zone in
+  0.96 to 1.03 s on 3 threads as a Linux build against the Windows build's 1.58 s:
+  - zstd itself is about 25% slower (0.84 s against 0.67 s on one thread for the 352 MiB
+    of gathered frames): the zstd-sys crate leaves out zstd's assembly Huffman decoder
+    on every Windows target and builds the C with MSVC, and block-compressed textures
+    (609 to 860 MiB) are mostly Huffman-coded literals;
+  - new buffers cost about 0.55 s of the 3-thread 1.58 to 1.67 s, against about 0.1 s on
+    Linux.
+- **Scattering the gathered fields back** (BC1, BC3 and BC5 frames store each field of
+  their blocks together, `docs/SIZES.md`) went over the output once per field, a 2- to
+  6-byte copy at a time: 0.33 s on one thread for those 352 MiB. In one pass with the
+  fields' sizes fixed when compiled it takes 0.05 s, byte for byte the same over all of
+  them; but that is only about 0.09 s of decoding on 3 threads, not seen in a load.
+
+Tried against the new buffers, on branches kept locally, neither released:
+
+- **A pool of decode buffers**, each handed back when its texture is uploaded
+  (`tried/decode-pool`): 55% of the bytes went into a buffer used before, and decoding
+  in the load went from 1.77 to 1.85 s down to 1.66 to 1.76 s (three loads each), the
+  loads within noise (4.54 to 4.77 s against 4.35 to 4.87 s). A buffer used before is no
+  longer in the processor's cache, so it saved only the page faults, little of the gap.
+- **mimalloc as the Windows build's allocator**, with the one-pass scatter
+  (`tried/mimalloc`). Zone 494 headless along garage-drive.path, loads alternating with
+  0.39.0 (the PC idle, 4.6 GB free for the warm loads; cold after reading 12 GiB of
+  other packs, different ones each time):
+
+| Zone 494 | Texture stage wait, warm | Load, warm | Load, cold | Peak working set (`--shot`) |
+|---|---|---|---|---|
+| 0.39.0 | 0.9 s | 4.42, 4.52, 4.60, 4.58 s | 21.89, 22.02 s | 2,014 MiB |
+| mimalloc, one-pass scatter | 0.8 s | 4.15, 4.09, 4.00, 4.06 s | 31.98, 23.99 s | 2,496 MiB |
+
+  - **Warm, 0.45 s faster (about 10%),** more than the texture stage's share (0.1 to
+    0.2 s): the rest of the load allocates less slowly too. The picture is byte for byte
+    0.39.0's.
+  - **But it holds 482 MiB more at its peak**, freed memory kept for later, and cold
+    loads got 2 to 10 s slower: on this 8 GB PC that memory comes out of the file cache
+    the cold load is reading through. Not released: it costs cold.
+- **What could still help:** the allocator's saving without its memory (mimalloc told to
+  give freed memory back sooner, or reuse kept to the decode buffers), zstd built with
+  its assembly decoder (clang on Windows; zstd-sys turns it off there), and the rest of a
+  warm load: the meshes' build (1.1 s) and pipelines plus the first frame (about 0.9 s).
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)
