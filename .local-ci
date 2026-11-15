@@ -11,6 +11,20 @@ step() { echo; echo "== $*"; }
 step "format"; cargo fmt --all -- --check
 step "shell syntax"; for f in scripts/*.sh bench/*.sh .local-ci; do bash -n "$f"; done
 step "python syntax"; for f in scripts/*.py; do python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$f"; done
+# The progress page's script and the measurements it charts: a syntax error or a bad line
+# would leave the published page blank.
+step "page script syntax"
+python3 -c 'import sys; s = open(sys.argv[1]).read(); sys.stdout.write(s[s.index("<script>") + 8:s.index("</script>")])' \
+	scripts/progress_page.html >"${TMPDIR:-/tmp}/nfsh-page.mjs"
+node --check "${TMPDIR:-/tmp}/nfsh-page.mjs"
+step "results.tsv"
+python3 - <<'PY'
+rows = [l.split("\t") for l in open("bench/results.tsv").read().splitlines() if l and not l.startswith("#")]
+assert rows[0] == ["who", "release", "metric", "value", "source"], rows[0]
+for r in rows[1:]:
+    assert len(r) == 5 and r[0] in ("nfsh", "heat"), r
+    float(r[3])
+PY
 # OVERVIEW.md's generated blocks are counted from git, the tree and INVENTORY.md; rewrite
 # them (python3 scripts/progress.py) so the docs never fall behind the code.
 step "overview numbers"; python3 scripts/progress.py --check

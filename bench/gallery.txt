@@ -1,0 +1,16 @@
+# The gallery on the progress page (scripts/progress_page.py): views drawn by the latest
+# release only (bench/media.sh), unlike bench/history-views.txt, which every release
+# draws. One per line: name, zone, camera (x,y,z,yaw,pitch as `nfsh view --camera`
+# takes it, or - for the zone's overview), time of day (midday or tealnight), and what
+# it shows. Our own numbers.
+speedway-overview  495  -                       midday     The speedway's zone from above
+grandstand         495  3880,100,3080,10,-8     midday     The grandstand over the track
+pipe               495  3815,90,3030,40,-20     midday     An infield straight, the pipe beyond
+track-low          495  3780,83.5,3010,40,-4    midday     Low over the track
+track-wide         495  3600,220,2800,40,-35    midday     The track and infield, wide
+barrels-night      495  3886,82,3141,20,-12     tealnight  The barrels at night
+garage-overview    494  -                       midday     The garage's zone from above
+palms              494  4461,72,2484,220,-8     midday     Palms on the breakwater by the garage
+garage-high        494  4512,140,2546,220,-35   midday     Above the garage
+field              494  4542,65.4,2537.5,78,-4.4  midday   The field east of the raceway, out to where the ground ends
+garage-night       494  4512,140,2546,220,-35   tealnight  Above the garage at night: the moon is overhead, so open ground stays lit

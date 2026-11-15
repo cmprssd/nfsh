@@ -6,7 +6,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: one reading column; the renders first (what the work looks like), then the
+/* Layout: one reading column; the work in motion and in pictures first (fly-throughs,
+   gallery, release by release), then how fast and how small against the original, the
    install (what nfsh has to shrink), the milestones and how the work went.
    Monochrome (the cmprssd rule): greys only, from --ink (strongest) to --ink4; series are
    told apart by lightness, dashes, markers and labels. Only the renders keep colour. */
@@ -37,6 +38,9 @@ a { color: var(--fg); text-decoration-thickness: 1px; text-underline-offset: 2px
 .muted { color: var(--muted); }
 .eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 section { display: grid; gap: 18px; min-width: 0; }
+/* A grid item is as wide as its content unless told otherwise: wide strips and charts
+   scroll inside their section instead of widening the page. */
+section > *, header > * { min-width: 0; }
 header { display: grid; gap: 18px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
 .tile { background: var(--panel); padding: 14px 16px; display: grid; gap: 4px; align-content: start; }
@@ -99,6 +103,58 @@ td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space:
 .later { color: var(--muted); border: 1px dashed var(--ink3); }
 footer { font-size: 13px; color: var(--muted); display: grid; gap: 6px; border-top: 1px solid var(--rule); padding-top: 18px; }
 code { font: 13px var(--mono); }
+
+/* Fly-throughs: one player, a button per film. */
+.film { position: relative; aspect-ratio: 16 / 9; background: #000; border: 1px solid var(--rule); }
+.film video { display: block; width: 100%; height: 100%; }
+
+/* Gallery: thumbnails that open in a dialog, full size. */
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.gallery figure { margin: 0; display: grid; gap: 6px; }
+.gallery button { all: unset; cursor: zoom-in; display: block; aspect-ratio: 16 / 9; background: var(--panel); border: 1px solid var(--rule); overflow: hidden; }
+.gallery button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.gallery img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .2s; }
+.gallery button:hover img { transform: scale(1.03); }
+.gallery figcaption { font-size: 13px; line-height: 1.35; }
+.gallery figcaption i { font: normal 11px var(--mono); color: var(--muted); display: block; }
+dialog#box { padding: 0; border: 1px solid var(--rule); background: var(--bg); color: var(--fg); max-width: min(1280px, 96vw); width: 96vw; }
+dialog#box::backdrop { background: rgba(0, 0, 0, .82); }
+dialog#box img { display: block; width: 100%; height: auto; }
+dialog#box .bar { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 8px 12px; font-size: 14px; }
+dialog#box .bar button { font: 500 13px var(--mono); padding: 5px 10px; border: 1px solid var(--rule); background: var(--panel); color: var(--fg); cursor: pointer; }
+
+/* Every release's render of one view, small, in order. */
+.strip { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x proximity; }
+.strip button { all: unset; flex: 0 0 120px; cursor: pointer; display: grid; gap: 2px; scroll-snap-align: start; }
+.strip button img, .strip button .none { width: 120px; aspect-ratio: 16 / 9; display: block; border: 2px solid transparent; background: var(--panel); }
+.strip button .none { display: grid; place-items: center; font: 10px var(--mono); color: var(--muted); box-sizing: border-box; border: 1px dashed var(--ink4); }
+.strip button[aria-pressed="true"] img { border-color: var(--ink); }
+.strip button b { font: 500 11px var(--mono); text-align: center; }
+.strip button:focus-visible img { outline: 2px solid var(--ink); }
+
+/* How much each view changed at each release: darker is more. */
+.grid { display: grid; gap: 2px; font: 11px var(--mono); overflow-x: auto; }
+.grid .r { display: grid; grid-template-columns: 8em repeat(var(--n), minmax(14px, 1fr)); gap: 2px; align-items: center; min-width: calc(8em + var(--n) * 16px); }
+.grid .r span:first-child { color: var(--muted); }
+.grid .c { height: 18px; background: var(--panel); border: 1px solid var(--rule); box-sizing: border-box; cursor: default; }
+.grid .c.no { background: transparent; border-style: dashed; }
+.grid .r.h span { writing-mode: vertical-rl; transform: rotate(180deg); color: var(--muted); height: 4.5em; font-size: 10px; }
+.scale { display: flex; gap: 10px; align-items: center; font: 11px var(--mono); color: var(--muted); }
+.scale i { width: 100px; height: 10px; background: linear-gradient(90deg, var(--panel), var(--ink)); border: 1px solid var(--rule); }
+
+/* Two things side by side as bars on one scale. */
+.versus { display: grid; gap: 14px; }
+.versus .pair { display: grid; gap: 4px; }
+.versus .pair h3 { margin: 0 0 2px; }
+.versus .row { display: grid; grid-template-columns: 5.5em 1fr 8em; gap: 10px; align-items: center; font-size: 13px; }
+.versus .row .track { height: 16px; }
+.versus .row .track i { display: block; height: 100%; min-width: 2px; border-radius: 0 3px 3px 0; }
+.versus .row .v { font: 13px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.versus .note { font-size: 12px; color: var(--muted); }
+
+#tip { position: fixed; pointer-events: none; z-index: 10; background: var(--fg); color: var(--bg); font: 12px/1.4 var(--mono); padding: 5px 8px; max-width: 280px; opacity: 0; transition: opacity .08s; }
+#tip.on { opacity: 1; }
+.chart .hit { fill: transparent; cursor: crosshair; }
 </style>
 
 <div class="wrap">
@@ -108,6 +164,29 @@ code { font: 13px var(--mono); }
     <p id="lede" class="muted"></p>
     <div class="tiles" id="tiles"></div>
   </header>
+
+  <section aria-labelledby="h-films" id="films">
+    <div class="eyebrow">In motion</div>
+    <h2 id="h-films">Fly-throughs</h2>
+    <p class="muted" id="filmsNote"></p>
+    <div class="pick" id="filmPick" role="group" aria-label="Film"></div>
+    <div class="film"><video id="video" controls muted playsinline loop preload="metadata"></video></div>
+    <div class="caption"><span id="filmWhat"></span></div>
+  </section>
+
+  <section aria-labelledby="h-gallery" id="gallerySec">
+    <div class="eyebrow">In pictures</div>
+    <h2 id="h-gallery">Gallery</h2>
+    <p class="muted" id="galleryNote"></p>
+    <div class="gallery" id="gallery"></div>
+  </section>
+  <dialog id="box" aria-label="Picture">
+    <img id="boxImg" alt="">
+    <div class="bar"><span id="boxWhat"></span>
+      <span><button type="button" id="boxPrev" aria-label="Previous">←</button>
+      <button type="button" id="boxNext" aria-label="Next">→</button>
+      <button type="button" id="boxClose">Close</button></span></div>
+  </dialog>
 
   <section aria-labelledby="h-before" id="before">
     <div class="eyebrow">What it looks like</div>
@@ -127,6 +206,33 @@ code { font: 13px var(--mono); }
       <label>before <select id="beforeSel"></select></label>
     </div>
     <div class="timeline" id="timeline" role="group" aria-label="Release"></div>
+    <h3>This view in every release</h3>
+    <div class="strip" id="strip" role="group" aria-label="This view in every release"></div>
+    <h3>How much each view changed, release on release</h3>
+    <p class="muted">The share of the picture's pixels that moved by more than 8 in any channel since the release before.
+      Hover a cell for the number; a dashed cell is a view that release didn't draw.</p>
+    <div class="grid" id="changes"></div>
+    <div class="scale"><span>0%</span><i></i><span id="scaleTop"></span></div>
+  </section>
+
+  <section aria-labelledby="h-speed" id="speed">
+    <div class="eyebrow">How fast</div>
+    <h2 id="h-speed">Against the original, on the same PC</h2>
+    <p class="muted">An Intel Core i5-7400T with its HD Graphics 630, 7.9 GB of memory, the store on a USB drive.
+      nfsh draws one zone with its roads and ground: no car, traffic, sky or neighbouring zones yet. Heat draws all of them, at its Low preset.</p>
+    <div class="versus" id="versus"></div>
+    <div class="two">
+      <div><h3>Zone 494 to its first frame, by release</h3><div class="chart" id="loads"></div></div>
+      <div><h3>Peak memory of that load, by release</h3><div class="chart" id="peak"></div></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-small" id="small">
+    <div class="eyebrow">How small</div>
+    <h2 id="h-small">From the install to a disc</h2>
+    <p class="muted">The owner's install, what of it is still read, nfsh's store converted from it, and nfsh's installs from the store,
+      against the discs it has to fit. The org rule: the smallest disc that holds the game, with no loss of quality.</p>
+    <div class="chart" id="sizes"></div>
   </section>
 
   <section aria-labelledby="h-install">
@@ -154,7 +260,11 @@ code { font: 13px var(--mono); }
     <h2 id="h-num">How the work went</h2>
     <div class="two">
       <div><h3>PRs merged per working day</h3><div class="chart" id="perday"></div></div>
-      <div><h3>Lines of Rust and tests, after each PR</h3><div class="chart" id="growth"></div></div>
+      <div><h3>Lines of Rust, after each PR</h3><div class="chart" id="growthLines"></div></div>
+    </div>
+    <div class="two">
+      <div><h3>Tests, after each PR</h3><div class="chart" id="growthTests"></div></div>
+      <div></div>
     </div>
     <div class="two">
       <div class="tablewrap"><h3>Crates</h3><table id="crates"></table></div>
@@ -165,11 +275,13 @@ code { font: 13px var(--mono); }
   <footer>
     <div id="foot"></div>
     <div>Built by <code>scripts/publish-progress.sh</code> from <code>scripts/progress.py</code>'s counts
-      (git, the tree and <code>docs/INVENTORY.md</code>), the milestones of <code>docs/OVERVIEW.md</code> and
-      <code>bench/history.sh</code>'s renders. Served from the <code>gh-pages</code> branch.
+      (git, the tree and <code>docs/INVENTORY.md</code>), the milestones of <code>docs/OVERVIEW.md</code>,
+      the measurements of <code>bench/results.tsv</code>, <code>bench/history.sh</code>'s renders and
+      <code>bench/media.sh</code>'s gallery and fly-throughs. Served from the <code>gh-pages</code> branch.
       How it all works: <a href="https://github.com/cmprssd/nfsh/blob/main/docs/OVERVIEW.md">docs/OVERVIEW.md</a>.</div>
   </footer>
 </div>
+<div id="tip" role="tooltip"></div>
 
 <script>
 const $ = (s) => document.querySelector(s);
@@ -192,26 +304,49 @@ const FILLS = ["var(--ink)", "var(--ink2)", "var(--ink3)", "var(--ink4)",
   "repeating-linear-gradient(45deg, var(--ink2) 0 2px, transparent 2px 6px)",
   "repeating-linear-gradient(-45deg, var(--ink3) 0 1px, transparent 1px 5px)"];
 
+const cmpv = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let k = 0; k < 3; k++) if (x[k] !== y[k]) return (x[k] || 0) - (y[k] || 0); return 0; };
+// The newest measurement of `metric` by `who` (bench/results.tsv), and the newest nfsh
+// frame time taken in a window, the one to set against Heat's (also in a window).
+const newest = (R, who, metric) => R.filter((r) => r.who === who && r.metric === metric).sort((a, b) => cmpv(a.release, b.release)).pop();
+const windowed = (R) => R.filter((r) => r.who === "nfsh" && r.metric === "frame_median_ms" && /window/.test(r.source)).sort((a, b) => cmpv(a.release, b.release)).pop();
+const label = (s, attrs, text) => { const t = svg("text", attrs); t.textContent = text; s.append(t); return t; };
+// One tooltip for every chart: a mark with data-tip shows it while hovered or focused.
+const tip = document.getElementById("tip");
+const tipOn = (e, text) => { tip.textContent = text; tip.classList.add("on"); tipAt(e); };
+const tipAt = (e) => { const x = e.clientX ?? 0, y = e.clientY ?? 0, w = tip.offsetWidth; tip.style.left = `${Math.min(innerWidth - w - 8, x + 12)}px`; tip.style.top = `${y + 14}px`; };
+const tipOff = () => tip.classList.remove("on");
+const tipped = (node, text) => { node.addEventListener("pointerenter", (e) => tipOn(e, text)); node.addEventListener("pointermove", tipAt); node.addEventListener("pointerleave", tipOff); return node; };
+
 fetch("data.json").then((r) => r.json()).then(render);
 
 function render(d) {
   const i = d.install;
   $("#lede").textContent = "A clean-room engine for the 2019 game, in Rust and Vulkan: the same game and look, much smaller on disk, " +
     `much faster, and it must not crash. As of ${d.as_of}` + (d.last_pr ? `, through PR #${d.last_pr}.` : ".");
+  const R = d.results || [], latest = (m, who = "nfsh") => newest(R, who, m);
+  const lw = latest("load_warm_s"), hl = latest("load_warm_s", "heat"), fm = windowed(R), hf = latest("frame_median_ms", "heat"), st = latest("store_gib");
   const tiles = [
-    [size(i.gib), `install on disk, ${fmt(i.files)} files`],
-    [size(i.dead_gib), "of archives the patch left dead"],
-    [fmt(i.bundles), `bundles in ${i.superbundles} superbundles`],
+    lw && hl && [`${lw.value.toFixed(2)} s`, `zone 494 loads (warm, ${lw.release}); Heat takes ${hl.value} s`],
+    fm && hf && [`${(hf.value / fm.value).toFixed(0)}×`, `Heat's frame rate, on its own recorded drive: ${fm.value} ms a frame against ${hf.value}`],
+    st && [size(st.value), `nfsh's store, from a ${size(i.gib)} install`],
     [fmt(d.prs), `PRs merged in ${Object.keys(d.prs_per_day).length} working days`],
     [fmt(d.rust_lines), `lines of Rust in ${Object.keys(d.crates).length} crates`],
     [fmt(d.tests), "tests"],
   ];
-  for (const [b, s] of tiles) $("#tiles").append(el("div", { class: "tile" }, [el("b", { text: b }), el("span", { text: s })]));
+  for (const [b, s] of tiles.filter(Boolean)) $("#tiles").append(el("div", { class: "tile" }, [el("b", { text: b }), el("span", { text: s })]));
+  films(d.media);
+  gallery(d.media);
   before(d.views || [], d.releases || []);
+  changes(d.views || [], d.releases || []);
+  versus(R);
+  loads(R);
+  peak(R);
+  sizes(R, i);
   install(i);
   road(d.road || []);
   perDay(d.prs_per_day);
-  growth(d.growth);
+  growth(d.growth, "rust_lines", "#growthLines", "Lines of Rust after each PR", 1000);
+  growth(d.growth, "tests", "#growthTests", "Tests after each PR", 10);
   crates(d.crates);
   prs(d.history);
   $("#foot").textContent = `${fmt(d.commits)} commits, ${fmt(d.prs)} PRs: ` +
@@ -230,6 +365,14 @@ function before(views, releases) {
   $("#timeline").append(...relButtons);
   $("#beforeSel").addEventListener("change", (e) => { prev = +e.target.value; show(); });
 
+  const strip = $("#strip");
+  function showStrip() {
+    strip.replaceChildren(...releases.map((r, j) => el("button", { type: "button", "aria-pressed": j === after, title: `${r.tag}: ${r.label}`,
+      onclick: () => { after = j; prev = null; show(); } }, [
+      r.shots[view] ? el("img", { src: `img/t/${r.tag}/${view}.webp`, alt: `${view} in ${r.tag}`, loading: "lazy", width: 120, height: 68 }) : el("span", { class: "none", text: "not drawn" }),
+      el("b", { text: r.tag.slice(1) })])));
+    const on = strip.children[after]; if (on) strip.scrollLeft = on.offsetLeft - strip.clientWidth / 2 + 60;
+  }
   function show() {
     // The release before the chosen one that drew this view, unless one was picked.
     let b = prev;
@@ -251,6 +394,7 @@ function before(views, releases) {
     $("#tagAfter").textContent = A.tag; $("#tagBefore").textContent = B ? B.tag : "—";
     $("#what").textContent = `${v.what} (${v.time}). ${A.tag}: ${A.label}, ${A.date}.`;
     place();
+    showStrip();
   }
   function place() {
     $("#imgAfter").style.clipPath = `inset(0 0 0 ${split}%)`;
@@ -265,6 +409,165 @@ function before(views, releases) {
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") { split = Math.min(100, Math.max(0, split + (e.key === "ArrowLeft" ? -5 : 5))); place(); e.preventDefault(); }
   });
   show();
+}
+
+function films(m) {
+  if (!m || !m.films.length) { $("#films").hidden = true; return; }
+  $("#filmsNote").textContent = `Drawn headless by nfsh ${m.tag} along recorded camera paths, 30 frames a second at 1280x720, ` +
+    "encoded to H.264. The sky isn't drawn yet: it is black above the horizon.";
+  const v = $("#video");
+  const buttons = m.films.map((f) => el("button", { type: "button", text: f.name, title: f.what, onclick: () => show(f) }));
+  $("#filmPick").append(...buttons);
+  function show(f) {
+    buttons.forEach((b) => b.setAttribute("aria-pressed", b.textContent === f.name));
+    v.poster = `video/${m.tag}/${f.name}.webp`;
+    v.src = `video/${m.tag}/${f.name}.mp4`;
+    v.setAttribute("aria-label", f.what);
+    $("#filmWhat").textContent = `${f.what}. Zone ${f.zone}, ${f.time}, ${f.mb} MB.`;
+  }
+  show(m.films[0]);
+}
+
+function gallery(m) {
+  if (!m || !m.gallery.length) { $("#gallerySec").hidden = true; return; }
+  $("#galleryNote").textContent = `Drawn by nfsh ${m.tag}, headless, at 1280x720: the speedway (zone 495) and the garage by Palm City Raceway (zone 494). Click one to see it full size.`;
+  const box = $("#box"), full = (g) => `img/g/${m.tag}/${g.name}.webp`;
+  let at = 0;
+  const open = (j) => {
+    at = (j + m.gallery.length) % m.gallery.length;
+    const g = m.gallery[at];
+    $("#boxImg").src = full(g); $("#boxImg").alt = g.what;
+    $("#boxWhat").textContent = `${g.what} · zone ${g.zone}, ${g.time}`;
+    if (!box.open) box.showModal();
+  };
+  m.gallery.forEach((g, j) => $("#gallery").append(el("figure", {}, [
+    el("button", { type: "button", "aria-label": `${g.what}, full size`, onclick: () => open(j) },
+      [el("img", { src: `img/g/${m.tag}/${g.name}-small.webp`, alt: g.what, loading: "lazy", width: 480, height: 270 })]),
+    el("figcaption", {}, [document.createTextNode(g.what), el("i", { text: `zone ${g.zone} · ${g.time}` })])])));
+  $("#boxPrev").addEventListener("click", () => open(at - 1));
+  $("#boxNext").addEventListener("click", () => open(at + 1));
+  $("#boxClose").addEventListener("click", () => box.close());
+  box.addEventListener("click", (e) => { if (e.target === box) box.close(); });
+  box.addEventListener("keydown", (e) => { if (e.key === "ArrowLeft") open(at - 1); if (e.key === "ArrowRight") open(at + 1); });
+}
+
+function changes(views, releases) {
+  const vals = releases.flatMap((r) => Object.values(r.shots).map((s) => s.changed)).filter((c) => c !== null);
+  if (!vals.length) return;
+  const top = Math.max(...vals), g = $("#changes");
+  g.style.setProperty("--n", releases.length);
+  $("#scaleTop").textContent = `${top}%`;
+  // A cell's darkness grows with the square root of the share, so small changes still show.
+  const shade = (c) => `color-mix(in srgb, var(--ink) ${Math.round(100 * Math.sqrt(c / top))}%, var(--panel))`;
+  g.append(el("div", { class: "r h" }, [el("span", {}), ...releases.map((r) => el("span", { text: r.tag.slice(1) }))]));
+  for (const v of views) {
+    g.append(el("div", { class: "r" }, [el("span", { text: v.name }), ...releases.map((r) => {
+      const s = r.shots[v.name];
+      const c = el("i", { class: s ? "c" : "c no" });
+      if (s && s.changed !== null) c.style.background = shade(s.changed);
+      return tipped(c, `${v.name}, ${r.tag}: ${!s ? "not drawn" : s.changed === null ? "first drawn" : `${s.changed}% changed`} · ${r.label}`);
+    })]));
+  }
+}
+
+function versus(R) {
+  const pairs = [
+    ["Time to the first frame", "load_warm_s", "s", "Heat: Play Solo to the garage's menu. nfsh: zone 494, the garage's, warm.", newest(R, "nfsh", "load_warm_s")],
+    ["Frame time, median", "frame_median_ms", "ms", "On the drive recorded from Heat (bench/paths/garage-drive.path), both in a 1280x720 window.", windowed(R)],
+  ];
+  for (const [title, m, unit, note, n] of pairs) {
+    const h = newest(R, "heat", m);
+    if (!h || !n) continue;
+    const top = Math.max(h.value, n.value);
+    const row = (who, r, fill) => el("div", { class: "row" }, [el("span", { text: who }),
+      el("div", { class: "track" }, [el("i", { style: `width:${100 * r.value / top}%;background:${fill}` })]),
+      el("span", { class: "v", text: `${r.value} ${unit}` })]);
+    $("#versus").append(el("div", { class: "pair" }, [el("h3", { text: `${title}: ${(h.value / n.value).toFixed(1)}× less` }),
+      row("Heat", h, "var(--ink3)"), row(`nfsh ${n.release}`, n, "var(--ink)"), el("div", { class: "note", text: note })]));
+  }
+}
+
+// A line chart over releases on one axis: each series solid or dashed, with round or
+// square markers, labelled at its last point; hover a release for its values.
+function lines(target, series, unit, aria, floor0 = true) {
+  const rel = [...new Set(series.flatMap((s) => s.points.map((p) => p.release)))].sort(cmpv);
+  if (rel.length < 2) return;
+  const W = 520, H = 240, L = 44, R = 84, T = 24, B = 34;
+  const all = series.flatMap((s) => s.points.map((p) => p.value));
+  let lo = floor0 ? 0 : Math.min(...all), hi = Math.max(...all);
+  const pad = (hi - lo) * 0.08 || 1; if (!floor0) lo -= pad; hi += pad;
+  const x = (r) => L + (W - L - R) * rel.indexOf(r) / (rel.length - 1);
+  const y = (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": aria });
+  for (let k = 0; k <= 4; k++) {
+    const v = lo + (hi - lo) * k / 4;
+    s.append(svg("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), class: "grid" }));
+    label(s, { x: L - 6, y: y(v) + 4, "text-anchor": "end" }, v >= 100 ? Math.round(v) : v.toFixed(1));
+  }
+  label(s, { x: L - 6, y: T - 12, "text-anchor": "end" }, unit);
+  rel.forEach((r, j) => { if (rel.length < 12 || j % 2 === 0 || j === rel.length - 1) label(s, { x: x(r), y: H - B + 16, "text-anchor": "middle" }, r.replace(/\.0$/, "")); });
+  for (const se of series) {
+    const pts = se.points.slice().sort((a, b) => cmpv(a.release, b.release));
+    const p = svg("path", { d: pts.map((pt, j) => `${j ? "L" : "M"}${x(pt.release).toFixed(1)},${y(pt.value).toFixed(1)}`).join(""), fill: "none", "stroke-width": 2 });
+    p.style.stroke = se.color; if (se.dash) p.setAttribute("stroke-dasharray", se.dash); s.append(p);
+    for (const pt of pts) {
+      const m = se.square ? svg("rect", { x: x(pt.release) - 4, y: y(pt.value) - 4, width: 8, height: 8 }) : svg("circle", { cx: x(pt.release), cy: y(pt.value), r: 4 });
+      m.style.fill = se.color; m.style.stroke = "var(--panel)"; m.setAttribute("stroke-width", 2); s.append(m);
+    }
+    const last = pts[pts.length - 1];
+    label(s, { x: x(last.release) + 8, y: y(last.value) + 4 }, `${se.name} ${last.value}`).style.fill = "var(--fg)";
+  }
+  // Hit columns: hovering a release shows every series' value there.
+  const step = (W - L - R) / (rel.length - 1);
+  rel.forEach((r) => {
+    const vals = series.map((se) => { const p = se.points.find((q) => q.release === r); return p ? `${se.name} ${p.value} ${unit}` : null; }).filter(Boolean);
+    s.append(tipped(svg("rect", { class: "hit", x: x(r) - step / 2, y: T, width: step, height: H - T - B }), `${r}: ${vals.join(" · ")}`));
+  });
+  $(target).append(s);
+}
+
+function loads(R) {
+  const pts = (m) => R.filter((r) => r.who === "nfsh" && r.metric === m).map((r) => ({ release: r.release, value: r.value }));
+  lines("#loads", [
+    { name: "cold", points: pts("load_cold_s"), color: "var(--ink3)", dash: "5 4", square: true },
+    { name: "warm", points: pts("load_warm_s"), color: "var(--ink)" },
+  ], "s", "Seconds from start to the first frame of zone 494, by release; solid warm, dashed cold");
+}
+
+function peak(R) {
+  const p = R.filter((r) => r.who === "nfsh" && r.metric === "peak_mib").map((r) => ({ release: r.release, value: r.value }));
+  if (p.length < 2) { $("#peak").parentElement.hidden = true; return; }
+  lines("#peak", [{ name: "MiB", points: p, color: "var(--ink)" }], "MiB", "Peak working set of a zone 494 load, by release", false);
+}
+
+function sizes(results, i) {
+  const get = (m) => results.filter((r) => r.who === "nfsh" && r.metric === m).sort((a, b) => cmpv(a.release, b.release));
+  const bars = [
+    { name: "Heat's install", v: i.gib, c: "var(--ink3)", note: `${fmt(i.files)} files` },
+    { name: "… still read", v: i.live_gib, c: "var(--ink3)", note: "the rest the patch replaced" },
+    ...get("store_gib").map((r) => ({ name: `nfsh store, ${r.release}`, v: r.value, c: "var(--ink2)", note: "every language, no quality lost" })),
+    ...get("install_gib").map((r) => ({ name: "nfsh install", v: r.value, c: "var(--ink)", note: `base and English, every tier (${r.release})` })),
+    ...get("install_bare_gib").map((r) => ({ name: "… bare minimum", v: r.value, c: "var(--ink)", note: `the owner's lowest settings (${r.release})` })),
+  ];
+  const discs = [["DVD", 4.38], ["DVD DL", 7.92], ["BD-25", 23.28], ["BD-50", 46.57]].filter(([, g]) => g < i.gib * 1.45);
+  const W = 1000, rowH = 30, T = 46, L = 150, R = 18, H = T + bars.length * rowH + 8;
+  const top = Math.max(i.gib, ...discs.map(([, g]) => g)) * 1.02;
+  const x = (g) => L + (W - L - R) * g / top;
+  const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Sizes in GiB from Heat's install to nfsh's installs, against disc capacities" });
+  // Disc labels alternate between two lines, so close capacities don't overlap.
+  discs.forEach(([n, g], j) => {
+    const ln = svg("line", { x1: x(g), x2: x(g), y1: T - (j % 2 ? 6 : 22), y2: H - 4, "stroke-dasharray": "3 3" }); ln.style.stroke = "var(--ink2)"; s.append(ln);
+    const end = x(g) > W * 0.8;  // near the right edge, the label reads leftwards
+    label(s, { x: x(g) + (end ? -4 : 4), y: T - (j % 2 ? 10 : 26), "text-anchor": end ? "end" : "start" }, `${n}, ${g} GiB`);
+  });
+  bars.forEach((b, j) => {
+    const yy = T + j * rowH;
+    label(s, { x: L - 8, y: yy + 17, "text-anchor": "end" }, b.name).style.fill = "var(--fg)";
+    const r = svg("rect", { x: L, y: yy + 5, width: Math.max(2, x(b.v) - L), height: 16, rx: 2 }); r.style.fill = b.c; s.append(r);
+    label(s, { x: x(b.v) + 6, y: yy + 17 }, `${b.v.toFixed(2)} GiB`);
+    s.append(tipped(svg("rect", { class: "hit", x: 0, y: yy, width: W, height: rowH }), `${b.name}: ${b.v.toFixed(2)} GiB · ${b.note}`));
+  });
+  $("#sizes").append(s);
 }
 
 function stack(bar, key, parts) {
@@ -314,34 +617,27 @@ function perDay(pd) {
   $("#perday").append(s);
 }
 
-function growth(g) {
+function growth(g, key, target, aria, unit) {
   if (!g.length) return;
-  const W = 520, H = 220, L = 50, R = 40, T = 10, B = 40;
-  const nice = (v, unit) => Math.max(unit, Math.ceil(v / unit) * unit);
-  const topL = nice(Math.max(...g.map((p) => p.rust_lines)), 1000), topT = nice(Math.max(...g.map((p) => p.tests)), 10);
+  const W = 520, H = 200, L = 50, R = 70, T = 10, B = 34;
+  const top = Math.max(unit, Math.ceil(Math.max(...g.map((p) => p[key])) / unit) * unit);
   const x = (j) => L + (W - L - R) * (g.length === 1 ? 0.5 : j / (g.length - 1));
-  const y = (v, top) => T + (H - T - B) * (1 - v / top);
-  const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Lines of Rust and tests after each PR" });
+  const y = (v) => T + (H - T - B) * (1 - v / top);
+  const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": aria });
   for (let k = 0; k <= 4; k++) {
-    const v = topL * k / 4, t = svg("text", { x: L - 6, y: y(v, topL) + 4, "text-anchor": "end" });
-    s.append(svg("line", { x1: L, x2: W - R, y1: y(v, topL), y2: y(v, topL), class: "grid" }));
-    t.textContent = v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v; s.append(t);
-    const u = svg("text", { x: W - R + 6, y: y(topT * k / 4, topT) + 4 }); u.textContent = Math.round(topT * k / 4); s.append(u);
+    const v = top * k / 4;
+    s.append(svg("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), class: "grid" }));
+    label(s, { x: L - 6, y: y(v) + 4, "text-anchor": "end" }, v >= 1000 ? `${(v / 1000).toFixed(1)}k` : Math.round(v));
   }
-  // Rust lines: a solid dark line with dots; tests: a dashed grey line with squares.
-  const line = (key, top, color, dash, square) => {
-    const p = svg("path", { d: g.map((pt, j) => `${j ? "L" : "M"}${x(j).toFixed(1)},${y(pt[key], top).toFixed(1)}`).join(""), fill: "none", "stroke-width": 2 });
-    p.style.stroke = color; if (dash) p.setAttribute("stroke-dasharray", dash); s.append(p);
-    g.forEach((pt, j) => {
-      const m = square ? svg("rect", { x: x(j) - 3, y: y(pt[key], top) - 3, width: 6, height: 6 }) : svg("circle", { cx: x(j), cy: y(pt[key], top), r: 3 });
-      m.style.fill = color; s.append(m);
-    });
-  };
-  line("rust_lines", topL, "var(--ink)", null, false); line("tests", topT, "var(--ink3)", "5 4", true);
-  g.forEach((p, j) => { const t = svg("text", { x: x(j), y: H - B + 16, "text-anchor": "middle" }); t.textContent = `#${p.pr}`; s.append(t); });
-  const k1 = svg("text", { x: L, y: H - 6 }); k1.textContent = "● Rust lines, solid (left)"; s.append(k1);
-  const k2 = svg("text", { x: L + 190, y: H - 6 }); k2.textContent = "■ tests, dashed (right)"; s.append(k2);
-  $("#growth").append(s);
+  const p = svg("path", { d: g.map((pt, j) => `${j ? "L" : "M"}${x(j).toFixed(1)},${y(pt[key]).toFixed(1)}`).join(""), fill: "none", "stroke-width": 2 });
+  p.style.stroke = "var(--ink)"; s.append(p);
+  const every = Math.ceil(g.length / 10);
+  g.forEach((pt, j) => { if (j % every === 0 || j === g.length - 1) label(s, { x: x(j), y: H - B + 16, "text-anchor": "middle" }, `#${pt.pr}`); });
+  const last = g[g.length - 1];
+  label(s, { x: x(g.length - 1) + 6, y: y(last[key]) + 4 }, fmt(last[key])).style.fill = "var(--fg)";
+  const step = (W - L - R) / Math.max(1, g.length - 1);
+  g.forEach((pt, j) => s.append(tipped(svg("rect", { class: "hit", x: x(j) - step / 2, y: T, width: step, height: H - T - B }), `PR #${pt.pr}: ${fmt(pt[key])}`)));
+  $(target).append(s);
 }
 
 function crates(cs) {

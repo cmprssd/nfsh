@@ -4,6 +4,20 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.43.0] - 2026-11-15
+
+### Added
+
+- **`nfsh view --path FILE --headless --frames DIR`** writes the path's frames to the
+  folder DIR as PNGs, 30 a second of path time (`00000.png` onwards), for a video. The
+  frame times printed at the end are the frames' own: each is written after it is timed.
+- **The progress page is rehauled**: fly-through videos of the speedway by day and night
+  and of the drive recorded from Heat, a gallery of eleven views, every release's picture
+  of a history view in a strip, a grid of how much each view changed at each release,
+  nfsh against Heat, load time and peak memory by release, and the sizes from Heat's
+  install to nfsh's installs against the discs. `bench/media.sh` renders the videos and
+  gallery; `bench/results.tsv` holds the measurements the page charts.
+
 ## [0.42.0] - 2026-11-15
 
 ### Changed

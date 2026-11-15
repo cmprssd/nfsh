@@ -35,6 +35,9 @@ Claude, pending review").
   `.local-ci` fails when they are stale, so run it before pushing.
 - **Refresh the progress page after each merge** (https://cmprssd.github.io/nfsh/, the
   `gh-pages` branch): after a release, `bench/history.sh` renders the history views with
-  it (one Windows build, headless); then `scripts/publish-progress.sh` from the updated
-  main builds the page and force-pushes it to `gh-pages` as one commit. The page is
-  monochrome (cmprssd's rule): only the renders keep their colour.
+  it (one Windows build, headless), and `bench/media.sh`, from the release's tag, its
+  gallery and fly-through videos (about 25 minutes, headless); then
+  `scripts/publish-progress.sh` from the updated main builds the page and force-pushes it
+  to `gh-pages` as one commit. A new measurement in BASELINE.md or SIZES.md gets its line
+  in `bench/results.tsv`, which the page charts. The page is monochrome (cmprssd's rule):
+  only the renders and videos keep their colour.

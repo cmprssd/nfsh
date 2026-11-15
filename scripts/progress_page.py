@@ -1,13 +1,16 @@
 """Builds the progress page: the numbers of scripts/progress.py, the milestones of
-docs/OVERVIEW.md, and the history views as each release drew them (bench/history.sh).
+docs/OVERVIEW.md, the measurements of bench/results.tsv, the history views as each
+release drew them (bench/history.sh), and the newest release's gallery and fly-throughs
+(bench/media.sh).
 Game imagery stays off main: the page is built into a folder outside the repository
 and published from there to the gh-pages branch.
 
     uv run --with numpy --with pillow python scripts/progress_page.py <out> --work <dir>
 
 scripts/publish-progress.sh runs it and publishes the result. <dir> is
-%USERPROFILE%\\.nfsh as a WSL path; <dir>/history/<tag>/<view>.png holds the renders.
-Images already converted in <out> are reused.
+%USERPROFILE%\\.nfsh as a WSL path; <dir>/history/<tag>/<view>.png holds the renders,
+<dir>/media/<tag>/ the gallery's PNGs and the films' MP4s and stills. Images and videos
+already converted in <out> are reused.
 """
 import argparse
 import json
@@ -48,12 +51,68 @@ def road():
 
 
 def views():
+    return listed("bench/history-views.txt", ["name", "camera", "time", "what"])
+
+
+def listed(file, fields):
+    """The lines of a bench list (# comments, whitespace-separated, the last field
+    taking the rest of the line) as dicts."""
     out = []
-    for line in (ROOT / "bench/history-views.txt").read_text().splitlines():
+    for line in (ROOT / file).read_text().splitlines():
         if line.strip() and not line.startswith("#"):
-            name, camera, time, what = line.split(None, 3)
-            out.append({"name": name, "camera": camera, "time": time, "what": what})
+            out.append(dict(zip(fields, line.split(None, len(fields) - 1))))
     return out
+
+
+def results():
+    """bench/results.tsv's measurements, values as numbers."""
+    lines = [l for l in (ROOT / "bench/results.tsv").read_text().splitlines() if l and not l.startswith("#")]
+    head = lines[0].split("\t")
+    rows = [dict(zip(head, l.split("\t"))) for l in lines[1:]]
+    for r in rows:
+        r["value"] = float(r["value"])
+    return rows
+
+
+def webp(src, dest, width=None):
+    """`src` as a WebP at `dest`, scaled to `width` if given; kept if already there."""
+    if dest.exists():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    im = Image.open(src).convert("RGB")
+    if width:
+        im = im.resize((width, round(im.height * width / im.width)), Image.LANCZOS)
+    im.save(dest, quality=84 if not width else 78)
+
+
+def media(work, out):
+    """The gallery and films of the newest release that bench/media.sh rendered."""
+    tags = sorted((d.name for d in (work / "media").glob("v*") if d.is_dir()), key=version)
+    if not tags:
+        return None
+    tag = tags[-1]
+    src = work / "media" / tag
+    gallery = []
+    for g in listed("bench/gallery.txt", ["name", "zone", "camera", "time", "what"]):
+        png = src / f"{g['name']}.png"
+        if png.exists():
+            webp(png, out / "img/g" / tag / f"{g['name']}.webp")
+            webp(png, out / "img/g" / tag / f"{g['name']}-small.webp", 480)
+            gallery.append(g)
+    films = []
+    for f in listed("bench/films.txt", ["name", "zone", "path", "time", "what"]):
+        mp4 = src / f"{f['name']}.mp4"
+        if mp4.exists():
+            dest = out / "video" / tag / f"{f['name']}.mp4"
+            if not dest.exists():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(mp4, dest)
+            poster = src / f"{f['name']}-poster.png"
+            if poster.exists():
+                webp(poster, out / "video" / tag / f"{f['name']}.webp")
+            f["mb"] = round(mp4.stat().st_size / 1e6, 1)
+            films.append(f)
+    return {"tag": tag, "gallery": gallery, "films": films}
 
 
 def load(path):
@@ -83,10 +142,8 @@ def main():
             png = a.work / "history" / tag / f"{v['name']}.png"
             if not png.exists():
                 continue
-            dest = out / "img/h" / tag / f"{v['name']}.webp"
-            if not dest.exists():
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                Image.open(png).convert("RGB").save(dest, quality=84)
+            webp(png, out / "img/h" / tag / f"{v['name']}.webp")
+            webp(png, out / "img/t" / tag / f"{v['name']}.webp", 320)
             now = load(png)
             changed = None
             if v["name"] in previous and previous[v["name"]].shape == now.shape:
@@ -97,11 +154,13 @@ def main():
         releases.append({"tag": tag, "label": labels.get(v, git("log", "-1", "--format=%s", tag)),
                          "date": git("log", "-1", "--format=%ad", "--date=short", tag), "shots": shots})
 
-    data = {**stats, "road": rows, "views": vs, "releases": releases}
+    data = {**stats, "road": rows, "views": vs, "releases": releases, "results": results(),
+            "media": media(a.work, out)}
     (out / "data.json").write_text(json.dumps(data, separators=(",", ":")))
     shutil.copy2(ROOT / "scripts/progress_page.html", out / "index.html")
     size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
-    print(f"{out}: {len(releases)} releases, {sum(1 for _ in out.rglob('*.webp'))} images, {size / 1e6:.1f} MB")
+    print(f"{out}: {len(releases)} releases, {sum(1 for _ in out.rglob('*.webp'))} images, "
+          f"{sum(1 for _ in out.rglob('*.mp4'))} videos, {size / 1e6:.1f} MB")
 
 
 main()
