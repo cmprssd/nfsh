@@ -1456,9 +1456,11 @@ next thing while timing runs wait on the PC's idle queue.
   radians in radius, `SunScale` cd/m² times the sun's colour, and at least one pixel wide
   so it doesn't flicker; the moon's (50 cd/m², straight overhead) is drawn too.
 - **Drawn after the zone, one triangle at infinite depth, where the depth is still
-  cleared**: nothing is drawn under it twice. Its textures load after the zone's (about
-  11 MiB for both times, 0.16 s for one on Linux); a viewer that can't switch times
-  loads only its own.
+  cleared**: nothing is drawn under it twice. Its textures (5.6 MiB a time of day, nearly
+  all the panorama) are read ahead after the zone's, through the zone's texture loader,
+  and uploaded after the zone; a viewer that can't switch times loads only its own.
+  Loading them through a loader of their own first cost 0.28 s a load on the owner's PC:
+  making one indexes every texture's res and chunk again.
 - **`--no-sky` turns it off** (black, nothing loaded), the first rendering feature to
   ship with its off switch (2026-11-07).
 - **Left for later:** distant geometry's haze still fades to the colour of the sky's
