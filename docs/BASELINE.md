@@ -563,6 +563,45 @@ discarded; cold after reading 12 packs of the old store, different ones each tim
   the textures' decoding (zstd's assembly decoder) and the vertex buffers' staging
   (0.14 to 0.19 s, one buffer and one wait each).
 
+### The ground's tiles read before its layers are done (0.41.0)
+
+In 0.40.0 the ground's thread waited for the ground's layers (0.6 s warm, 0.9 to 1.0 s
+cold) before reading its tiles, though the layers only weight them. Timed apart in the
+Windows build (headless along garage-drive.path, the PC idle), the tiles' 0.6 s warm
+was 0.1 s of reading and 0.5 s of walking them into the mesh; cold, 1.3 s of reading
+and 0.4 s of walking.
+
+0.41.0 reads (and decompresses) the tiles' chunks as soon as the zone's extent is known,
+then walks them once the layers are done. The walk no longer allocates for each vertex
+and each texel of the ground's map: `Pages::weights` sums its pages without collecting
+them, and `emit` keeps its vertices' indices in a grid, not a hash map. On Linux, over
+81 tiles around the speedway read from memory, the walk goes from 0.145 to 0.101 s with
+the same output (a hash of positions, indices and weights). The read stage now prints
+the tiles' read and walk apart (`ground tiles read … s and walked … s`).
+
+Zone 494, loads alternating with 0.40.0 built from its tag (2026-11-15, the PC idle
+over 20 minutes; the first three warm pairs discarded; cold after reading 12 packs of
+the old store, different ones each time):
+
+| Zone 494 | Waiting for the ground, warm | Read stage, warm | Load, warm | Waiting for the ground, cold | Load, cold | Peak working set |
+|---|---|---|---|---|---|---|
+| 0.40.0 | 0.2 to 0.3 s | 1.3 s | 4.15, 3.99, 4.46, 4.06 s (median 4.11) | 1.2 to 1.3 s | 22.28, 21.62 s | 2,016 to 2,020 MiB |
+| 0.41.0 | 0.0 to 0.1 s | 1.1 to 1.2 s | 4.10, 4.25, 3.81, 3.95 s (median 4.03) | 0.9 to 1.0 s | 21.87, 21.65 s | 2,014 to 2,020 MiB |
+
+- **Warm, the read stage no longer waits for the ground:** the walk takes 0.3 s instead
+  of 0.5 s and starts with the tiles already read. The load is about 0.1 s faster, at
+  the edge of the noise between loads (3.8 to 4.5 s for both versions).
+- **Cold, 0.3 s less waiting for the ground**, within the noise of a whole cold load.
+  The disk is still the limit there: the tiles' reads (1.2 to 1.3 s) start only once the
+  zone's meshes are read, and the walk (0.2 to 0.3 s) follows them. Walking each tile as
+  its chunk arrives would hide most of the walk, but prefetching reads all the chunks in
+  one call; not done.
+- **The same 1,280 reads (63.5 MiB), the same peak working set, and `--shot` byte for
+  byte 0.40.0's.**
+- **What is left warm:** decoding the store's index (0.35 to 0.54 s at the start of
+  every load), the textures' decoding (zstd's assembly decoder) and the vertex buffers'
+  staging (0.14 to 0.19 s).
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)

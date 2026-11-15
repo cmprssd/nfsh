@@ -537,13 +537,13 @@ impl Pages {
             let bottom = t(r1, c0) * (1.0 - fu) + t(r1, c1) * fu;
             top * (1.0 - fv) + bottom * fv
         };
-        let all: Vec<f32> = (0..self.layers.len()).map(weight).collect();
-        let total: f32 = all.iter().sum();
+        // Summed in page order, as the shares are taken of it.
+        let total: f32 = (0..self.layers.len()).map(weight).sum();
         let mut out = [0; DETAIL_SLOTS];
         if total > 0.0 {
             for (o, slot) in out.iter_mut().zip(slots) {
                 if let Some(p) = self.layers.iter().position(|l| l == slot) {
-                    *o = (all[p] / total * 255.0).round() as u8;
+                    *o = (weight(p) / total * 255.0).round() as u8;
                 }
             }
         }
@@ -833,7 +833,9 @@ fn emit(
     let cells = ((tile.size / cell).round() as usize / step).max(1);
     let base = ground.positions.len() as u32;
     let side = cells + 1;
-    let mut index_of: HashMap<(usize, usize), u32> = HashMap::new();
+    // Each grid point's vertex, row by row; none where the heights have a hole.
+    let mut index_of: Vec<Option<u32>> = vec![None; side * side];
+    let mut next = base;
     for i in 0..side {
         for j in 0..side {
             let (row, column) = (first[1] + i * step, first[0] + j * step);
@@ -841,7 +843,8 @@ fn emit(
                 heights.at(row, column),
                 heights.normal(row, column, step, cell),
             ) {
-                index_of.insert((i, j), base + index_of.len() as u32);
+                index_of[i * side + j] = Some(next);
+                next += 1;
                 let (x, z) = (
                     min[0] + (column - BORDER) as f32 * cell,
                     min[1] + (row - BORDER) as f32 * cell,
@@ -888,7 +891,7 @@ fn emit(
     }
     for i in 0..cells {
         for j in 0..cells {
-            let at = |k| index_of.get(&k).copied();
+            let at = |(i, j): (usize, usize)| index_of[i * side + j];
             let (Some(a), Some(b), Some(c), Some(d)) = (
                 at((i, j)),
                 at((i, j + 1)),

@@ -416,20 +416,22 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
             };
             let keys: Vec<u16> = detail.keys().copied().collect();
             let (ground, walk_took) = timed(|| tiles.map(|t| t.map(|t| t.ground(&keys))));
-            (detail, ground, layers_took, read_took + walk_took)
+            (detail, ground, layers_took, read_took, walk_took)
         });
         let noise = scene::texture_partition(store, scene::ASPHALT_NOISE);
         let mut scene = build(store, &zone, &mut meshes, noise);
         drop(meshes);
         parts.done("meshes built");
-        let (detail, ground, layers_took, tiles_took) = joined(ground).unwrap_or_else(|e| {
-            (
-                Default::default(),
-                Some(Err(frostbite::Error(e))),
-                Duration::ZERO,
-                Duration::ZERO,
-            )
-        });
+        let (detail, ground, layers_took, read_took, walk_took) =
+            joined(ground).unwrap_or_else(|e| {
+                (
+                    Default::default(),
+                    Some(Err(frostbite::Error(e))),
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                )
+            });
         parts.done("waiting for the ground");
         match ground {
             Some(Ok(g)) => {
@@ -463,10 +465,11 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
             read_since(disk)
         );
         eprintln!(
-            "  read stage: {}; on threads, ground layers {:.1} s, ground tiles {:.1} s",
+            "  read stage: {}; on threads, ground layers {:.1} s, ground tiles read {:.1} s and walked {:.1} s",
             parts.done.join(", "),
             layers_took.as_secs_f64(),
-            tiles_took.as_secs_f64()
+            read_took.as_secs_f64(),
+            walk_took.as_secs_f64()
         );
         for (mesh, why) in &scene.failed {
             eprintln!("  not drawn: {mesh}: {why}");
