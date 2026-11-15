@@ -385,6 +385,35 @@ of the builds was dropped). Cold loads came after reading 12 GiB of other packs 
   while it waits), the read stage's mesh build (1.1 s) and about 0.9 s of pipelines and
   the first frame.
 
+### The upload thread decoding too (tried, not released)
+
+In 0.39.0 the upload thread waits 0.9 to 1.0 s of the warm texture stage for the three
+threads that decode. Tried: one queue of frames per load instead of whole 64 MiB
+batches. The threads decode the frames in upload order, the upload thread takes each
+chunk as soon as it is decoded, decodes it itself when no thread has started it, and
+decodes the next frame waiting while another thread finishes the one it needs. The
+upload order, and so the picture, stays the same.
+
+Zone 494, headless along garage-drive.path, warm, loads alternating with 0.39.0 built
+from its tag (2026-11-15, morning, the PC idle, 3.4 GB free).
+
+| Zone 494, warm | Waiting for chunks | Decoding here | Uploading | Texture stage | Load |
+|---|---|---|---|---|---|
+| 0.39.0 | 0.9, 1.0, 1.0 s | 0.0 s | 0.6, 0.5, 0.6 s | 2.1, 2.1, 2.1 s | 4.74, 4.61, 4.88 s |
+| The upload thread decodes too | 0.1, 0.1, 0.2 s | 0.5, 0.5, 0.6 s (50, 7, 53 chunks) | 0.8, 0.8, 0.6 s | 2.1, 2.1, 2.0 s | 4.83, 4.63, 4.29 s |
+
+- **The wait goes, the stage doesn't shorten:** the upload thread swaps 0.8 s of waiting
+  for 0.5 to 0.6 s of decoding, and the stage stays at 2.0 to 2.1 s, the loads within
+  noise of 0.39.0's. A fourth decoder barely speeds decoding up on this 4-core processor.
+  Something all the threads share sets the pace, likely memory bandwidth (decoding writes
+  867 MiB, copying into the staging ring reads and writes it again, and the integrated
+  GPU reads the same memory); not measured.
+- Not released, and cold not timed: with no warm saving there was nothing to keep.
+- **What could still shorten it:** less memory traffic rather than more threads, e.g.
+  decoding each chunk straight into the staging ring instead of into its own buffer
+  first. Then the rest of a warm load: the meshes' build (1.1 s) and pipelines plus the
+  first frame (about 0.9 s).
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)
