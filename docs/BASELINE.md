@@ -496,6 +496,73 @@ Tried against the new buffers, on branches kept locally, neither released:
   zstd-sys turns it off there), and the rest of a warm load: the meshes' build (1.1 s)
   and pipelines plus the first frame (about 0.9 s).
 
+### The rest of a warm load, and the meshes built on threads (0.40.0)
+
+Where a warm load of zone 494 goes besides the textures, timed with throwaway probes in
+the Windows build (0.39.0's code; headless along garage-drive.path, the PC idle,
+2026-11-15), the median of four warm loads:
+
+| Part | Time | On |
+|---|---|---|
+| Opening the store: reading its index (0.16 GiB) | 0.12 s | the main thread |
+| … decoding the index | 0.35 to 0.54 s | |
+| … sorting its partitions | 0.09 s | |
+| Read stage: the walk | 0.4 s | |
+| … reading the meshes ahead | 0.1 s | |
+| … building the meshes | 1.1 s | |
+| …… decompressing their chunks | 0.24 s | |
+| …… decoding their vertices (`Lod::section`) | 0.44 s | |
+| …… their ebx and mesh sets, switches, materials | 0.08 s | |
+| …… adding them to the scene (copying, normals and tangents packed) | about 0.33 s | |
+| Texture stage (`ZoneRenderer::new`) | 2.1 s | 3 threads decode |
+| … the vertex and index buffers (about 230 MiB, each its own staging buffer) | 0.14 to 0.19 s | |
+| … the five pipelines | 0.001 s | |
+| … descriptor sets, the draws' order | 0.005 s | |
+| The GPU (`Gpu::new_headless`) | 0.06 s | |
+| The first frame | 0.03 s | |
+
+- **The "about 0.9 s of pipelines and the first frame" above was mostly opening the
+  store**, which no earlier line printed. The pipelines take a millisecond: Intel's
+  driver keeps its own cache of compiled shaders on disk, so a Vulkan pipeline cache of
+  our own would save nothing here (it might on a first run, or another driver).
+- **Opening the store is 0.5 to 0.8 s warm but 1.6 to 3.6 s when its index has left
+  Windows' file cache** (the first loads after a build): the index is read whole, not
+  laid out with the zone. Decoding it (0.35 to 0.54 s) is the next largest part on one
+  thread.
+- **The meshes' build was the largest part on one thread**, and most of it, decompressing
+  and decoding, has no order to keep.
+
+0.40.0 builds the meshes on threads: the main thread plans each mesh (`scene::plan`:
+its ebx, mesh set, LOD switches, materials and which LODs to decode, with a copy of their
+chunks' stored frames as read ahead), three threads (all but one) decompress and decode
+them in that order (`scene::decode`, each with its own decompressor), and the main thread
+adds each to the scene as it comes, in order, so the scene is the same and holds no
+more than a few decoded meshes at a time. The rules for LODs an install left out, or
+that fail, are unchanged.
+
+Zone 494, headless along garage-drive.path, loads alternating with 0.39.0 built from its
+tag (2026-11-15, the PC idle over an hour, 2.8 GB free; the first two warm pairs
+discarded; cold after reading 12 packs of the old store, different ones each time):
+
+| Zone 494 | Meshes built, warm | Read stage, warm | Load, warm | Load, cold | Peak working set |
+|---|---|---|---|---|---|
+| 0.39.0 | 1.1 s | 1.6 to 1.7 s | 4.76, 4.53, 4.53, 4.59 s (median 4.56) | 21.88, 21.63 s | 2,015 to 2,019 MiB |
+| 0.40.0: on threads | 0.5 to 0.6 s | 1.3 s | 4.04, 4.13, 4.10, 4.09 s (median 4.10) | 21.92, 21.85 s | 2,016 to 2,024 MiB |
+
+- **Warm, 0.46 s faster (10%):** the build goes from 1.1 to 0.5 s, and the read stage
+  now waits 0.2 s for the ground (its tiles start only once the ground's layers are
+  done, 0.6 s in, and take 0.6 s).
+- **Cold, the same:** the read stage waits 1.1 s for the ground instead of 0.4 to 0.5 s;
+  the disk is the limit. The same 1,280 reads (63.5 MiB) as 0.39.0: an early version
+  took each chunk's frames out of the read-ahead, and a chunk two meshes share was read
+  again, 29 more reads.
+- **The same picture:** zone 494's `--shot` is byte for byte 0.39.0's, and the peak
+  working set is the same.
+- **What is left warm:** the ground (its tiles could start before its layers are done:
+  they need the layers only to weight them), decoding the store's index (0.35 to 0.54 s),
+  the textures' decoding (zstd's assembly decoder) and the vertex buffers' staging
+  (0.14 to 0.19 s, one buffer and one wait each).
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)

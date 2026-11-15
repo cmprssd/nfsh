@@ -4,6 +4,17 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.40.0] - 2026-11-15
+
+### Changed
+
+- **A zone's meshes are built on threads.** `nfsh view` decompresses and decodes each
+  mesh's LODs on all but one of the processor's threads, while the main thread adds
+  them to the scene in order. Building zone 494's meshes went from 1.1 s to 0.5 s warm,
+  and its whole warm load from about 4.56 s to 4.10 s. Cold loads take as long as
+  before (the disk is the limit), with the same reads. The picture is the same, byte for
+  byte, and the load's peak memory is unchanged.
+
 ## [0.39.0] - 2026-11-15
 
 ### Changed

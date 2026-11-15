@@ -494,6 +494,26 @@ impl Entries<'_> {
         self.ahead.remove(&location);
     }
 
+    /// A copy of the stored frames read ahead of the entry at `location`, for another
+    /// thread's [`Entries::read_stored`]. A copy, not taken out: another reader of the
+    /// same entry (two meshes can share a chunk) still finds it here.
+    pub fn ahead(&self, location: Location) -> Option<Vec<u8>> {
+        self.ahead.get(&location).cloned()
+    }
+
+    /// The decompressed entry at `location`, from its stored frames `ahead` when
+    /// another [`Entries`] read them ahead ([`Entries::ahead`]), else as
+    /// [`Entries::read`].
+    pub fn read_stored(&mut self, location: Location, ahead: Option<&[u8]>) -> Result<Vec<u8>> {
+        match ahead {
+            Some(frame) => self
+                .frames
+                .decode(frame)
+                .map_err(|e| crate::Error(format!("{location:?}: {e}"))),
+            None => self.read(location),
+        }
+    }
+
     /// The decompressed entry at `location`; an error when an install left out any of it.
     pub fn read(&mut self, location: Location) -> Result<Vec<u8>> {
         match self.read_end(location)? {

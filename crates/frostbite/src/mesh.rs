@@ -764,13 +764,42 @@ impl<'s> Meshes<'s> {
 
     /// The chunk holding `lod`'s geometry.
     pub fn chunk(&mut self, lod: &Lod) -> Result<Vec<u8>> {
+        let location = self.chunk_location(lod)?;
+        self.entries.read(location)
+    }
+
+    /// The chunk holding `lod`'s geometry, to be decompressed on another thread
+    /// ([`StoredChunk::read`]): a copy of its stored frames if they were read ahead.
+    pub fn stored_chunk(&self, lod: &Lod) -> Result<StoredChunk> {
+        let location = self.chunk_location(lod)?;
+        Ok(StoredChunk {
+            location,
+            ahead: self.entries.ahead(location),
+        })
+    }
+
+    fn chunk_location(&self, lod: &Lod) -> Result<Location> {
         let Some(id) = lod.chunk else {
             bail!("{}: the geometry is inline, not read yet", lod.name);
         };
         let Some(&location) = self.chunks.get(&id) else {
             bail!("{}: no chunk {id:02x?} in the store", lod.name);
         };
-        self.entries.read(location)
+        Ok(location)
+    }
+}
+
+/// A LOD's chunk from [`Meshes::stored_chunk`], still compressed.
+#[derive(Debug)]
+pub struct StoredChunk {
+    location: Location,
+    ahead: Option<Vec<u8>>,
+}
+
+impl StoredChunk {
+    /// The chunk, decompressed by `entries` (any of the store's).
+    pub fn read(&self, entries: &mut Entries) -> Result<Vec<u8>> {
+        entries.read_stored(self.location, self.ahead.as_deref())
     }
 }
 
