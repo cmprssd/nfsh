@@ -639,6 +639,49 @@ old store, different ones each time):
   asset; fewer would mean a shared name table, a change to `Asset` everywhere), the
   textures' decoding (zstd's assembly decoder) and the vertex buffers' staging.
 
+### zstd built by clang, and the vertex buffers written in place (tried, not released)
+
+The two leads left above, both measured on 2026-11-15 and neither worth releasing.
+
+**zstd's assembly decoder, and clang.** zstd-sys turns zstd's assembly Huffman decoder off
+on Windows, and zstd only enables it for compilers that define `__GNUC__`, which neither
+MSVC nor clang targeting MSVC does. On Linux the same throwaway decode probe as above
+(zone 494's 600 texture chunks, one thread, reused buffers), built with and without
+zstd-sys's `no_asm`, took 1.81 to 1.82 s against 1.86 to 1.87 s: **the assembly is worth
+about 3%**. The rest of the Windows build's gap is the C compiler: zstd built by clang
+23.1.5 (the LLVM release archive's `clang.exe` as `CC_x86_64_pc_windows_msvc`, which also
+turns on zstd's runtime BMI2 choice) against MSVC, two runs alternating:
+
+| Zone 494, 860 MiB, Windows build | 1 thread, reused buffers | 3 threads, new buffers (as a load does) |
+|---|---|---|
+| zstd built by MSVC | 2.20 to 2.24 s | 1.58 to 1.69 s |
+| zstd built by clang | 2.01 to 2.03 s | 1.52 to 1.67 s |
+
+- **About 9% faster on one thread, about 0.05 s on a load's three**, within the spread
+  between runs; with the assembly too it would be a few hundredths more. Not released: it
+  would need clang on every machine that builds nfsh for that.
+
+**The vertex and index buffers written in place.** An integrated GPU's memory is the
+processor's, so on one (`DeviceKind::Integrated`) `Buffer::upload` wrote each buffer
+straight into host-visible memory: no staging buffer, no copy on the GPU, no wait
+(`tried/vertex-buffers-in-place`). Zone 494 headless along garage-drive.path, loads
+alternating with 0.43.0 built from its tag (the PC idle five minutes first; the first
+three warm pairs discarded; cold after reading other packs):
+
+| Zone 494 | Texture stage: waiting for chunks, the rest | Load, warm | Load, cold | Peak working set |
+|---|---|---|---|---|
+| 0.43.0 | 0.7 to 0.9 s, 0.5 to 0.6 s | 3.65, 4.04, 4.08, 3.49 s (median 3.85) | 21.60, 21.24 s | 2,019 to 2,025 MiB |
+| Written in place | 0.8 to 0.9 s, 0.3 s | 3.80, 18.82, 4.00, 3.52 s (median 3.90) | 21.54, 21.62 s | 2,089 to 2,093 MiB |
+
+- **The buffers' 0.2 s went into waiting for decoded textures:** the staging waits had
+  let the three decoding threads get ahead of the upload thread. Warm and cold loads are
+  unchanged; the picture is byte for byte 0.43.0's.
+- **The peak working set is 70 MiB higher**, the mapped buffers now counted to the
+  process, and the 18.82 s load had lost the store's index from Windows' file cache
+  (opened in 4.27 s), as when mimalloc held more memory. Not released.
+- **What is left warm is decoding the textures**: the upload thread waits on the three
+  decoding threads, so it has to be cheaper per byte, or start sooner.
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)
