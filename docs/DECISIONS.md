@@ -1398,3 +1398,31 @@ core").
   offset table in the index would save the step but needs a new version and a reindex.
 - **Accept about 6 MiB more peak working set** (decided by Claude, pending review).
   Why: 0.3% of the peak, against 0.2 s warm and 0.3 s cold at the start of every load.
+
+## 2026-11-15: The progress page rehauled
+
+The owner asked for more images, videos and data on the progress page, and chose:
+
+- **Fly-throughs rendered by nfsh** rather than timelapses of the existing renders:
+  `nfsh view --path --headless --frames DIR` writes 30 frames a second, which
+  `bench/media.sh` encodes to H.264 with imageio-ffmpeg's static ffmpeg ($0, no install).
+  Why: something moving through the world shows the engine; the frames cost one viewer
+  option.
+- **A gallery drawn by the newest release only**, not new history views. Why: a new
+  history view would mean rebuilding some 40 releases, and those before 0.26.0 can't read
+  the store anyway.
+- **All the data:** load time and peak memory by release, nfsh against Heat, and the
+  sizes from the install to the discs.
+
+And, decided by Claude, pending review:
+
+- **The measurements live in `bench/results.tsv`, copied from BASELINE.md and SIZES.md**,
+  one value a line with its section. Why: those docs' tables differ from section to
+  section, so parsing them would break with the next one; a line per value is easy to
+  add with each measurement.
+- **The frame time set against Heat's is nfsh's in a window** (6.76 ms, 0.33.0), not a
+  later headless one. Why: Heat's was taken in a window; BASELINE.md compares them so.
+- **The Rust lines and tests are two charts**, no longer one chart with two scales. Why: a
+  second scale invites reading the crossing of the lines as meaning something.
+- **The videos are H.264 MP4 at CRF 22**, about 4 MB a film. Why: every browser plays them,
+  and the page stays well under GitHub Pages' limits.

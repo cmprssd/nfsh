@@ -236,14 +236,24 @@ It is served from the `gh-pages` branch, which holds the page alone, so the game
 imagery stays off main. Like every cmprssd page it is monochrome: greys only, the
 renders alone in colour.
 
+- **Fly-throughs:** videos of camera paths (`bench/films.txt`: the speedway by day and
+  night, and the drive recorded from Heat by the garage), drawn headless by the newest
+  release at 30 frames a second (`nfsh view --path --headless --frames`, encoded by
+  `bench/media.sh`).
+- **Gallery:** eleven views of the speedway and the garage (`bench/gallery.txt`), drawn by
+  the newest release, full size on a click.
 - **Before and after:** the history views (`bench/history-views.txt`: the speedway's
   barrels, the speedway from above at midday and at night, asphalt up close, a road's
   edge) as every release since 0.10.0 drew them, rendered by `bench/history.sh`, with a
-  slider between a release and the one before it and the share of pixels each release
-  changed.
+  slider between a release and the one before it, a strip of every release's picture, and
+  a grid of the share of pixels each release changed in each view.
+- **How fast and how small:** nfsh against Heat (load and frame time), zone 494's load
+  and peak memory by release, and the sizes from Heat's install to nfsh's installs
+  against the discs, all from `bench/results.tsv`, copied from BASELINE.md and SIZES.md.
 - **The install:** where its bytes are, and what the patch left dead.
 - **The milestones:** this document's table, below.
-- **The numbers:** PRs per day, Rust lines and tests after every PR, the crates.
+- **The numbers:** PRs per day, Rust lines and tests after every PR (each its own
+  chart), the crates.
 
 `scripts/progress_page.py` builds it from these and from `scripts/progress.py`'s
 counts, and `scripts/publish-progress.sh` publishes it after each merge (see
@@ -257,4 +267,5 @@ CLAUDE.md).
         scripts/cargo-msvc.sh test --workspace                    # Windows, install and store
     cargo run --release -- inventory "<install>" > out.md         # INVENTORY.md
     bench/history.sh                                              # each release's renders
+    bench/media.sh                                                # the gallery and videos
     python3 scripts/progress.py                                   # this page's numbers

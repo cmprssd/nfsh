@@ -73,7 +73,7 @@ usage: nfsh sizes-trial STORE
   the textures split into a frame per tier (top mip, second, third, the rest), and
   compares with what they store now. Nothing is written.
 usage: nfsh view STORE ZONE [--shot PNG] [--vsync] [--night] [--camera X,Y,Z,YAW,PITCH]
-                 [--path FILE [--headless]]
+                 [--path FILE [--headless [--frames DIR]]]
   Palm City's zone ZONE (as nfsh level takes it), the roads near it and the ground
   under them from the store in the folder STORE, textured and lit, in a window: mouse
   to look, W A S D to move, Space and C up and down, Shift to go faster, N to switch
@@ -85,7 +85,8 @@ usage: nfsh view STORE ZONE [--shot PNG] [--vsync] [--night] [--camera X,Y,Z,YAW
   the zone. --path flies the camera path in FILE (lines of T X Y Z YAW PITCH, time
   in seconds) and closes at its end, printing the time to the first frame and the
   frame times along it (mean, median, p99, 1% low, max); --headless draws that path
-  without a window, a frame every 1/60 s of path time, one at a time.
+  without a window, a frame every 1/60 s of path time, one at a time; --frames also
+  writes every second one to the folder DIR as PNGs (00000.png onwards, 30 a second).
 usage: nfsh camera scan FILE --near X,Y,Z [--radius M]
        nfsh camera changed FILE | same FILE | show FILE
        nfsh camera record ADDRESS LAYOUT PATH --seconds S

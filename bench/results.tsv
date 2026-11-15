@@ -1,0 +1,45 @@
+# The measurements the progress page charts (scripts/progress_page.py), copied from the
+# docs that explain them: one value per line, tab-separated. Add a line with each new
+# measurement in docs/BASELINE.md or docs/SIZES.md.
+# who: nfsh or heat (the original). release: the nfsh version measured (- for Heat).
+# metric: load_warm_s and load_cold_s (zone 494 to its first frame, the median; Heat:
+# Play Solo to the garage's menu), peak_mib (peak working set of a zone 494 load),
+# frame_median_ms and frame_low1_ms (garage-drive.path, headless unless the source says
+# window), store_gib, install_gib and install_bare_gib (SIZES.md).
+# source: the section that has the runs.
+who	release	metric	value	source
+nfsh	0.33.0	load_warm_s	12.35	BASELINE.md: Where zone 494's load goes
+nfsh	0.33.0	load_cold_s	41.4	BASELINE.md: Where zone 494's load goes
+nfsh	0.34.0	load_warm_s	8.02	BASELINE.md: The same path
+nfsh	0.35.0	load_warm_s	8.30	BASELINE.md: The same path
+nfsh	0.35.0	load_cold_s	37.29	BASELINE.md: The same path
+nfsh	0.36.0	load_warm_s	7.45	BASELINE.md: The walk in rounds, the ground on threads (0.37.0)
+nfsh	0.36.0	load_cold_s	27.08	BASELINE.md: The walk in rounds, the ground on threads (0.37.0)
+nfsh	0.37.0	load_warm_s	6.74	BASELINE.md: The walk in rounds, the ground on threads (0.37.0)
+nfsh	0.37.0	load_cold_s	21.64	BASELINE.md: The walk in rounds, the ground on threads (0.37.0)
+nfsh	0.38.0	load_warm_s	4.87	BASELINE.md: The textures decoded on threads (0.38.0)
+nfsh	0.38.0	load_cold_s	22.01	BASELINE.md: The textures decoded on threads (0.38.0)
+nfsh	0.39.0	load_warm_s	4.49	BASELINE.md: What limits decoding the textures
+nfsh	0.39.0	load_cold_s	21.86	BASELINE.md: What limits decoding the textures
+nfsh	0.39.0	peak_mib	2016	BASELINE.md: What limits decoding the textures
+nfsh	0.40.0	load_warm_s	4.10	BASELINE.md: The rest of a warm load, and the meshes built on threads (0.40.0)
+nfsh	0.40.0	load_cold_s	21.89	BASELINE.md: The rest of a warm load, and the meshes built on threads (0.40.0)
+nfsh	0.40.0	peak_mib	2024	BASELINE.md: The rest of a warm load, and the meshes built on threads (0.40.0)
+nfsh	0.41.0	load_warm_s	4.03	BASELINE.md: The ground's tiles read before its layers are done (0.41.0)
+nfsh	0.41.0	load_cold_s	21.76	BASELINE.md: The ground's tiles read before its layers are done (0.41.0)
+nfsh	0.41.0	peak_mib	2020	BASELINE.md: The ground's tiles read before its layers are done (0.41.0)
+nfsh	0.42.0	load_warm_s	3.83	BASELINE.md: The store's index decoded on every core (0.42.0)
+nfsh	0.42.0	load_cold_s	21.44	BASELINE.md: The store's index decoded on every core (0.42.0)
+nfsh	0.42.0	peak_mib	2026	BASELINE.md: The store's index decoded on every core (0.42.0)
+nfsh	0.33.0	frame_median_ms	6.76	BASELINE.md: The same path (window)
+nfsh	0.33.0	frame_low1_ms	16.20	BASELINE.md: The same path (window)
+nfsh	0.34.0	frame_median_ms	6.57	BASELINE.md: The same path
+nfsh	0.34.0	frame_low1_ms	11.96	BASELINE.md: The same path
+nfsh	0.35.0	frame_median_ms	6.28	BASELINE.md: The same path
+nfsh	0.35.0	frame_low1_ms	12.22	BASELINE.md: The same path
+heat	-	load_warm_s	88.8	BASELINE.md: The original's half
+heat	-	frame_median_ms	114.0	BASELINE.md: The original's half (window, Low)
+nfsh	0.4.0	store_gib	28.07	SIZES.md: In short
+nfsh	0.26.0	store_gib	23.08	SIZES.md: In short
+nfsh	0.30.0	install_gib	18.89	SIZES.md: In short
+nfsh	0.30.0	install_bare_gib	4.91	SIZES.md: In short

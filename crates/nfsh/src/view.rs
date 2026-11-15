@@ -5,7 +5,9 @@
 //! the time of day, the frame rate and frame time. With `--shot`, one frame is drawn
 //! without a window and written as a PNG. With `--path`, the camera flies a recorded
 //! path (crate::path) instead, and the frame times along it and the time to the first
-//! frame are printed at its end; `--headless` draws that path without a window.
+//! frame are printed at its end; `--headless` draws that path without a window, and
+//! `--frames DIR` also writes its frames there as PNGs, 30 a second of path time, for
+//! a video.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -50,6 +52,8 @@ const TITLE_EVERY: Duration = Duration::from_millis(500);
 /// The path time between two frames drawn with `--headless`, in seconds: every run
 /// draws the same frames.
 const HEADLESS_STEP: f64 = 1.0 / 60.0;
+/// With `--frames`, every this many headless frames is written: 30 a second.
+const FRAMES_EVERY: usize = 2;
 
 pub struct Options {
     pub store: PathBuf,
@@ -65,6 +69,8 @@ pub struct Options {
     /// window.
     pub path: Option<PathBuf>,
     pub headless: bool,
+    /// A folder to write the headless path's frames to, `00000.png` onwards.
+    pub frames: Option<PathBuf>,
 }
 
 /// Parses `X,Y,Z,YAW,PITCH`.
@@ -78,11 +84,11 @@ fn camera(s: &str) -> Option<[f32; 5]> {
 }
 
 /// Parses `STORE ZONE [--shot PNG] [--vsync] [--night] [--camera X,Y,Z,YAW,PITCH]
-/// [--path FILE [--headless]]`: a path is not a screenshot, and only a path is drawn
-/// headless.
+/// [--path FILE [--headless [--frames DIR]]]`: a path is not a screenshot, only a path
+/// is drawn headless, and only a headless path writes its frames.
 pub fn options(args: &[String]) -> Option<Options> {
     let (mut positional, mut shot, mut vsync, mut night) = (Vec::new(), None, false, false);
-    let (mut start, mut path, mut headless) = (None, None, false);
+    let (mut start, mut path, mut headless, mut frames) = (None, None, false, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -92,6 +98,7 @@ pub fn options(args: &[String]) -> Option<Options> {
             "--shot" => shot = Some(PathBuf::from(it.next()?)),
             "--path" => path = Some(PathBuf::from(it.next()?)),
             "--headless" => headless = true,
+            "--frames" => frames = Some(PathBuf::from(it.next()?)),
             _ if a.starts_with("--") => return None,
             _ => positional.push(a),
         }
@@ -99,7 +106,10 @@ pub fn options(args: &[String]) -> Option<Options> {
     let [store, zone] = positional[..] else {
         return None;
     };
-    if (path.is_some() && shot.is_some()) || (headless && path.is_none()) {
+    if (path.is_some() && shot.is_some())
+        || (headless && path.is_none())
+        || (frames.is_some() && !headless)
+    {
         return None;
     }
     Some(Options {
@@ -111,6 +121,7 @@ pub fn options(args: &[String]) -> Option<Options> {
         camera: start,
         path,
         headless,
+        frames,
     })
 }
 
@@ -198,15 +209,22 @@ fn headless(
     let extent = target.color.extent;
     let light = &times.lights[usize::from(o.night)];
     let frames = (path.duration() / HEADLESS_STEP).floor() as usize + 1;
+    if let Some(dir) = &o.frames {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
     let (mut first, mut ms) = (None, Vec::with_capacity(frames));
     for i in 0..frames {
         let [x, y, z, yaw, pitch] = path.at(i as f64 * HEADLESS_STEP);
         let camera = Camera::new([x, y, z], yaw, pitch, SIZE.0, SIZE.1);
         let begin = Instant::now();
-        target
+        let pixels = target
             .render(|cmd| renderer.record(cmd, &camera, extent, light))
             .map_err(|e| e.to_string())?;
         let end = Instant::now();
+        // Written after the frame is timed: the times stay the frames' own.
+        if let Some(dir) = o.frames.as_ref().filter(|_| i % FRAMES_EVERY == 0) {
+            write_png(&dir.join(frame_name(i / FRAMES_EVERY)), SIZE, &pixels)?;
+        }
         // The first frame is part of the load (pipelines warm up); it is not timed.
         match first {
             None => first = Some(end),
@@ -221,6 +239,11 @@ fn headless(
         gpu.name,
         times.names[usize::from(o.night)]
     ))
+}
+
+/// The file the `n`th written frame goes to, in the order a video reads them.
+fn frame_name(n: usize) -> String {
+    format!("{n:05}.png")
 }
 
 /// Uploads `scene` with its textures from `store`, and prints what was uploaded and
@@ -1046,11 +1069,25 @@ mod tests {
         assert!(options(&args("store 495 --path p.path --shot z.png")).is_none());
         assert!(options(&args("store 495 --headless")).is_none());
         assert!(options(&args("store 495 --path")).is_none());
+        // Frames are written by a headless path only.
+        let o = options(&args("store 495 --path p.path --headless --frames out")).unwrap();
+        assert_eq!(o.frames, Some(PathBuf::from("out")));
+        assert!(options(&args("store 495 --path p.path --frames out")).is_none());
+        assert!(options(&args("store 495 --shot z.png --frames out")).is_none());
+        assert!(options(&args("store 495 --path p.path --headless --frames")).is_none());
         // A missing value, an unknown flag, or the wrong number of arguments.
         assert!(options(&args("store 495 --shot")).is_none());
         assert!(options(&args("store 495 --fast")).is_none());
         assert!(options(&args("store")).is_none());
         assert!(options(&args("store 495 extra")).is_none());
+    }
+
+    #[test]
+    fn frames_are_named_in_order() {
+        assert_eq!(
+            [frame_name(0), frame_name(7), frame_name(1199)],
+            ["00000.png", "00007.png", "01199.png"]
+        );
     }
 
     #[test]

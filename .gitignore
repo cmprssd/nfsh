@@ -18,7 +18,11 @@
 !*.wgsl
 # The progress page's template (scripts/publish-progress.sh fills it).
 !scripts/progress_page.html
-# The views bench/history.sh renders for the progress page.
+# The views bench/history.sh renders for the progress page, and the gallery, films and
+# measurements it shows (bench/media.sh, bench/results.tsv): our own lists and numbers.
 !bench/history-views.txt
+!bench/gallery.txt
+!bench/films.txt
+!bench/results.tsv
 # Camera paths for the baseline (bench/baseline.sh): our own numbers.
 !bench/paths/*.path
