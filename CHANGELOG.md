@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.42.0] - 2026-11-15
+
+### Changed
+
+- **The store's index is decoded on every core.** Opening the store, at the start of
+  every load, decodes its bundles on all the processor's threads and sorts its
+  partitions on them too, instead of on one thread: alone, decoding went from 0.38 to
+  0.51 s to 0.20 to 0.28 s. Zone 494 loads about 0.2 s faster warm (median 4.02 to
+  3.83 s) and 0.3 s faster cold, with the same picture, byte for byte, and the same
+  reads; the peak memory is about 6 MiB higher. `nfsh view` prints how long opening the
+  store took.
+
 ## [0.41.0] - 2026-11-15
 
 ### Changed

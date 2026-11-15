@@ -602,6 +602,43 @@ the old store, different ones each time):
   every load), the textures' decoding (zstd's assembly decoder) and the vertex buffers'
   staging (0.14 to 0.19 s).
 
+### The store's index decoded on every core (0.42.0)
+
+Opening the store decoded its index (0.16 GiB: 22 superbundles, 20,739 bundles, 725,215
+ebx, 260,398 res and 228,651 chunks, with 85.6 MB of names) on the main thread, then
+sorted its 725,215 partition GUIDs, before anything else could start. Timed alone in
+the Windows build with a throwaway probe, decoding took 0.38 to 0.51 s, almost all of it
+the bundles, one string per asset's name (on Linux, 0.17 s).
+
+0.42.0 first steps over the index without allocating, noting where each bundle starts
+(0.03 s), then decodes the bundles on every core in runs of about 1 MiB, putting them
+back in order; every check is the same, and the real index encodes back to itself byte
+for byte. The partitions' list is placed by its GUIDs' first byte straight from the
+index, with no list to sort first, and each run of first bytes is sorted on its own
+thread. Alone, in the probe: decoding 0.20 to 0.28 s, the GUIDs 0.06 s instead of about
+0.14 s. `nfsh view` now prints how long opening the store took (`store opened in … s`).
+
+Zone 494, loads alternating with 0.41.0 built from its tag (2026-11-15, the PC idle over
+five minutes; the first three warm pairs discarded; cold after reading 12 packs of the
+old store, different ones each time):
+
+| Zone 494 | Store opened, warm | Load, warm | Load, cold | Peak working set |
+|---|---|---|---|---|
+| 0.41.0 | (not printed) | 3.89, 3.67, 4.15, 4.19 s (median 4.02) | 21.86, 21.61 s | 2,013 to 2,018 MiB |
+| 0.42.0 | 0.31 to 0.78 s | 3.48, 3.98, 3.67, 4.02 s (median 3.83) | 21.43, 21.44 s | 2,018 to 2,026 MiB |
+
+- **Warm, about 0.2 s faster**, as the probe predicts, though within the spread between
+  loads (3.5 to 4.2 s for both).
+- **Cold, about 0.3 s faster** (1.9 s to open the store, most of it reading the index).
+- **Opening the store still varies most with reading its index**: 0.31 to 0.78 s warm,
+  with about 2 GB of memory free, as Windows keeps the 0.16 GiB file cached or not.
+- **The peak working set is about 6 MiB higher** (0.3%), likely the heap the decoding
+  threads leave behind; accepted (docs/DECISIONS.md).
+- **The same 1,280 reads (63.5 MiB) and `--shot` byte for byte 0.41.0's.**
+- **What is left warm:** the index's read and the names' strings (one allocation per
+  asset; fewer would mean a shared name table, a change to `Asset` everywhere), the
+  textures' decoding (zstd's assembly decoder) and the vertex buffers' staging.
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)
