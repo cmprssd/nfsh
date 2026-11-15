@@ -210,36 +210,36 @@ impl Drawn {
     }
 }
 
-/// The skies of `times` that `wanted` asks for (by time), their textures from `store`;
-/// none when none is wanted or it can't be made. Says what it loaded and what failed.
+/// The sky textures `times` needs for the domes `wanted` (by time): each dome's
+/// panorama, gradient and mask, in that order, those it names.
+fn sky_textures(times: &Times, wanted: [bool; 2]) -> Vec<[u8; 16]> {
+    times
+        .skies
+        .iter()
+        .zip(wanted)
+        .filter_map(|(sky, wanted)| sky.as_ref().filter(|_| wanted))
+        .flat_map(|(_, s)| [s.panorama, s.gradient, s.mask])
+        .flatten()
+        .collect()
+}
+
+/// The skies of `times` that `wanted` asks for (by time), each texture from `load`
+/// (by `TextureAsset` partition); none when none is wanted or it can't be made. Says
+/// what it loaded and what failed.
 fn skies(
     gpu: &std::sync::Arc<Gpu>,
-    store: &Store,
     times: &Times,
     format: vk::Format,
     wanted: [bool; 2],
+    mut load: impl FnMut(&[u8; 16]) -> frostbite::Result<Loaded>,
 ) -> Option<Sky> {
     if !wanted.contains(&true) {
         return None;
     }
     let start = Instant::now();
-    let mut textures = match Textures::new(store) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("sky: {e}; none drawn");
-            return None;
-        }
-    };
     let mut failed = Vec::new();
     let mut load = |guid: Option<[u8; 16]>| -> Option<Loaded> {
-        let guid = guid?;
-        let read = textures.by_partition(&guid).and_then(|(name, texture)| {
-            let (texture, pixels) = textures
-                .pixels(&texture)
-                .map_err(|e| frostbite::Error(format!("{name}: {e}")))?;
-            Ok((name, texture, pixels))
-        });
-        read.map_err(|e| failed.push(e.0)).ok()
+        load(&guid?).map_err(|e| failed.push(e.0)).ok()
     };
     let domes: Vec<_> = times
         .skies
@@ -380,7 +380,8 @@ fn renderer(
     let disk = frostbite::cas::read_so_far();
     // The chunks are read on another thread while the textures are decoded and
     // uploaded here; the scope ends once both are done.
-    let (renderer, split) = std::thread::scope(|scope| upload(gpu, store, scene, format, scope))?;
+    let (renderer, sky, split) =
+        std::thread::scope(|scope| upload(gpu, store, scene, format, times, skies_wanted, scope))?;
     let normals = scene.detail.iter().filter(|d| d.normal.is_some()).count();
     let ground = scene.detail.len() + normals + scene::far_maps(&scene.detail).len();
     let wanted = scene.textures.len() + ground;
@@ -406,7 +407,6 @@ fn renderer(
     for (texture, why) in &renderer.missing {
         eprintln!("  drawn grey: {texture}: {why}");
     }
-    let sky = skies(gpu, store, times, format, skies_wanted);
     Ok(Drawn {
         zone: renderer,
         sky,
@@ -422,18 +422,23 @@ struct Split {
     decoded: Duration,
 }
 
-/// [`renderer`]'s textures, read ahead on a thread of `scope`, and the upload.
+/// [`renderer`]'s textures, read ahead on a thread of `scope`, and the upload; then
+/// the skies `skies_wanted` asks for of `times`, their textures read ahead after the
+/// zone's.
 fn upload<'scope>(
     gpu: &std::sync::Arc<Gpu>,
     store: &'scope Store,
     scene: &Scene,
     format: vk::Format,
+    times: &Times,
+    skies_wanted: [bool; 2],
     scope: &'scope std::thread::Scope<'scope, '_>,
-) -> Result<(ZoneRenderer, Split), String> {
+) -> Result<(ZoneRenderer, Option<Sky>, Split), String> {
     let start = Instant::now();
     let mut textures = Textures::new(store).map_err(|e| e.to_string())?;
     let far_maps = scene::far_maps(&scene.detail);
-    let order = plan_textures(&mut textures, scope, scene, &far_maps);
+    let sky = sky_textures(times, skies_wanted);
+    let order = plan_textures(&mut textures, scope, scene, &far_maps, &sky);
     let found = std::cell::Cell::new(start.elapsed());
     let find = |took: Duration| found.set(found.get() + took);
     let textures = std::cell::RefCell::new(textures);
@@ -453,7 +458,7 @@ fn upload<'scope>(
         })
         .collect();
     let far: Vec<_> = far_maps.iter().map(|name| by_name(name)).collect();
-    let load = |guid: &[u8; 16]| -> frostbite::Result<Loaded> {
+    let mut load = |guid: &[u8; 16]| -> frostbite::Result<Loaded> {
         let (found, took) = timed(|| textures.borrow_mut().by_partition(guid));
         find(took);
         let (name, texture) = found?;
@@ -463,26 +468,31 @@ fn upload<'scope>(
             .map_err(|e| frostbite::Error(format!("{name}: {e}")))?;
         Ok((name, texture, pixels))
     };
-    let renderer = ZoneRenderer::new(gpu, scene, format, load, &order, detail, far)
+    let renderer = ZoneRenderer::new(gpu, scene, format, &mut load, &order, detail, far)
         .map_err(|e| e.to_string())?;
-    let textures = textures.into_inner();
-    let split = Split {
-        found: found.get(),
-        waited: textures.waited,
-        decoded: textures.decoded,
+    // The zone's texture stage ends here: the sky's time is its own line.
+    let split = {
+        let t = textures.borrow();
+        Split {
+            found: found.get(),
+            waited: t.waited,
+            decoded: t.decoded,
+        }
     };
-    Ok((renderer, split))
+    let sky = skies(gpu, times, format, skies_wanted, load);
+    Ok((renderer, sky, split))
 }
 
 /// Finds every texture `renderer` loads (the ground's detail and far maps, then the
-/// scene's) and has `textures` read their chunks on a thread of `scope` in that order,
-/// the scene's in the packs' order: the order to upload the scene's textures in, by
-/// index.
+/// scene's, then the sky's `sky`) and has `textures` read their chunks on a thread of
+/// `scope` in that order, the scene's in the packs' order: the order to upload the
+/// scene's textures in, by index.
 fn plan_textures<'scope>(
     textures: &mut Textures<'scope>,
     scope: &'scope std::thread::Scope<'scope, '_>,
     scene: &Scene,
     far_maps: &[String],
+    sky: &[[u8; 16]],
 ) -> Vec<usize> {
     let mut assets = Vec::new();
     for d in &scene.detail {
@@ -492,10 +502,16 @@ fn plan_textures<'scope>(
     assets.extend(far_maps.iter().map(|n| Asset::Name(n)));
     let ground = assets.len();
     assets.extend(scene.textures.iter().map(Asset::Partition));
+    let own_end = assets.len();
+    assets.extend(sky.iter().map(Asset::Partition));
     let chunks = textures.locate(&assets);
-    let (ground, own) = chunks.split_at(ground);
+    let (zone, sky) = chunks.split_at(own_end);
+    let (ground, own) = zone.split_at(ground);
     let order = pack_order(own);
-    let queue = ground.iter().chain(order.iter().map(|&i| &own[i]));
+    let queue = ground
+        .iter()
+        .chain(order.iter().map(|&i| &own[i]))
+        .chain(sky);
     textures.read_ahead(scope, queue.flatten().copied());
     order
 }
