@@ -160,7 +160,9 @@ pub fn run(o: &Options) -> Result<String, String> {
         None => None,
     };
     let name = zone_bundle(&o.zone);
+    let opening = Instant::now();
     let store = Store::open(&o.store).map_err(|e| e.to_string())?;
+    eprintln!("store opened in {:.2} s", opening.elapsed().as_secs_f64());
     let scene = load(&store, &name).map_err(|e| e.to_string())?;
     let times = Times::read(&store);
     match (&o.shot, &path) {

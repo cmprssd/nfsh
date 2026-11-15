@@ -1384,3 +1384,17 @@ thread that uploads (BASELINE.md, "The textures decoded on threads").
 - **The largest chunk left goes next** (decided by Claude, pending review). Why: a
   zone's chunks range from a few KiB to 16 MiB; taken in order, one thread could be
   left decoding a large one while the others wait.
+
+## 2026-11-15: The store's index decoded on every core
+
+Opening the store decoded its 0.16 GiB index on the main thread, 0.38 to 0.51 s on
+Windows, before anything else started (BASELINE.md, "The store's index decoded on every
+core").
+
+- **Step over the index once without allocating, then decode the bundles on every core**
+  (decided by Claude, pending review). Why: the bundles are nearly all of the work (a
+  string per name) and independent once each one's start is known; the step costs
+  0.03 s, and the index's format, and so every store and install, stays as it is. An
+  offset table in the index would save the step but needs a new version and a reindex.
+- **Accept about 6 MiB more peak working set** (decided by Claude, pending review).
+  Why: 0.3% of the peak, against 0.2 s warm and 0.3 s cold at the start of every load.
