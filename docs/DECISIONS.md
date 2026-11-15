@@ -1427,3 +1427,40 @@ And, decided by Claude, pending review:
 - **The videos are H.264 MP4 at CRF 28**, about 15 MB for the 40 s speedway film. Why:
   every browser plays them; at CRF 22 that film was 47 MB, and CRF 28 looked the same
   side by side on the asphalt (the finest detail drawn).
+
+## 2026-11-15: The sky (decided by Claude, pending review)
+
+The viewer cleared to black above the horizon. The owner chose drawing the sky as the
+next thing while timing runs wait on the PC's idle queue.
+
+- **The sky is Heat's own panorama, gradient and mask, not a simulated atmosphere.**
+  Why: both times' `SkyComponentData` name a photographed 4096×1024 HDR panorama
+  (`docs/FORMATS.md`, "Sky"), which is what the game shows; the atmosphere's
+  coefficients are there too, but drawing it would be a second, guessed sky.
+- **The textures' values times `LuminanceScale` are luminance in cd/m², exposed like
+  the rest.** Why: midday's panorama then gives a 4,300 cd/m² zenith and 42,000 lux from
+  the sky, a clear afternoon's, next to a photograph its name says was taken at 133,000
+  lux; no scale is tuned by eye. This settles the 2026-10-31 entry's "not in known
+  units" for the sky drawn; the light it casts on surfaces still follows `SkyColor` (the
+  2026-11-02 entry) and could come from the panorama later.
+- **`PanoramicRotation` is in turns, the bearing of the panorama's left edge, and u
+  grows with the bearing** (from +z towards +x, as the sun's). Why: read so, midday's
+  glow lands 5° from the sun. Which way u grows is not shown by that: a mirrored sky
+  would match as well. The screenshot comparison with the original settles it.
+- **`PanoramicUVMin/Max` map the dome to the texture:** v runs from `MinY` at the zenith
+  to `MaxY` at the horizon, so -0.02 lifts the panorama's top 2% past the zenith
+  (clamped). Why: the plainest reading of a UV range; the other (stretching the horizon
+  1.8° below it) is within the same check.
+- **The gradient fills below the horizon, and above it where the mask is dark** (both
+  times' masks are nearly white, so the panorama shows). **The sun's disc** is `SunSize`
+  radians in radius, `SunScale` cd/m² times the sun's colour, and at least one pixel wide
+  so it doesn't flicker; the moon's (50 cd/m², straight overhead) is drawn too.
+- **Drawn after the zone, one triangle at infinite depth, where the depth is still
+  cleared**: nothing is drawn under it twice. Its textures load after the zone's (about
+  11 MiB for both times, 0.16 s for one on Linux); a viewer that can't switch times
+  loads only its own.
+- **`--no-sky` turns it off** (black, nothing loaded), the first rendering feature to
+  ship with its off switch (2026-11-07).
+- **Left for later:** distant geometry's haze still fades to the colour of the sky's
+  light (`SkyColor` with the sun), not the panorama's horizon behind it; the clouds don't
+  move (`FlowPeriod`); the lens flares and sun glare are not drawn.

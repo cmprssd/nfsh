@@ -52,7 +52,8 @@ usage: nfsh reindex STORE
   (the import does it; this adds them to a store made before nfsh 0.6.0).
 usage: nfsh ebx STORE NAME
   Prints the ebx partition NAME (e.g. levels/mainlevel/staticworld) from the store
-  in the folder STORE as text: its imports, then each instance with its fields.
+  in the folder STORE as text: its imports (with their partitions' names, where the
+  store lists them), then each instance with its fields.
 usage: nfsh level STORE [ZONE | X,Z]
   Palm City's level graph from the store in the folder STORE: without ZONE, the
   bundles the level loads and its streaming zones; with ZONE (a zone number such as
@@ -72,15 +73,17 @@ usage: nfsh sizes-trial STORE
   Recompresses a sample of the texture and mesh chunks with their fields gathered, and
   the textures split into a frame per tier (top mip, second, third, the rest), and
   compares with what they store now. Nothing is written.
-usage: nfsh view STORE ZONE [--shot PNG] [--vsync] [--night] [--camera X,Y,Z,YAW,PITCH]
-                 [--path FILE [--headless [--frames DIR]]]
+usage: nfsh view STORE ZONE [--shot PNG] [--vsync] [--night] [--no-sky]
+                 [--camera X,Y,Z,YAW,PITCH] [--path FILE [--headless [--frames DIR]]]
   Palm City's zone ZONE (as nfsh level takes it), the roads near it and the ground
-  under them from the store in the folder STORE, textured and lit, in a window: mouse
+  under them from the store in the folder STORE, textured and lit, with the time of
+  day's sky behind them, in a window: mouse
   to look, W A S D to move, Space and C up and down, Shift to go faster, N to switch
   between midday and tealnight, Esc to quit;
   the title shows the time of day, the frame rate and frame time. With --shot, one
   frame of the whole zone is drawn without a window and written to the file PNG.
-  --vsync waits for the display; --night starts at tealnight; --camera starts at the
+  --vsync waits for the display; --night starts at tealnight; --no-sky leaves the
+  sky out (black, its textures not loaded); --camera starts at the
   point X,Y,Z turned YAW degrees from +z towards +x and PITCH up, rather than above
   the zone. --path flies the camera path in FILE (lines of T X Y Z YAW PITCH, time
   in seconds) and closes at its end, printing the time to the first frame and the

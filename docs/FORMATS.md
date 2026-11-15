@@ -930,7 +930,7 @@ A time of day's look is a **visual environment**: a partition with a
 `SkyComponentData`, `TonemapComponentData`, `FogComponentData`, `ColorCorrectionComponentData`,
 `EnlightenComponentData`, …). Each component lists the fields it sets in
 `PropertyOverrides`; the rest keep their defaults. `frostbite::lighting` reads the sun,
-the sky's colours and the exposure.
+the sky's colours and the exposure, and the sky drawn behind everything ("Sky" below).
 
 Palm City's are in `levels/mainlevel/lighting/visualenvironments/`, in bundles named
 by time of day:
@@ -950,8 +950,8 @@ The fields read, at midday and at night (`twilight_02`):
 | OutdoorLight `SunColor` | (0.99, 0.78, 0.60) | (1, 1, 1) | linear RGB |
 | OutdoorLight `SunRotationX`, `SunRotationY` | 153.1, 34.7 | 229.6, 90 | degrees: bearing and elevation, by the values (the bearing's axis is not checked) |
 | OutdoorLight `SkyColor`, `GroundColor` | (0.318, 0.341, 0.4), 0.05 grey | the same | not overridden: the defaults |
-| Sky `LuminanceScale` | 983 | 30 | the sky's brightness, in units not worked out |
-| Sky `SkyType` | `Procedural` | `Procedural` | both skies scatter the sun (moon) through the same atmosphere (the same Rayleigh and Mie coefficients) |
+| Sky `LuminanceScale` | 983 | 30 | the sky textures' values to luminance, cd/m² ("Sky" below) |
+| Sky `SkyType` | `Procedural` | `Procedural` | with the same Rayleigh and Mie coefficients at both times; what is drawn is a photographed panorama ("Sky" below) |
 | Tonemap `MinEV`, `MaxEV` | 14.25, 15 | 0.75, 2.25 | the automatic exposure's range, EV at ISO 100 |
 | Tonemap `ExposureCompensation` | 1.1 | -1.1 | stops |
 | Tonemap `TonemapMethod` | `FilmicNeutral` | `FilmicNeutral` | |
@@ -959,6 +959,39 @@ The fields read, at midday and at night (`twilight_02`):
 Each zone's `worldart_zs_<n>_midday` (and `_tealnight`, …) bundle holds the zone's
 precomputed indirect light for that time (a `LayerReferenceObjectData`, a
 `GiGridAssetSelectorData`, Enlighten data); not read yet.
+
+### Sky
+
+The `SkyComponentData` names three textures (references to other partitions), each a
+flat `TextureAsset`:
+
+| field | midday | night | what it is |
+|-------|--------|-------|------------|
+| `PanoramicTexture` | `levels/mainlevel/lighting/day_02/t_sky_floridastpeter_0928_1633_ev1588_lux133000_sunnyafternoon_abs_panoramic_v7` | `…/twilight_02/cs_zararides_skypanoramic_01_ver6_green` | 4096×1024 BC6H (unsigned), 13 mips: the upper half of the sky, equirectangular, the zenith along the top row and the horizon along the bottom |
+| `SkyGradientTexture` | `…_panoramic_v7_2_gradient` | `…_ver6_green_gradient` | 128×64 BC6H: the whole sky from the zenith (top) to the nadir (bottom); the night's is mirrored about the horizon |
+| `PanoramicAlphaTexture` | `levels/vtar/vtar_yuta/lighting/lookdev_panormaicmask` | `levels/test_levels/testrange_lighting_lookdev_01/lighting/panoramicalphatexture` | 128×32 BC1 sRGB and 32×8 BC1: nearly all white |
+
+**The textures' values times `LuminanceScale` are luminance in cd/m².** Midday's
+panorama, a photograph by its name (St. Petersburg, Florida, 16:33, EV 15.88, 133,000
+lux, "abs"), has a median value of 9.27: 9,100 cd/m² at 983. Its band nearest the zenith
+gives about 4,300 cd/m², a clear blue sky's, and its whole half-sphere about 42,000 lux on
+level ground (decoded with a BC6H decoder; the ratio to the photograph's 133,000 lux is
+the sky's share beside the sun). At night 0.0103 × 30 = 0.31 cd/m².
+
+The other fields read:
+
+| field | midday | night | read as |
+|-------|-------:|------:|---------|
+| `PanoramicRotation` | 0.44 | 0.719 | turns: the bearing of the panorama's left edge (u = 0), bearings as the sun's. Midday's panorama is brightest at u ≈ 0.01 near the horizon, which puts its glow at a bearing of 158°, 5° from the sun's 153° |
+| `PanoramicUVMinX`, `…MinY`, `…MaxX`, `…MaxY` | 0, -0.02, 1, 1 | the same | the part of the panorama laid over the dome, left to right and zenith to horizon |
+| `DrawSunDisc`, `SunSize`, `SunScale` | true, 0.001, 10⁷ | true, 0.002, 50 | the disc's angular radius (radians) and luminance (cd/m², times the sun's colour) |
+| `Enable` | true | true | |
+
+Not read: the clouds' layers (no textures at either time), `HdriTexture`,
+`StaticEnvmapTexture` and `CustomEnvmapTexture` (null), the atmosphere's coefficients,
+radii and scale heights (Rayleigh 5.8, 13.5, 33.1 per 10⁶ m, Mie 4 per 10⁶ m with
+g = 0.785, Earth 6,390 km, atmosphere 6,480 km), `HdriRotation` (32 and 277) and
+`SkyEnvmap8BitTexScale` (0.25).
 
 ## Cinematic dialogue
 

@@ -7,6 +7,7 @@ pub mod frame;
 pub mod gpu;
 pub mod resource;
 pub mod scene;
+pub mod sky;
 pub mod swapchain;
 pub mod zone;
 
@@ -16,5 +17,6 @@ pub use frame::{FRAMES_IN_FLIGHT, FrameLoop, Presented};
 pub use gpu::{DeviceKind, Error, Gpu, Result};
 pub use resource::{Buffer, Image, Mip, Target, Uploader};
 pub use scene::Scene;
+pub use sky::Sky;
 pub use swapchain::Swapchain;
 pub use zone::{Light, ZoneRenderer};

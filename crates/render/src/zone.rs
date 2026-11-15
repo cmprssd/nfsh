@@ -240,6 +240,24 @@ pub fn vk_format(code: u32) -> Option<vk::Format> {
     })
 }
 
+/// The Vulkan format `texture` is sampled in, if it is worked out and this device
+/// samples it with filtering.
+pub fn sampled_format(gpu: &Gpu, texture: &Texture) -> std::result::Result<vk::Format, String> {
+    let Some(format) = vk_format(texture.format) else {
+        return Err(format!("format {:#04x} not worked out", texture.format));
+    };
+    let wanted =
+        vk::FormatFeatureFlags::SAMPLED_IMAGE | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR;
+    let props = unsafe {
+        gpu.instance
+            .get_physical_device_format_properties(gpu.physical, format)
+    };
+    if !props.optimal_tiling_features.contains(wanted) {
+        return Err(format!("{format:?} can't be sampled on this device"));
+    }
+    Ok(format)
+}
+
 /// Where each mip of a flat texture is in its chunk `data`, if they are all there.
 pub fn mips(t: &Texture, data_len: usize) -> std::result::Result<Vec<Mip>, String> {
     if t.kind != Kind::Flat {
@@ -324,7 +342,7 @@ type ImageSet = [usize; 8];
 /// The bindings of an [`ImageSet`]'s images.
 const SET_BINDINGS: [u32; 8] = [0, 2, 3, 4, 5, 6, 7, 10];
 
-fn shader_module(gpu: &Gpu, spirv: &[u8]) -> Result<vk::ShaderModule> {
+pub(crate) fn shader_module(gpu: &Gpu, spirv: &[u8]) -> Result<vk::ShaderModule> {
     let words = ash::util::read_spv(&mut std::io::Cursor::new(spirv))
         .map_err(|e| Error(format!("bad SPIR-V: {e}")))?;
     Ok(unsafe {
@@ -684,20 +702,7 @@ impl ZoneRenderer {
 
     /// The Vulkan format `texture` is sampled in, if this device can filter it.
     fn sampled_format(&self, texture: &Texture) -> std::result::Result<vk::Format, String> {
-        let Some(format) = vk_format(texture.format) else {
-            return Err(format!("format {:#04x} not worked out", texture.format));
-        };
-        let wanted = vk::FormatFeatureFlags::SAMPLED_IMAGE
-            | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR;
-        let props = unsafe {
-            self.gpu
-                .instance
-                .get_physical_device_format_properties(self.gpu.physical, format)
-        };
-        if !props.optimal_tiling_features.contains(wanted) {
-            return Err(format!("{format:?} can't be sampled on this device"));
-        }
-        Ok(format)
+        sampled_format(&self.gpu, texture)
     }
 
     /// Uploads the ground's detail layers' diffuse maps as one array and their normal
