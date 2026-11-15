@@ -350,6 +350,41 @@ time.
   the texture stage's 2.3 s (now mostly uploading, one staging buffer and one
   wait for the GPU per texture), and about 0.9 s of pipelines and the first frame.
 
+### The textures uploaded in batches (0.39.0)
+
+In 0.38.0 uploading was most of the warm texture stage (1.1 to 1.3 s of 2.3 s, for
+600 textures and 867 MiB): each texture had its own staging buffer, newly allocated, and
+the thread waited for the GPU after each one. 0.39.0 reuses one 64 MiB staging buffer in
+two halves, each with its own command buffer and fence. Textures are copied into one half,
+several to a submit, while the GPU copies the other half into their images, and the thread
+waits only to reuse a half and once at the end. A texture larger than a half (32 MiB)
+still goes up on its own. The images are numbered as before.
+
+Zone 494, headless along garage-drive.path, loads alternating with 0.38.0 built from its
+tag (2026-11-15, at night, the PC idle, Chrome closed, 3.4 GB free once WSL's file cache
+of the builds was dropped). Cold loads came after reading 12 GiB of other packs from D:
+(the old 0.4.0 store) through Windows, different packs each time.
+
+| Zone 494 | Uploading, warm | Texture stage, warm | Load, warm | Texture stage, cold | Load, cold |
+|---|---|---|---|---|---|
+| 0.38.0 | 1.2, 1.2, 1.3 s | 2.3, 2.2, 2.2 s | 5.09, 4.79, 4.91 s | 10.6, 10.5 s | 22.57, 21.61 s |
+| 0.39.0: in batches | 0.6, 0.6, 0.7 s | 2.1, 2.1, 2.2 s | 4.88, 4.43, 4.56 s | 10.6, 10.5 s | 21.70, 21.66 s |
+
+- **Uploading halves (1.2 to 1.3 s down to 0.6 to 0.7 s), but the stage saves only 0.1 to
+  0.2 s:** waiting for decoded chunks grows from 0.4 to 0.8 to 0.9 s. The upload thread
+  now outruns the three threads that decode, so decoding is the warm texture stage's
+  limit. An earlier set of three pairs gave the same split (uploading 1.3 s against
+  0.6 s, waiting 0.4 s against 0.8 to 0.9 s), with loads within noise of each other
+  (4.57 to 7.43 s against 4.59 to 4.91 s).
+- **Cold, nothing changes:** the stage waits on the disk (8.4 to 8.9 s of 10.5).
+  Uploading there goes from 0.9 to 0.4 to 0.5 s, hidden behind the reads.
+- **Memory:** the peak working set of a `--shot` load goes from 2,051 to 2,016 MiB: the
+  per-texture staging buffers are gone, and the ring takes 64 MiB.
+- **The same picture:** zone 494's `--shot` is byte for byte 0.38.0's.
+- **What is left warm:** decoding the textures (the upload thread could decode too
+  while it waits), the read stage's mesh build (1.1 s) and about 0.9 s of pipelines and
+  the first frame.
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)

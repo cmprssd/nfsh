@@ -269,6 +269,28 @@ impl Image {
         data: &[u8],
         array: bool,
     ) -> Result<Self> {
+        let image = Self::for_sampling(gpu, format, mips, layers, array)?;
+        let mut staging = Buffer::new(
+            gpu,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            data.len() as u64,
+            MemoryLocation::CpuToGpu,
+        )?;
+        staging.mapped_mut()?.copy_from_slice(data);
+        gpu.submit_and_wait(|cmd| {
+            image.record_fill(cmd, staging.buffer, 0, mips, (layers, layer_bytes));
+        })?;
+        Ok(image)
+    }
+
+    /// An empty image for [`Image::record_fill`] to fill: `layers` layers of `mips`.
+    fn for_sampling(
+        gpu: &Arc<Gpu>,
+        format: vk::Format,
+        mips: &[Mip],
+        layers: u32,
+        array: bool,
+    ) -> Result<Self> {
         let Some(first) = mips.first() else {
             return Err(Error("a texture with no mips".into()));
         };
@@ -280,21 +302,38 @@ impl Image {
             height: first.height,
         };
         let usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST;
-        let color = vk::ImageAspectFlags::COLOR;
+        // The tests read the images back.
+        #[cfg(test)]
+        let usage = usage | vk::ImageUsageFlags::TRANSFER_SRC;
         let counts = (mips.len() as u32, layers);
-        let image = Self::made(gpu, extent, format, usage, color, counts, array)?;
-        let mut staging = Buffer::new(
+        Self::made(
             gpu,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            data.len() as u64,
-            MemoryLocation::CpuToGpu,
-        )?;
-        staging.mapped_mut()?.copy_from_slice(data);
+            extent,
+            format,
+            usage,
+            vk::ImageAspectFlags::COLOR,
+            counts,
+            array,
+        )
+    }
+
+    /// Records copying every layer's `mips` from `staging`, the bytes starting at
+    /// `base`, into this image made by [`Image::for_sampling`], and leaving it ready
+    /// for fragment shaders to read.
+    fn record_fill(
+        &self,
+        cmd: vk::CommandBuffer,
+        staging: vk::Buffer,
+        base: u64,
+        mips: &[Mip],
+        (layers, layer_bytes): (u32, u64),
+    ) {
+        let color = vk::ImageAspectFlags::COLOR;
         let regions: Vec<_> = (0..layers)
             .flat_map(|layer| (0u32..).zip(mips).map(move |(level, m)| (layer, level, m)))
             .map(|(layer, level, m)| {
                 vk::BufferImageCopy::default()
-                    .buffer_offset(m.offset + u64::from(layer) * layer_bytes)
+                    .buffer_offset(base + m.offset + u64::from(layer) * layer_bytes)
                     .image_subresource(vk::ImageSubresourceLayers {
                         aspect_mask: color,
                         mip_level: level,
@@ -313,46 +352,39 @@ impl Image {
             layer_count: layers,
             ..subresource(color)
         };
-        gpu.submit_and_wait(|cmd| unsafe {
-            use vk::AccessFlags2 as A;
-            use vk::ImageLayout as L;
-            use vk::PipelineStageFlags2 as S;
-            let d = &gpu.device;
-            let to_copy = [barrier(
-                image.image,
-                color,
-                (L::UNDEFINED, S::NONE, A::NONE),
-                (L::TRANSFER_DST_OPTIMAL, S::COPY, A::TRANSFER_WRITE),
-            )
-            .subresource_range(all)];
+        use vk::AccessFlags2 as A;
+        use vk::ImageLayout as L;
+        use vk::PipelineStageFlags2 as S;
+        let d = &self.gpu.device;
+        let to_copy = [barrier(
+            self.image,
+            color,
+            (L::UNDEFINED, S::NONE, A::NONE),
+            (L::TRANSFER_DST_OPTIMAL, S::COPY, A::TRANSFER_WRITE),
+        )
+        .subresource_range(all)];
+        let to_read = [barrier(
+            self.image,
+            color,
+            (L::TRANSFER_DST_OPTIMAL, S::COPY, A::TRANSFER_WRITE),
+            (
+                L::SHADER_READ_ONLY_OPTIMAL,
+                S::FRAGMENT_SHADER,
+                A::SHADER_SAMPLED_READ,
+            ),
+        )
+        .subresource_range(all)];
+        unsafe {
             d.cmd_pipeline_barrier2(
                 cmd,
                 &vk::DependencyInfo::default().image_memory_barriers(&to_copy),
             );
-            d.cmd_copy_buffer_to_image(
-                cmd,
-                staging.buffer,
-                image.image,
-                L::TRANSFER_DST_OPTIMAL,
-                &regions,
-            );
-            let to_read = [barrier(
-                image.image,
-                color,
-                (L::TRANSFER_DST_OPTIMAL, S::COPY, A::TRANSFER_WRITE),
-                (
-                    L::SHADER_READ_ONLY_OPTIMAL,
-                    S::FRAGMENT_SHADER,
-                    A::SHADER_SAMPLED_READ,
-                ),
-            )
-            .subresource_range(all)];
+            d.cmd_copy_buffer_to_image(cmd, staging, self.image, L::TRANSFER_DST_OPTIMAL, &regions);
             d.cmd_pipeline_barrier2(
                 cmd,
                 &vk::DependencyInfo::default().image_memory_barriers(&to_read),
             );
-        })?;
-        Ok(image)
+        }
     }
 
     /// A depth buffer for drawing at `extent`.
@@ -374,6 +406,205 @@ impl Drop for Image {
             self.gpu.device.destroy_image(self.image, None);
         }
         free(&self.gpu, self.allocation.take());
+    }
+}
+
+/// Where each texture's bytes start in a staging half: a multiple of every block size
+/// and of the copy alignment devices prefer.
+const STAGING_ALIGN: u64 = 256;
+
+/// Fills many sampled images through one reused staging buffer in two halves, each
+/// with its own command buffer and fence: textures are copied into one half while the
+/// GPU copies the other's into their images, several to a submit, instead of a staging
+/// buffer and a wait for the GPU per texture. A texture larger than a half goes up on
+/// its own. The images are only filled once [`Uploader::finish`] returns.
+pub struct Uploader {
+    gpu: Arc<Gpu>,
+    pool: vk::CommandPool,
+    halves: Vec<Half>,
+    current: usize,
+}
+
+struct Half {
+    staging: Buffer,
+    cmd: vk::CommandBuffer,
+    fence: vk::Fence,
+    /// Bytes of `staging` taken by the copies recorded since the last submit.
+    used: u64,
+    recording: bool,
+    submitted: bool,
+}
+
+impl Uploader {
+    /// An uploader whose two halves hold `half` bytes each.
+    pub fn new(gpu: &Arc<Gpu>, half: u64) -> Result<Self> {
+        let d = &gpu.device;
+        let pool = unsafe {
+            d.create_command_pool(
+                &vk::CommandPoolCreateInfo::default()
+                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+                    .queue_family_index(gpu.queue_family),
+                None,
+            )?
+        };
+        // Made into `u` so that its Drop frees what was made if a later step fails.
+        let mut u = Self {
+            gpu: gpu.clone(),
+            pool,
+            halves: Vec::with_capacity(2),
+            current: 0,
+        };
+        let cmds = unsafe {
+            d.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(pool)
+                    .command_buffer_count(2),
+            )?
+        };
+        for cmd in cmds {
+            let staging = Buffer::new(
+                gpu,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                half,
+                MemoryLocation::CpuToGpu,
+            )?;
+            let fence = unsafe { d.create_fence(&vk::FenceCreateInfo::default(), None)? };
+            u.halves.push(Half {
+                staging,
+                cmd,
+                fence,
+                used: 0,
+                recording: false,
+                submitted: false,
+            });
+        }
+        Ok(u)
+    }
+
+    /// [`Image::sampled`], filled once [`Uploader::finish`] returns.
+    pub fn sampled(&mut self, format: vk::Format, mips: &[Mip], data: &[u8]) -> Result<Image> {
+        self.sampled_layers(format, mips, (1, 0), data, false)
+    }
+
+    /// [`Image::sampled_array`], filled once [`Uploader::finish`] returns.
+    pub fn sampled_array(
+        &mut self,
+        format: vk::Format,
+        mips: &[Mip],
+        layers: (u32, u64),
+        data: &[u8],
+    ) -> Result<Image> {
+        self.sampled_layers(format, mips, layers, data, true)
+    }
+
+    fn sampled_layers(
+        &mut self,
+        format: vk::Format,
+        mips: &[Mip],
+        layers: (u32, u64),
+        data: &[u8],
+        array: bool,
+    ) -> Result<Image> {
+        let size = data.len() as u64;
+        if size > self.halves[self.current].staging.size {
+            return Image::sampled_layers(&self.gpu, format, mips, layers, data, array);
+        }
+        let image = Image::for_sampling(&self.gpu, format, mips, layers.0, array)?;
+        let mut base = self.halves[self.current]
+            .used
+            .next_multiple_of(STAGING_ALIGN);
+        if base + size > self.halves[self.current].staging.size {
+            self.submit()?;
+            base = 0;
+        }
+        let half = self.begin()?;
+        let at = base as usize;
+        half.staging.mapped_mut()?[at..at + data.len()].copy_from_slice(data);
+        half.used = base + size;
+        image.record_fill(half.cmd, half.staging.buffer, base, mips, layers);
+        Ok(image)
+    }
+
+    /// The current half, recording: once the GPU is done with its last submit.
+    fn begin(&mut self) -> Result<&mut Half> {
+        let d = &self.gpu.device;
+        let half = &mut self.halves[self.current];
+        if !half.recording {
+            if half.submitted {
+                unsafe {
+                    d.wait_for_fences(&[half.fence], true, u64::MAX)?;
+                    d.reset_fences(&[half.fence])?;
+                }
+                half.submitted = false;
+            }
+            unsafe {
+                d.begin_command_buffer(
+                    half.cmd,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )?;
+            }
+            half.recording = true;
+            half.used = 0;
+        }
+        Ok(half)
+    }
+
+    /// Submits the current half's copies, if any, and moves to the other half.
+    fn submit(&mut self) -> Result<()> {
+        let d = &self.gpu.device;
+        let half = &mut self.halves[self.current];
+        if half.recording {
+            half.recording = false;
+            half.used = 0;
+            let cmds = [half.cmd];
+            unsafe {
+                d.end_command_buffer(half.cmd)?;
+                d.queue_submit(
+                    *lock(&self.gpu.queue),
+                    &[vk::SubmitInfo::default().command_buffers(&cmds)],
+                    half.fence,
+                )?;
+            }
+            half.submitted = true;
+        }
+        self.current = 1 - self.current;
+        Ok(())
+    }
+
+    /// Submits what is left and waits until every image is filled.
+    pub fn finish(mut self) -> Result<()> {
+        self.submit()?;
+        let fences: Vec<_> = self
+            .halves
+            .iter_mut()
+            .filter(|h| h.submitted)
+            .map(|h| {
+                h.submitted = false;
+                h.fence
+            })
+            .collect();
+        if !fences.is_empty() {
+            unsafe { self.gpu.device.wait_for_fences(&fences, true, u64::MAX)? };
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Uploader {
+    fn drop(&mut self) {
+        let d = &self.gpu.device;
+        unsafe {
+            // A half still copying must finish before its buffer and commands go.
+            for half in &self.halves {
+                if half.submitted {
+                    let _ = d.wait_for_fences(&[half.fence], true, u64::MAX);
+                }
+                d.destroy_fence(half.fence, None);
+            }
+            // Frees the command buffers, recording or not.
+            d.destroy_command_pool(self.pool, None);
+        }
     }
 }
 
@@ -516,5 +747,136 @@ impl Target {
             );
         })?;
         Ok(self.readback.mapped()?.to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `image`'s `layers` layers of `mips`, read back into bytes laid out as uploaded.
+    fn read_back(gpu: &Arc<Gpu>, image: &Image, mips: &[Mip], layers: u32, size: u64) -> Vec<u8> {
+        let layer_bytes = size / u64::from(layers);
+        let readback = Buffer::new(
+            gpu,
+            vk::BufferUsageFlags::TRANSFER_DST,
+            size,
+            MemoryLocation::GpuToCpu,
+        )
+        .unwrap();
+        let color = vk::ImageAspectFlags::COLOR;
+        let regions: Vec<_> = (0..layers)
+            .flat_map(|layer| (0u32..).zip(mips).map(move |(level, m)| (layer, level, m)))
+            .map(|(layer, level, m)| {
+                vk::BufferImageCopy::default()
+                    .buffer_offset(m.offset + u64::from(layer) * layer_bytes)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: color,
+                        mip_level: level,
+                        base_array_layer: layer,
+                        layer_count: 1,
+                    })
+                    .image_extent(vk::Extent3D {
+                        width: m.width,
+                        height: m.height,
+                        depth: 1,
+                    })
+            })
+            .collect();
+        gpu.submit_and_wait(|cmd| unsafe {
+            use vk::AccessFlags2 as A;
+            use vk::ImageLayout as L;
+            use vk::PipelineStageFlags2 as S;
+            let to_copy = [barrier(
+                image.image,
+                color,
+                (L::SHADER_READ_ONLY_OPTIMAL, S::NONE, A::NONE),
+                (L::TRANSFER_SRC_OPTIMAL, S::COPY, A::TRANSFER_READ),
+            )
+            .subresource_range(vk::ImageSubresourceRange {
+                level_count: mips.len() as u32,
+                layer_count: layers,
+                ..subresource(color)
+            })];
+            gpu.device.cmd_pipeline_barrier2(
+                cmd,
+                &vk::DependencyInfo::default().image_memory_barriers(&to_copy),
+            );
+            gpu.device.cmd_copy_image_to_buffer(
+                cmd,
+                image.image,
+                L::TRANSFER_SRC_OPTIMAL,
+                readback.buffer,
+                &regions,
+            );
+        })
+        .unwrap();
+        readback.mapped().unwrap().to_vec()
+    }
+
+    /// An RGBA texture's mips from `width`×`width` down to 1×1, and its size in bytes.
+    fn rgba_mips(width: u32) -> (Vec<Mip>, u64) {
+        let mut mips = Vec::new();
+        let (mut w, mut offset) = (width, 0);
+        while w > 0 {
+            mips.push(Mip {
+                offset,
+                width: w,
+                height: w,
+            });
+            offset += u64::from(w * w * 4);
+            w /= 2;
+        }
+        (mips, offset)
+    }
+
+    #[test]
+    fn the_uploader_fills_every_image_with_its_bytes() {
+        let gpu = Gpu::new_headless().unwrap();
+        let format = vk::Format::R8G8B8A8_UNORM;
+        // Halves of 1 KiB: 8x8 textures (340 bytes with their mips) go three to a
+        // half, so nine of them use both halves and wait to reuse the first; a 32x32
+        // one is larger than a half and goes up on its own; a two-layer array fits.
+        let mut uploader = Uploader::new(&gpu, 1024).unwrap();
+        let mut wanted = Vec::new();
+        let textures = std::iter::repeat_n(8, 9).chain([32, 8]);
+        for (i, width) in textures.enumerate() {
+            let (mips, size) = rgba_mips(width);
+            let layers = if i == 10 { 2 } else { 1 };
+            let data: Vec<u8> = (0..size * u64::from(layers))
+                .map(|b| (b as u8).wrapping_mul(31).wrapping_add(i as u8 * 17))
+                .collect();
+            let image = if layers == 1 {
+                uploader.sampled(format, &mips, &data).unwrap()
+            } else {
+                uploader
+                    .sampled_array(format, &mips, (layers, size), &data)
+                    .unwrap()
+            };
+            wanted.push((image, mips, layers, data));
+        }
+        uploader.finish().unwrap();
+        for (i, (image, mips, layers, data)) in wanted.iter().enumerate() {
+            let got = read_back(&gpu, image, mips, *layers, data.len() as u64);
+            assert!(got == *data, "texture {i} came back different");
+        }
+    }
+
+    #[test]
+    fn an_uploader_dropped_unfinished_frees_its_copies() {
+        let gpu = Gpu::new_headless().unwrap();
+        let mut uploader = Uploader::new(&gpu, 1024).unwrap();
+        let (mips, size) = rgba_mips(8);
+        let data = vec![7; size as usize];
+        let images: Vec<_> = (0..5)
+            .map(|_| {
+                uploader
+                    .sampled(vk::Format::R8G8B8A8_UNORM, &mips, &data)
+                    .unwrap()
+            })
+            .collect();
+        // One half submitted, the other recording: dropping waits, then frees both.
+        drop(uploader);
+        drop(images);
     }
 }
