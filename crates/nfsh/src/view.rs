@@ -430,10 +430,11 @@ struct Split {
     decoded_to: [u64; 2],
 }
 
-/// The staging ring's size ([`staging_ring`]): about the three batches of decoded
-/// chunks the load holds at once (each [`frostbite::texture::READ_AHEAD`] stored bytes,
-/// about 90 MiB decoded), less what the uploader has given back.
-const STAGING_RING: u64 = 256 << 20;
+/// The staging ring's size ([`staging_ring`]). A 256 MiB ring took about 80% of a warm
+/// load's decoded bytes and made it 0.21 s faster, but its peak 192 MiB higher; what
+/// doesn't fit is decoded into memory of its own (docs/BASELINE.md, "Decoding into the
+/// staging memory").
+const STAGING_RING: u64 = 64 << 20;
 
 /// [`renderer`]'s textures, read ahead on a thread of `scope`, and the upload; then
 /// the skies `skies_wanted` asks for of `times`, their textures read ahead after the
