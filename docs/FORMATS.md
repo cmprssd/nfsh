@@ -794,8 +794,13 @@ vegetation's shadow casters (`shaders/shadowmeshalpha`, unnamed, the same in eve
 LOD); the other 104 are trunks, cloth, `generic` and a few leaves, where foliage bends
 it outward (61 to 100% within 30° by species).
 
+`shaders/shadowmeshalpha` is the only shader in the city whose name has "shadow" in
+it (2026-11-16); nfsh leaves its sections out, as it draws no shadows.
+
 Sections with positions only and no name (usually the last one or two of a LOD) look
-like shadow geometry: the same one often repeats in every LOD.
+like shadow geometry: the same one often repeats in every LOD. Their materials don't
+say so: the 16,723 in the city use ordinary surfaces' shaders (buildings, `generic`,
+vista; counted 2026-11-16), so they are still drawn.
 
 **Composite meshes** (`CompositeMeshAsset`, the breakable `brk` props such as trees and
 poles) have the same geometry, with their parts already in place; the part data

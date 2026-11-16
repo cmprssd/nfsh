@@ -1272,6 +1272,7 @@ mod tests {
         let (mut normals_agree, mut normals_of) = (0u64, 0u64);
         for m in &placed {
             let set = meshes.by_partition(&m.partition).unwrap();
+            let materials = meshes.materials(&m.partition).unwrap();
             *count.entry("meshes").or_default() += 1;
             match meshes.switches(&m.partition) {
                 Ok(s) if s == Switches::NEVER => {
@@ -1300,6 +1301,13 @@ mod tests {
                         broken.push(format!("{}: strides add to {strides}", lod.name));
                     }
                     let g = lod.section(s, &data).unwrap();
+                    let shader = materials
+                        .get(s.material as usize)
+                        .and_then(|m| m.shader)
+                        .and_then(|g| store.partition_name(&g));
+                    if shader.is_some_and(crate::texture::shadow_only) {
+                        *count.entry("sections only casting a shadow").or_default() += 1;
+                    }
                     *count.entry("triangles").or_default() += u64::from(s.triangles);
                     *count.entry("vertices").or_default() += u64::from(s.vertices);
                     if g.uvs.is_some() {
@@ -1404,6 +1412,9 @@ mod tests {
                 ("lods", 14_112),
                 ("meshes", 5_475),
                 ("sections", 53_194),
+                // 2026-11-16: no other shader's name has "shadow" in it; all are
+                // unnamed, with normals alone.
+                ("sections only casting a shadow", 251),
                 ("sections with normals alone", 1_646),
                 ("sections with uvs", 35_110),
                 ("triangles", 48_797_619),

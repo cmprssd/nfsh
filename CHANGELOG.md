@@ -6,6 +6,16 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.44.2] - 2026-11-16
+
+### Fixed
+
+- **Trees no longer draw their shadow casters.** 251 sections of the city's vegetation
+  (material shader `shaders/shadowmeshalpha`) are geometry that only casts the tree's
+  shadow; nfsh drew them as if they were seen, as extra leaf cards inside the canopy.
+  They are now left out: not decoded, not drawn, not uploaded (at the speedway, 75
+  draws and 55,508 triangles fewer).
+
 ## [0.44.1] - 2026-11-16
 
 ### Fixed
