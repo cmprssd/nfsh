@@ -1498,3 +1498,20 @@ tree's shadow, and nfsh, which draws no shadows, drew them as if they were seen.
 - **The unnamed positions-only sections stay**: 16,723 of them, and their materials are
   ordinary surfaces' (buildings, `generic`, vista), so the shader can't tell them apart;
   whether they are shadow geometry is still open.
+
+## 2026-11-16: `nfsh level STORE X,Z` keeps the zones' extents
+
+Finding the zones that hold a point read all 205 zones on every call (17 s warm, 43 s
+cold). Decided by Claude, pending review.
+
+- **Kept in `zone-extents.nfsh` in the store's folder**, a text file of one line per zone.
+  Why `.nfsh`: writing a new store into a folder clears only files with that ending and
+  refuses others, so the cache goes with the store it belongs to.
+- **Keyed on the index's size and modification time and each pack's size**: a re-imported
+  store misses the key and is read again. A cache that is missing, from another store, cut
+  off, or has a line that doesn't read is ignored and rebuilt; a folder that can't be
+  written to just goes without. It is written aside and renamed, so no reader sees half
+  of it. Nothing about it can fail the command.
+- **No release**: the command's output is the same.
+- Measured on the owner's store (D:, USB; one run, not the timing queue): first call 64 s,
+  repeat 1.2 s, same output; a damaged file is rebuilt.

@@ -82,28 +82,114 @@ pub fn run(dir: &Path, zone: Option<&str>) -> Result<String> {
         None => Ok(sub_levels(&level.sub_levels(ROOT)?)),
         Some(at) if point(at).is_some() => {
             let p = point(at).unwrap_or_default();
-            let mut extents = Vec::new();
-            for s in level.sub_levels(ROOT)? {
-                if !(s.found && is_zone(&s.name)) {
-                    continue;
-                }
-                let zone = level.zone(&s.name)?;
-                if let Some((lo, hi)) = xz_bounds(&zone) {
-                    let placements = zone.placements.len();
-                    extents.push(Extent {
-                        zone: s.name,
-                        lo,
-                        hi,
-                        placements,
-                    });
-                }
-            }
+            let extents = zone_extents(&store, &mut level)?;
             Ok(zones_at(&extents, p))
         }
         Some(zone) => {
             let name = zone_bundle(zone);
             Ok(placements(&name, &level.zone(&name)?))
         }
+    }
+}
+
+/// Every zone's extent. Reading all of them takes 17 s warm, so they are kept in
+/// `zone-extents.nfsh` in the store, keyed on what identifies it (the index's size and
+/// time, each pack's size): a changed store misses the key, and a cache that is missing,
+/// unreadable or damaged is read again from the zones, never trusted or fatal.
+fn zone_extents(store: &Store, level: &mut Level) -> Result<Vec<Extent>> {
+    let key = cache_key(store);
+    let path = store.dir.join(CACHE);
+    if let Some(key) = &key
+        && let Ok(text) = std::fs::read_to_string(&path)
+        && let Some(extents) = parse_cache(&text, key)
+    {
+        return Ok(extents);
+    }
+    let mut extents = Vec::new();
+    for s in level.sub_levels(ROOT)? {
+        if !(s.found && is_zone(&s.name)) {
+            continue;
+        }
+        let zone = level.zone(&s.name)?;
+        if let Some((lo, hi)) = xz_bounds(&zone) {
+            let placements = zone.placements.len();
+            extents.push(Extent {
+                zone: s.name,
+                lo,
+                hi,
+                placements,
+            });
+        }
+    }
+    if let Some(key) = &key {
+        // Written aside and renamed, so a reader never sees half a file; a store that
+        // can't be written to just goes without.
+        let tmp = path.with_extension("nfsh.tmp");
+        if std::fs::write(&tmp, format_cache(&extents, key)).is_ok()
+            && std::fs::rename(&tmp, &path).is_err()
+        {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+    Ok(extents)
+}
+
+/// Named `.nfsh` so that writing a new store into the folder clears it with the rest.
+const CACHE: &str = "zone-extents.nfsh";
+
+/// What identifies the store's contents, or `None` when its index can't be examined.
+fn cache_key(store: &Store) -> Option<String> {
+    let meta = std::fs::metadata(store.dir.join(frostbite::store::INDEX)).ok()?;
+    let nanos = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let packs: Vec<String> = store.packs.iter().map(u64::to_string).collect();
+    Some(format!("{} {nanos} {}", meta.len(), packs.join(",")))
+}
+
+fn format_cache(extents: &[Extent], key: &str) -> String {
+    let mut out = format!("nfsh-zone-extents 1\n{key}\n");
+    for e in extents {
+        let _ = writeln!(
+            out,
+            "{} {} {} {} {} {}",
+            e.zone, e.lo[0], e.lo[1], e.hi[0], e.hi[1], e.placements
+        );
+    }
+    out.push_str("end\n");
+    out
+}
+
+/// The extents `text` holds for `key`; `None` for any other key, a missing end line
+/// (a cut-off write) or a line that doesn't read.
+fn parse_cache(text: &str, key: &str) -> Option<Vec<Extent>> {
+    let mut lines = text.lines();
+    if lines.next()? != "nfsh-zone-extents 1" || lines.next()? != key {
+        return None;
+    }
+    let mut extents = Vec::new();
+    loop {
+        let line = lines.next()?;
+        if line == "end" {
+            return lines.next().is_none().then_some(extents);
+        }
+        let mut f = line.split(' ');
+        let zone = f.next()?.to_owned();
+        let mut num = || f.next()?.parse::<f32>().ok().filter(|v| v.is_finite());
+        let (lx, lz, hx, hz) = (num()?, num()?, num()?, num()?);
+        let placements = f.next()?.parse().ok()?;
+        if f.next().is_some() || !is_zone(&zone) {
+            return None;
+        }
+        extents.push(Extent {
+            zone,
+            lo: [lx, lz],
+            hi: [hx, hz],
+            placements,
+        });
     }
 }
 
@@ -258,6 +344,26 @@ mod tests {
             hi,
             placements: 1,
         }
+    }
+
+    #[test]
+    fn the_extents_cache_round_trips_and_refuses_what_is_off() {
+        let zs = format!("{ZONE}7");
+        let e = vec![Extent {
+            zone: zs,
+            lo: [-1.5, 2.0],
+            hi: [3.25, 4.0],
+            placements: 9,
+        }];
+        let text = format_cache(&e, "k 1");
+        assert_eq!(parse_cache(&text, "k 1"), Some(e));
+        assert_eq!(parse_cache(&text, "k 2"), None, "another store");
+        let cut = &text[..text.len() - 4];
+        assert_eq!(parse_cache(cut, "k 1"), None, "cut off");
+        assert_eq!(parse_cache(&text.replace("9\n", "x\n"), "k 1"), None);
+        assert_eq!(parse_cache(&text.replace("-1.5", "NaN"), "k 1"), None);
+        assert_eq!(parse_cache("", "k 1"), None);
+        assert_eq!(parse_cache("\u{0}\u{1}garbage", "k 1"), None);
     }
 
     #[test]
