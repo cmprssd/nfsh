@@ -31,6 +31,9 @@ nfsh	0.41.0	peak_mib	2020	BASELINE.md: The ground's tiles read before its layers
 nfsh	0.42.0	load_warm_s	3.83	BASELINE.md: The store's index decoded on every core (0.42.0)
 nfsh	0.42.0	load_cold_s	21.44	BASELINE.md: The store's index decoded on every core (0.42.0)
 nfsh	0.42.0	peak_mib	2026	BASELINE.md: The store's index decoded on every core (0.42.0)
+nfsh	0.44.0	load_warm_s	3.77	BASELINE.md: The sky (0.44.0)
+nfsh	0.44.0	load_cold_s	21.41	BASELINE.md: The sky (0.44.0)
+nfsh	0.44.0	peak_mib	2029	BASELINE.md: The sky (0.44.0)
 nfsh	0.33.0	frame_median_ms	6.76	BASELINE.md: The same path (window)
 nfsh	0.33.0	frame_low1_ms	16.20	BASELINE.md: The same path (window)
 nfsh	0.34.0	frame_median_ms	6.57	BASELINE.md: The same path
