@@ -8,6 +8,8 @@ and adapted here. It ships no game data: it reads the owner's install at
 `D:\SteamLibrary\steamapps\common\Need for Speed Heat`
 (`/mnt/d/SteamLibrary/steamapps/common/Need for Speed Heat` from WSL).
 
+Where each format, decoder, system and tool lives is `docs/MAP.md`: read it before
+searching the tree, and update it in any PR that adds, moves or renames a module.
 How it all works is `docs/OVERVIEW.md`. The spec is `docs/BRIEF.md`; decisions are in
 `docs/DECISIONS.md` (dated `##` entries, newest last; mid-build ones marked "decided by
 Claude, pending review").
