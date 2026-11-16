@@ -725,6 +725,11 @@ after reading 12 packs of the old store, different ones each time):
 - **The sky costs nothing measurable in the load**: warm and cold within the spread
   between loads (the sky found in 0.01 s, its 7 reads and 4.7 MiB behind the zone's).
 - **About 4 MiB more at the peak** (0.2%), its textures in memory before their upload.
+- **Its upload is not worth batching:** the sky's 3 textures go up one submit each, not
+  through the zone's batched uploader. The whole sky line (finding, decoding and
+  uploading them) reads 0.01 s warm and 0.02 s at most cold, in three headless `--shot`
+  loads of zone 494 at 0.44.2 (2026-11-16, the PC in use): under the 0.05 s that would
+  make batching them worth a change.
 
 ## The original's half
 
