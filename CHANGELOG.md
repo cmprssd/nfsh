@@ -6,6 +6,8 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-11-16
+
 ### Added
 
 - **The sky.** `nfsh view` draws the time of day's sky behind everything, where the
@@ -14,7 +16,8 @@ All notable changes are listed here. The format follows
   data says (its textures times `LuminanceScale` are cd/m²) and exposed like the rest.
   Midday is a clear blue sky with cumulus near the horizon, tealnight a teal sky with
   stars. `--no-sky` leaves it out (black, its textures not loaded), the first of the
-  rendering features' off switches.
+  rendering features' off switches. It costs nothing measurable in a load, and about
+  4 MiB at the peak (`docs/BASELINE.md`, "The sky").
 - **`nfsh ebx` names each import's partition**, where the store lists it.
 
 ## [0.43.0] - 2026-11-15
