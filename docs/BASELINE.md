@@ -682,6 +682,50 @@ three warm pairs discarded; cold after reading other packs):
 - **What is left warm is decoding the textures**: the upload thread waits on the three
   decoding threads, so it has to be cheaper per byte, or start sooner.
 
+### Which memory to decode the textures into (measured)
+
+A load decodes each texture into a buffer of its own, then copies it into the uploader's
+staging memory. Decoding straight into memory the GPU copies from would skip that copy,
+if the GPU memory is as quick to write. Measured with a throwaway mode of the viewer
+like the section above (zone 494's 600 chunks, 609 MiB stored, 860 MiB decoded, in 11
+batches, read into memory first; the Windows build on an idle PC, 2026-11-16; best of
+three, two runs within about 2% of each other). "Staging" is the memory gpu-allocator
+gives `CpuToGpu` on this PC (device-local, host-visible, coherent, not cached), "cached"
+its `GpuToCpu` (the same, and host-cached), "host" ordinary memory, each a ring reused
+batch after batch:
+
+| Zone 494, 860 MiB | 1 thread | 2 | 3 | 4 |
+|---|---|---|---|---|
+| Into new buffers (as a load does) | 2.86 s | 1.86 s | 1.56 s | 1.50 s |
+| Into reused buffers | 2.24 s | 1.29 s | 1.00 s | 0.94 s |
+| Into a ring of host memory | 2.16 s | 1.22 s | 0.93 s | 0.86 s |
+| Into a ring of cached GPU memory | 2.19 s | 1.22 s | 0.93 s | 0.86 s |
+| Into a ring of staging memory | 17.75 s | 9.89 s | 7.74 s | 7.28 s |
+
+- **Never decode into the staging memory**: 8 times slower at every thread count. Likely
+  because zstd reads back what it has just written (its matches copy earlier output),
+  and every read of uncached memory goes over the bus (not measured apart).
+- **Cached GPU memory is as quick as host memory**, so a ring of it saves the copy and
+  the new buffers both: 1.50 s down to 0.86 s on 4 threads, 0.64 s in this probe. In a
+  load, decoding overlaps reading and uploading, so less of it shows; PR #74 builds
+  that ring and times it.
+
+### The sky (0.44.0)
+
+The sky (PRs #72 and #73) loads one time of day's textures, read ahead after the zone's
+through the same loader. Zone 494, loads alternating with 0.43.0 built from its tag
+(2026-11-16, the PC idle over five minutes; the first three warm pairs discarded; cold
+after reading 12 packs of the old store, different ones each time):
+
+| Zone 494 | Load, warm | Load, cold | Peak working set | Store reads |
+|---|---|---|---|---|
+| 0.43.0 | 3.82, 3.78, 3.75, 3.83 s (median 3.80) | 21.45, 21.52 s | 2,020 to 2,024 MiB | 570, 618.3 MiB |
+| 0.44.0 (the sky) | 3.78, 3.77, 3.75, 3.70 s (median 3.77) | 21.43, 21.39 s | 2,024 to 2,029 MiB | 577, 623.0 MiB |
+
+- **The sky costs nothing measurable in the load**: warm and cold within the spread
+  between loads (the sky found in 0.01 s, its 7 reads and 4.7 MiB behind the zone's).
+- **About 4 MiB more at the peak** (0.2%), its textures in memory before their upload.
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)
