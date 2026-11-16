@@ -762,7 +762,8 @@ Vertex elements seen (usage/format, bytes):
 | 0x22-0x26 | the same | further texture coordinate sets: on roads, 0x22 maps the road's mask (`detailMask`, 0 to 1 across the mask) and 0x23 the shoulder (`Shoulder_NH`) |
 | 0x1E | 0x0D (4 bytes) | a vertex colour, RGBA, a byte each: road lines are white (219 to 255) or yellow (255, 146, 19); on cracks and tyre marks only red varies, 0 to 255 (taken as their fade) |
 | 0x34 | 0x0D (4 bytes) | the tangent frame: the normal and tangent, packed (below) |
-| 0x02-0x08, 0x1F, 0x2A, 0x33, 0xBC, 0xD0 | 0x0C, 0x0D (4 bytes), 0x13 (4), 0x17, 0x19 (8), 0x03, 0x08 | not worked out: a second set of lightmap coordinates is likely among them; 0x1F is a second four-byte colour on roads; 0x2A (3 floats, the third 0) runs 0 to 1 across a road piece |
+| 0x06 | 0x08 (4 halves, 8) | a normal without a tangent, on sections without 0x34: x, y, z, then always 1 (below) |
+| 0x02-0x05, 0x07, 0x08, 0x1F, 0x2A, 0x33, 0xBC, 0xD0 | 0x0C, 0x0D (4 bytes), 0x13 (4), 0x17, 0x19 (8), 0x03, 0x08 | not worked out: a second set of lightmap coordinates is likely among them; 0x1F is a second four-byte colour on roads; 0x2A (3 floats, the third 0) runs 0 to 1 across a road piece |
 
 **The tangent frame** (0x34; worked out on 2026-11-01 from the meshes' faces and the
 vertex programs that read it) is four bytes. The fourth is flags: bit 0, the sign of
@@ -782,6 +783,16 @@ it; every frame comes out orthonormal, and 93% of the vertices (28.5 of 30.5 mil
 take a normal within 30° of their triangles' average, the rest mostly where a vertex
 joins faces at an angle and the art chose its normal. The axis code 3 has not been
 seen.
+
+**The normal alone** (0x06, worked out on 2026-11-16) is on 1,646 sections of the
+city, none with a tangent frame. Every one of its 1,217,187 vertices is unit length to
+the halves' rounding with a fourth half of exactly 1, and 97.1% (1,182,150 of 1,217,071
+with triangles) are within 30° of their triangles' average, 193 the other way. By the
+material's shader: 1,291 are cables (`s_defaultcableshader`), flat vertical ribbons
+two vertices tall whose normal is their face's (923,028 of 923,030); 251 are
+vegetation's shadow casters (`shaders/shadowmeshalpha`, unnamed, the same in every
+LOD); the other 104 are trunks, cloth, `generic` and a few leaves, where foliage bends
+it outward (61 to 100% within 30° by species).
 
 Sections with positions only and no name (usually the last one or two of a LOD) look
 like shadow geometry: the same one often repeats in every LOD.

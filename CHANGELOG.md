@@ -6,6 +6,15 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-11-16
+
+### Fixed
+
+- **Meshes that store a normal without a tangent are lit by it** (vertex element 0x06,
+  four halves; 1,646 sections of the city, mostly cables, then vegetation's trunks,
+  cloth and leaves), where they took their triangles' normal. The cables look the same
+  (they are flat ribbons); the rest are shaded smoothly.
+
 ## [0.44.0] - 2026-11-16
 
 ### Added
