@@ -726,6 +726,30 @@ after reading 12 packs of the old store, different ones each time):
   between loads (the sky found in 0.01 s, its 7 reads and 4.7 MiB behind the zone's).
 - **About 4 MiB more at the peak** (0.2%), its textures in memory before their upload.
 
+### Decoding into the staging memory (PR #74, being timed)
+
+The load decodes each texture chunk straight into a ring of cached GPU memory
+(`GpuToCpu`, host-cached; no ring where the device has none, as uncached memory is 8
+times slower, "Which memory to decode the textures into") and the GPU copies it from
+there, its slot given back once the copy is done. A texture that doesn't fit while the
+ring is full is decoded into memory of its own, as before, rather than wait. Zone 494,
+loads alternating with the sky's build (main at 9620887; 2026-11-16, the PC idle over
+five minutes; the first three warm pairs discarded; cold after reading 12 packs of the
+old store, different ones each time):
+
+| Zone 494 | Load, warm | Load, cold | Peak working set | Decoded into the ring, warm |
+|---|---|---|---|---|
+| main (the sky) | 3.65, 3.72, 3.77, 3.68 s (median 3.70) | 21.75, 21.25 s | 2,024 to 2,028 MiB | |
+| 256 MiB ring | 3.50, 3.49, 3.51, 3.52 s (median 3.51) | 21.63, 21.53 s | 2,198 to 2,220 MiB | 695 of 860 MiB |
+
+- **Warm, 0.2 s faster (5%)**, every ring load faster than its pair; the texture stage
+  uploads in 1.8 s against 2.0 s.
+- **Cold, unchanged**: reading the packs is what a cold load waits on.
+- **But 192 MiB more at the peak** (9.5%), the ring's memory, which the mimalloc trial
+  showed cold loads pay for on this 8 GB PC once it grows by hundreds of MiB.
+- **A smaller ring is being timed** (64 and 128 MiB, on the night queue) before PR #74 is
+  merged or closed.
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)
