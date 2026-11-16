@@ -6,6 +6,11 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `nfsh level STORE X,Z` keeps the zones' extents in the store (`zone-extents.nfsh`): a
+  repeat call takes about a second instead of reading all 205 zones again.
+
 ## [0.44.2] - 2026-11-16
 
 ### Fixed
