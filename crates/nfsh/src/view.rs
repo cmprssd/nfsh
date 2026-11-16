@@ -9,7 +9,7 @@
 //! `--frames DIR` also writes its frames there as PNGs, 30 a second of path time, for
 //! a video.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -22,7 +22,7 @@ use frostbite::lighting::{self, Lighting, Sky as SkyData};
 use frostbite::mesh::Meshes;
 use frostbite::staging::{Bytes, Ring};
 use frostbite::store::Store;
-use frostbite::terrain::{self, Chunks, Ground, Tree};
+use frostbite::terrain::{Chunks, Ground, GroundWalk, Tree};
 use frostbite::texture::{Asset, Textures, decode_workers};
 use nfsh_render::resource::staging_ring;
 use nfsh_render::scene::{self, Scene};
@@ -578,9 +578,9 @@ fn disk_line(bytes: u64, reads: u64) -> String {
 ///
 /// The disk and the processor take turns: the ground's layers, mostly decoding and
 /// independent of the zone, are worked out on a thread from the start, and the ground
-/// tiles are read on another once the zone's extent is known and its meshes are read
-/// (and walked once the layers are done, which weight them), while the meshes are
-/// built from memory ([`build`], on threads of their own).
+/// tiles are read on another once the zone's extent is known and its meshes are read,
+/// each walked as it comes ([`walk_ground`]), while the meshes are built from memory
+/// ([`build`], on threads of their own).
 fn load(store: &Store, name: &str, rings: usize) -> frostbite::Result<Scene> {
     let start = Instant::now();
     let disk = frostbite::cas::read_so_far();
@@ -616,39 +616,24 @@ fn load(store: &Store, name: &str, rings: usize) -> frostbite::Result<Scene> {
         parts.done("meshes read");
         let bounds = xz_bounds(&zone);
         let ground = s.spawn(move || {
-            // The tiles are read while the layers are still worked out: they need the
-            // layers only to be weighted.
-            let (tiles, read_took) =
-                timed(|| bounds.map(|(lo, hi)| GroundTiles::read(store, lo, hi)));
-            // Without the layers' detail the ground is still drawn; without the ground,
-            // the zone.
-            let (textures, layers_took) =
-                joined(layers).unwrap_or_else(|e| (Err(frostbite::Error(e)), Duration::ZERO));
-            let detail = match textures {
-                Ok(textures) => scene::ground_detail(&textures),
-                Err(e) => {
-                    eprintln!("  ground drawn without detail: {e}");
-                    Default::default()
-                }
+            let walked = bounds.map(|(lo, hi)| walk_ground(store, lo, hi, layers));
+            let (detail, ground, times) = match walked {
+                Some((detail, ground, times)) => (detail, Some(ground), times),
+                None => (Default::default(), None, GroundTimes::default()),
             };
-            let keys: Vec<u16> = detail.keys().copied().collect();
-            let (ground, walk_took) = timed(|| tiles.map(|t| t.map(|t| t.ground(&keys))));
-            (detail, ground, layers_took, read_took, walk_took)
+            (detail, ground, times)
         });
         let noise = scene::texture_partition(store, scene::ASPHALT_NOISE);
         let mut scene = build(store, &zone, &mut meshes, noise);
         drop(meshes);
         parts.done("meshes built");
-        let (detail, ground, layers_took, read_took, walk_took) =
-            joined(ground).unwrap_or_else(|e| {
-                (
-                    Default::default(),
-                    Some(Err(frostbite::Error(e))),
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    Duration::ZERO,
-                )
-            });
+        let (detail, ground, times) = joined(ground).unwrap_or_else(|e| {
+            (
+                Default::default(),
+                Some(Err(frostbite::Error(e))),
+                GroundTimes::default(),
+            )
+        });
         parts.done("waiting for the ground");
         match ground {
             Some(Ok(g)) => {
@@ -682,11 +667,11 @@ fn load(store: &Store, name: &str, rings: usize) -> frostbite::Result<Scene> {
             read_since(disk)
         );
         eprintln!(
-            "  read stage: {}; on threads, ground layers {:.1} s, ground tiles read {:.1} s and walked {:.1} s",
+            "  read stage: {}; on threads, ground layers {:.1} s, ground tiles read {:.1} s, walked {:.1} s after",
             parts.done.join(", "),
-            layers_took.as_secs_f64(),
-            read_took.as_secs_f64(),
-            walk_took.as_secs_f64()
+            times.layers.as_secs_f64(),
+            times.read.as_secs_f64(),
+            times.walk.as_secs_f64()
         );
         for (mesh, why) in &scene.failed {
             eprintln!("  not drawn: {mesh}: {why}");
@@ -790,44 +775,132 @@ fn build(store: &Store, zone: &Zone, meshes: &mut Meshes, noise: Option<[u8; 16]
     })
 }
 
-/// The ground's tiles under an area and [`GROUND_MARGIN`] around it, read and
-/// decompressed but not yet walked: the walk needs the detail layers, which are worked
-/// out at the same time on another thread.
-struct GroundTiles<'s> {
-    tree: Tree,
-    reader: Chunks<'s>,
-    lo: [f32; 2],
-    hi: [f32; 2],
-    /// Each chunk the walk reads, as read (or why it could not be).
-    chunks: HashMap<[u8; 16], frostbite::Result<Vec<u8>>>,
+/// How long the ground's parts took, on their threads.
+#[derive(Default)]
+struct GroundTimes {
+    /// Working out the detail layers ([`layers::textures`]).
+    layers: Duration,
+    /// Reading the tiles' chunks, from when the zone's extent was known.
+    read: Duration,
+    /// Walking the tiles after the last chunk was read.
+    walk: Duration,
 }
 
-impl<'s> GroundTiles<'s> {
-    fn read(store: &'s Store, lo: [f32; 2], hi: [f32; 2]) -> frostbite::Result<Self> {
-        let tree = Tree::read(store)?;
-        let mut reader = Chunks::new(store)?;
-        let lo = lo.map(|v| v - GROUND_MARGIN);
-        let hi = hi.map(|v| v + GROUND_MARGIN);
-        let ids = terrain::ground_chunks(&tree, lo, hi);
-        reader.prefetch(&ids);
-        let chunks = ids.iter().map(|id| (*id, reader.read(id))).collect();
-        Ok(Self {
-            tree,
-            reader,
-            lo,
-            hi,
-            chunks,
-        })
-    }
+/// The layers' textures, as [`load`] works them out on their own thread.
+type LayersThread<'scope> = std::thread::ScopedJoinHandle<
+    'scope,
+    (
+        frostbite::Result<BTreeMap<u16, Vec<layers::Texture>>>,
+        Duration,
+    ),
+>;
 
-    /// The ground, weighted by the detail `layers`.
-    fn ground(mut self, layers: &[u16]) -> Ground {
-        terrain::ground(&self.tree, self.lo, self.hi, GROUND_SPACING, layers, |id| {
-            // One not read ahead (none should be) is read now.
-            let (chunks, reader) = (&mut self.chunks, &mut self.reader);
-            chunks.remove(id).unwrap_or_else(|| reader.read(id))
-        })
+/// The ground's detail layers, from their thread; none (and why, printed) when they
+/// could not be worked out.
+fn detail_of(layers: LayersThread<'_>) -> (BTreeMap<u16, scene::Detail>, Duration) {
+    let (textures, took) =
+        joined(layers).unwrap_or_else(|e| (Err(frostbite::Error(e)), Duration::ZERO));
+    match textures {
+        Ok(textures) => (scene::ground_detail(&textures), took),
+        Err(e) => {
+            eprintln!("  ground drawn without detail: {e}");
+            (BTreeMap::new(), took)
+        }
     }
+}
+
+/// The ground under `lo`..`hi` and [`GROUND_MARGIN`] around it, with the detail layers
+/// from the thread `layers`.
+///
+/// The tiles' chunks are read on a thread of their own in the packs' order, and each is
+/// walked here as it comes ([`GroundWalk`]): the walk weights the vertices by the
+/// layers, so its leaves wait for those, usually done first. Without the layers'
+/// detail the ground is still drawn; without the ground, the zone.
+fn walk_ground<'scope>(
+    store: &Store,
+    lo: [f32; 2],
+    hi: [f32; 2],
+    layers: LayersThread<'scope>,
+) -> (
+    BTreeMap<u16, scene::Detail>,
+    frostbite::Result<Ground>,
+    GroundTimes,
+) {
+    let start = Instant::now();
+    let mut times = GroundTimes::default();
+    let mut layers = Some(layers);
+    let mut detail = None;
+    let walked = (|| -> frostbite::Result<Ground> {
+        let tree = Tree::read(store)?;
+        let mut entries = store.entries()?;
+        let (lo, hi) = (lo.map(|v| v - GROUND_MARGIN), hi.map(|v| v + GROUND_MARGIN));
+        let mut walk = GroundWalk::new(&tree, lo, hi, GROUND_SPACING);
+        let ids = walk.chunks();
+        let (tx, rx) = mpsc::channel();
+        std::thread::scope(|s| {
+            let reading = s.spawn(move || {
+                // Failing here, the walk reads its chunks itself and reports why.
+                if let Ok(mut reader) = Chunks::new(store) {
+                    reader.stream(&ids, |id, at, frame| {
+                        tx.send((id, at, frame.to_vec())).is_ok()
+                    });
+                }
+                start.elapsed()
+            });
+            // Takes the layers once their thread is done, or at once (`wait`); whether
+            // they have been taken.
+            let mut take = |walk: &mut GroundWalk, wait: bool| {
+                if let Some(thread) = layers.take_if(|t| wait || t.is_finished()) {
+                    let (d, took) = detail_of(thread);
+                    times.layers = took;
+                    walk.detail(&d.keys().copied().collect::<Vec<u16>>());
+                    detail = Some(d);
+                }
+                layers.is_none()
+            };
+            loop {
+                // Waits a little at a time while the layers may still finish.
+                let next = match take(&mut walk, false) {
+                    false => rx.recv_timeout(Duration::from_millis(5)),
+                    true => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                };
+                match next {
+                    Ok((id, at, frame)) => walk.chunk(&id, entries.read_stored(at, Some(&frame))),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            let read_end = Instant::now();
+            take(&mut walk, true);
+            match joined(reading) {
+                Ok(took) => times.read = took,
+                Err(e) => eprintln!("  ground tiles: {e}"),
+            }
+            // Those not handed over (none, unless their read failed) are read now,
+            // and report why.
+            let mut reader = None;
+            let ground = walk.finish(|id| {
+                let reader = match &mut reader {
+                    Some(r) => r,
+                    None => reader.insert(Chunks::new(store)?),
+                };
+                reader.read(id)
+            });
+            times.walk = read_end.elapsed();
+            Ok(ground)
+        })
+    })();
+    // The layers are still wanted when the ground could not be walked.
+    let detail = match (detail, layers) {
+        (Some(d), _) => d,
+        (None, Some(thread)) => {
+            let (d, took) = detail_of(thread);
+            times.layers = took;
+            d
+        }
+        (None, None) => BTreeMap::new(),
+    };
+    (detail, walked, times)
 }
 
 /// What `f` returns, and how long it took.

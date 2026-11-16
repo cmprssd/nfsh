@@ -1608,3 +1608,26 @@ The art zones' streamer (`ZoneStreamerEntityData` in `levels/mainlevel/worldart`
 - **Overlapping archive entries need nothing more**: every overlap in the install
   (186 pairs, 76 MB) is a bundle's copy of a chunk's end inside the whole chunk, ending
   where it ends, which the store already reads from the whole chunk (0.26.0, `plan.rs`).
+
+## 2026-11-16: The ground walked as its chunks come (decided by Claude, pending review)
+
+Cold, the ground's walk (0.2 to 0.3 s) followed the last of its tiles' reads (1.2 to
+1.3 s). The tiles' chunks lie in the packs in no order the walk could follow: walked
+depth first, the first tenth of the walk already needs chunks from the end of the
+packs' order, so handing them over in that order to the same walk would hide nothing.
+
+- **Each leaf is drawn once its own chunk and its ancestors' have come**, into a piece
+  of its own; the pieces are joined in the tree's order at the end. Why: the leaves'
+  squares and their texels in the ground's map don't overlap, so the ground (positions,
+  indices, map, the failed tiles' list) is the same whatever order the chunks came in,
+  and the picture is byte for byte the same. Drawing straight into one mesh would number
+  the vertices by arrival.
+- **Read on one thread in the packs' order, decompressed and walked on another.** Why:
+  the reads are the same 169 merged reads as before, and the disk never waits for the
+  walk; parsing a chunk is cheap (3 ms for 142), drawing is the walk's cost.
+- **Leaves wait for the detail layers**, which weight their vertices; those are usually
+  done first (1.0 s against the tiles' 1.2 s after the meshes' reads).
+- **No switch**: the same ground, sooner; `ground()` itself is the walk fed in order.
+- **Measured** (docs/BASELINE.md, "The ground walked as its chunks come"): cold, waiting
+  for the ground falls from 0.95 to 0.7 s and the load from 21.6 to 21.1 s; warm is the
+  same (3.68 against 3.67 s).

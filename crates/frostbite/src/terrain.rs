@@ -1312,32 +1312,250 @@ const NO_COLOUR: [u8; 3] = [128; 3];
 /// `spacing` metres or the heightfield's own spacing if coarser, and coloured by its
 /// own colour or its nearest ancestor's. Each vertex carries the weights of the
 /// layers of `detail` that have the most pages over the area (at most
-/// [`DETAIL_SLOTS`]). Holes are left out.
+/// [`DETAIL_SLOTS`]). Holes are left out. The chunks are read with `load`, in the
+/// order [`ground_chunks`] lists them.
 pub fn ground(
     tree: &Tree,
     lo: [f32; 2],
     hi: [f32; 2],
     spacing: f32,
     detail: &[u16],
-    mut load: impl FnMut(&[u8; 16]) -> Result<Vec<u8>>,
+    load: impl FnMut(&[u8; 16]) -> Result<Vec<u8>>,
 ) -> Ground {
-    let mut ground = Ground {
-        detail: detail_slots(tree, lo, hi, detail),
-        map: GroundMap::new(lo, hi, spacing),
-        ..Ground::default()
-    };
-    if !tree.tiles.is_empty() {
-        walk(
+    let mut walk = GroundWalk::new(tree, lo, hi, spacing);
+    walk.detail(detail);
+    walk.finish(load)
+}
+
+/// A tile's chunk, parsed ([`parse_tile`]).
+type Tiled = (
+    Option<std::rc::Rc<Heightfield>>,
+    std::rc::Rc<Colour>,
+    Option<std::rc::Rc<Pages>>,
+);
+
+/// A tile's chunk, parsed, or why it could not be read.
+type Parsed = std::result::Result<Tiled, String>;
+
+/// One leaf's part of the ground, its indices counted from its own first vertex.
+#[derive(Default)]
+struct Piece {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    colours: Vec<[u8; 4]>,
+    weights: Vec<[u8; DETAIL_SLOTS]>,
+    indices: Vec<u32>,
+}
+
+/// [`ground`] taking its chunks in any order, as they come off the disk: each leaf is
+/// drawn as soon as its own chunk and its ancestors' have come and the detail layers
+/// are known, and [`GroundWalk::finish`] puts the leaves together in the tree's order,
+/// so the ground is the same whatever order the chunks came in.
+pub struct GroundWalk<'t> {
+    tree: &'t Tree,
+    lo: [f32; 2],
+    hi: [f32; 2],
+    spacing: f32,
+    /// The tiles whose chunks the walk reads, in [`ground_chunks`]' order.
+    reads: Vec<usize>,
+    /// Those tiles by their chunk.
+    by_chunk: HashMap<[u8; 16], Vec<usize>>,
+    /// Each read tile's chunk, parsed, once it has come.
+    parsed: HashMap<usize, Parsed>,
+    /// The leaves in the tree's order, each with the read tiles from the root down to
+    /// it (itself included when it is one).
+    leaves: Vec<(usize, Vec<usize>)>,
+    /// How many of each leaf's read tiles have yet to come.
+    missing: Vec<usize>,
+    /// The leaves under each read tile.
+    under: HashMap<usize, Vec<usize>>,
+    /// Leaves whose chunks have all come, waiting for the detail layers.
+    ready: Vec<usize>,
+    /// Each leaf drawn, once drawn (none when it has no heights to draw from).
+    pieces: Vec<Option<Piece>>,
+    /// The detail layers, once known ([`GroundWalk::detail`]).
+    detail: Option<Vec<u16>>,
+    map: GroundMap,
+}
+
+impl<'t> GroundWalk<'t> {
+    /// The walk of `tree` over `lo`..`hi`, a vertex every `spacing` metres ([`ground`]).
+    pub fn new(tree: &'t Tree, lo: [f32; 2], hi: [f32; 2], spacing: f32) -> Self {
+        let mut walk = Self {
             tree,
-            0,
-            Sources::default(),
-            (lo, hi),
+            lo,
+            hi,
             spacing,
-            &mut load,
-            &mut ground,
-        );
+            reads: Vec::new(),
+            by_chunk: HashMap::new(),
+            parsed: HashMap::new(),
+            leaves: Vec::new(),
+            missing: Vec::new(),
+            under: HashMap::new(),
+            ready: Vec::new(),
+            pieces: Vec::new(),
+            detail: None,
+            map: GroundMap::new(lo, hi, spacing),
+        };
+        // Depth first, children in order: the order [`ground_chunks`] lists them in.
+        let mut stack = vec![(0usize, Vec::new())];
+        while let Some((index, mut path)) = stack.pop() {
+            let Some(tile) = tree.tiles.get(index).filter(|t| t.overlaps(lo, hi)) else {
+                continue;
+            };
+            if let Some((id, _)) = tile.chunk.filter(|_| tile.has_colour()) {
+                walk.reads.push(index);
+                walk.by_chunk.entry(id).or_default().push(index);
+                path.push(index);
+            }
+            match tile.children {
+                Some(children) => {
+                    stack.extend(children.iter().rev().map(|&c| (c as usize, path.clone())))
+                }
+                None => {
+                    let leaf = walk.leaves.len();
+                    for &t in &path {
+                        walk.under.entry(t).or_default().push(leaf);
+                    }
+                    walk.missing.push(path.len());
+                    walk.pieces.push(None);
+                    walk.leaves.push((index, path));
+                    if walk.missing[leaf] == 0 {
+                        walk.ready.push(leaf);
+                    }
+                }
+            }
+        }
+        walk
     }
-    ground
+
+    /// The chunks the walk reads, as [`ground_chunks`] lists them.
+    pub fn chunks(&self) -> Vec<[u8; 16]> {
+        self.reads
+            .iter()
+            .filter_map(|&t| self.tree.tiles[t].chunk.map(|(id, _)| id))
+            .collect()
+    }
+
+    /// Weights the vertices by the layers of `candidates` with the most pages over the
+    /// area ([`detail_slots`]), and draws the leaves already waiting for them. Only the
+    /// first call counts.
+    pub fn detail(&mut self, candidates: &[u16]) {
+        if self.detail.is_some() {
+            return;
+        }
+        self.detail = Some(detail_slots(self.tree, self.lo, self.hi, candidates));
+        for leaf in std::mem::take(&mut self.ready) {
+            self.draw(leaf);
+        }
+    }
+
+    /// Takes the chunk `id` as read (or why it could not be), and draws each leaf it
+    /// was the last chunk of, once the detail layers are known. A chunk the walk
+    /// doesn't read, or has already taken, is ignored.
+    pub fn chunk(&mut self, id: &[u8; 16], data: Result<Vec<u8>>) {
+        let Some(tiles) = self.by_chunk.get(id) else {
+            return;
+        };
+        let fresh: Vec<usize> = tiles
+            .iter()
+            .copied()
+            .filter(|t| !self.parsed.contains_key(t))
+            .collect();
+        for t in fresh {
+            let parsed = match &data {
+                Ok(c) => parse_tile(self.tree, &self.tree.tiles[t], c),
+                Err(e) => Err(e.clone()),
+            };
+            self.parsed.insert(t, parsed.map_err(|e| e.0));
+            for leaf in self.under.get(&t).cloned().unwrap_or_default() {
+                self.missing[leaf] -= 1;
+                if self.missing[leaf] == 0 {
+                    match self.detail {
+                        Some(_) => self.draw(leaf),
+                        None => self.ready.push(leaf),
+                    }
+                }
+            }
+        }
+    }
+
+    /// The ground: the chunks that haven't come are read with `load` first, in
+    /// [`ground_chunks`]' order, and the detail layers are none if never given.
+    pub fn finish(mut self, mut load: impl FnMut(&[u8; 16]) -> Result<Vec<u8>>) -> Ground {
+        self.detail(&[]);
+        for t in self.reads.clone() {
+            if self.parsed.contains_key(&t) {
+                continue;
+            }
+            if let Some((id, _)) = self.tree.tiles[t].chunk {
+                let data = load(&id);
+                self.chunk(&id, data);
+            }
+        }
+        let mut ground = Ground {
+            detail: self.detail.take().unwrap_or_default(),
+            map: self.map,
+            ..Ground::default()
+        };
+        for piece in self.pieces.into_iter().flatten() {
+            let base = ground.positions.len() as u32;
+            ground.tiles += 1;
+            ground.positions.extend(piece.positions);
+            ground.normals.extend(piece.normals);
+            ground.colours.extend(piece.colours);
+            ground.weights.extend(piece.weights);
+            ground
+                .indices
+                .extend(piece.indices.iter().map(|i| i + base));
+        }
+        ground.failed = self
+            .reads
+            .iter()
+            .filter_map(|t| match self.parsed.get(t) {
+                Some(Err(e)) => Some((*t, e.clone())),
+                _ => None,
+            })
+            .collect();
+        ground
+    }
+
+    /// Draws `leaf`, whose chunks have all come, from its own or its nearest
+    /// ancestor's heights, colour and pages.
+    fn draw(&mut self, leaf: usize) {
+        let (index, path) = &self.leaves[leaf];
+        let mut sources = Sources::default();
+        for t in path {
+            let Some(Ok((h, c, p))) = self.parsed.get(t) else {
+                continue;
+            };
+            let tile = &self.tree.tiles[*t];
+            let (min, size) = (tile.min, tile.size);
+            if let Some(h) = h {
+                sources.heights = Some((min, size, h.clone()));
+            }
+            sources.colour = Some((min, size, c.clone()));
+            if let Some(p) = p {
+                sources.pages = Some((min, size, p.clone()));
+            }
+        }
+        let Some(h) = &sources.heights else {
+            return;
+        };
+        let mut piece = Piece::default();
+        let detail = self.detail.as_deref().unwrap_or_default();
+        let tile = &self.tree.tiles[*index];
+        emit(
+            tile,
+            h,
+            &sources,
+            self.spacing,
+            detail,
+            &mut piece,
+            &mut self.map,
+        );
+        self.pieces[leaf] = Some(piece);
+    }
 }
 
 /// Of `candidates`, those with the most page area over `lo`..`hi`: each leaf tile's
@@ -1420,70 +1638,23 @@ struct Sources {
     pages: Option<Source<Pages>>,
 }
 
-fn walk(
-    tree: &Tree,
-    index: usize,
-    mut sources: Sources,
-    (lo, hi): ([f32; 2], [f32; 2]),
-    spacing: f32,
-    load: &mut impl FnMut(&[u8; 16]) -> Result<Vec<u8>>,
-    ground: &mut Ground,
-) {
-    let Some(tile) = tree.tiles.get(index) else {
-        return;
-    };
-    if !tile.overlaps(lo, hi) {
-        return;
-    }
-    if let Some((id, _)) = tile.chunk.filter(|_| tile.has_colour()) {
-        let read = load(&id).and_then(|c| {
-            let h = tile
-                .has_heights()
-                .then(|| Heightfield::parse(&c))
-                .transpose()?;
-            // Pages are detail: a tile without them (or whose chunk doesn't hold as
-            // many as the layer tree lists) is weighted by its ancestor's.
-            let layers = tree.pages(tile);
-            let p = (!layers.is_empty())
-                .then(|| Pages::parse(&c, layers).ok())
-                .flatten();
-            Ok((h, Colour::parse(&c)?, p))
-        });
-        let (min, size) = (tile.min, tile.size);
-        match read {
-            Ok((h, c, p)) => {
-                if let Some(h) = h {
-                    sources.heights = Some((min, size, h.into()));
-                }
-                sources.colour = Some((min, size, c.into()));
-                if let Some(p) = p {
-                    sources.pages = Some((min, size, p.into()));
-                }
-            }
-            Err(e) => ground.failed.push((index, e.0)),
-        }
-    }
-    match tile.children {
-        Some(children) => {
-            for c in children {
-                walk(
-                    tree,
-                    c as usize,
-                    sources.clone(),
-                    (lo, hi),
-                    spacing,
-                    load,
-                    ground,
-                );
-            }
-        }
-        None => {
-            if let Some(h) = &sources.heights {
-                ground.tiles += 1;
-                emit(tile, h, &sources, spacing, ground);
-            }
-        }
-    }
+/// `tile`'s `chunk`: its heights if it has them, its colour, and its pages. Pages are
+/// detail: a tile without them (or whose chunk doesn't hold as many as the layer tree
+/// lists) is weighted by its ancestor's.
+fn parse_tile(tree: &Tree, tile: &Tile, chunk: &[u8]) -> Result<Tiled> {
+    let h = tile
+        .has_heights()
+        .then(|| Heightfield::parse(chunk))
+        .transpose()?;
+    let layers = tree.pages(tile);
+    let p = (!layers.is_empty())
+        .then(|| Pages::parse(chunk, layers).ok())
+        .flatten();
+    Ok((
+        h.map(Into::into),
+        Colour::parse(chunk)?.into(),
+        p.map(Into::into),
+    ))
 }
 
 /// Adds `tile`'s square, drawn from the heights of `source` (itself or an ancestor),
@@ -1493,7 +1664,9 @@ fn emit(
     (min, size, heights): &Source<Heightfield>,
     sources: &Sources,
     spacing: f32,
-    ground: &mut Ground,
+    detail: &[u16],
+    piece: &mut Piece,
+    map: &mut GroundMap,
 ) {
     let cell = size / CELLS as f32;
     // Samples per vertex: a power of two, so it divides the tile's cells.
@@ -1503,7 +1676,7 @@ fn emit(
     }
     let first = [0, 1].map(|k| BORDER + ((tile.min[k] - min[k]) / cell).round() as usize);
     let cells = ((tile.size / cell).round() as usize / step).max(1);
-    let base = ground.positions.len() as u32;
+    let base = 0;
     let side = cells + 1;
     // Each grid point's vertex, row by row; none where the heights have a hole.
     let mut index_of: Vec<Option<u32>> = vec![None; side * side];
@@ -1521,25 +1694,24 @@ fn emit(
                     min[0] + (column - BORDER) as f32 * cell,
                     min[1] + (row - BORDER) as f32 * cell,
                 );
-                ground.positions.push([x, y, z]);
-                ground.normals.push(n);
+                piece.positions.push([x, y, z]);
+                piece.normals.push(n);
                 let [r, g, b] = sources
                     .colour
                     .as_ref()
                     .map_or(NO_COLOUR, |(at, side, c)| c.sample(*at, *side, [x, z]));
-                ground.colours.push([r, g, b, 255]);
+                piece.colours.push([r, g, b, 255]);
                 let w = sources
                     .pages
                     .as_ref()
                     .map_or([0; DETAIL_SLOTS], |(at, side, p)| {
-                        p.weights(*at, *side, [x, z], &ground.detail)
+                        p.weights(*at, *side, [x, z], detail)
                     });
-                ground.weights.push(w);
+                piece.weights.push(w);
             }
         }
     }
-    let [columns, rows] = ground.map.texels_in(tile.min, tile.size);
-    let map = &mut ground.map;
+    let [columns, rows] = map.texels_in(tile.min, tile.size);
     for row in rows {
         for column in columns.clone() {
             let at = [column, row].map(|i| i as f32 + 0.5);
@@ -1550,7 +1722,7 @@ fn emit(
                 map.colours[i] = [r, g, b, 255];
             }
             if let Some((at, side, p)) = &sources.pages {
-                map.weights[i] = p.weights(*at, *side, [x, z], &ground.detail);
+                map.weights[i] = p.weights(*at, *side, [x, z], detail);
             }
             // The nearest sample's, `step` either side as the vertices' are.
             let [column, row] =
@@ -1572,7 +1744,7 @@ fn emit(
             ) else {
                 continue;
             };
-            ground.indices.extend_from_slice(&[a, c, b, a, d, c]);
+            piece.indices.extend_from_slice(&[a, c, b, a, d, c]);
         }
     }
 }
@@ -1602,6 +1774,34 @@ impl<'s> Chunks<'s> {
             .copied()
             .collect();
         self.entries.prefetch(locations);
+    }
+
+    /// Reads the chunks `ids` in the packs' order ([`Entries::stream`]), handing each
+    /// one's stored frames to `f` as its read ends, with its id and location, for
+    /// [`Entries::read_stored`] on another thread; stops when `f` returns false. Those the store lacks,
+    /// or whose read failed, are not handed over.
+    ///
+    /// [`Entries::stream`]: crate::store::Entries::stream
+    /// [`Entries::read_stored`]: crate::store::Entries::read_stored
+    pub fn stream(
+        &mut self,
+        ids: &[[u8; 16]],
+        mut f: impl FnMut([u8; 16], Location, &[u8]) -> bool,
+    ) {
+        let mut ids_at: HashMap<Location, Vec<[u8; 16]>> = HashMap::new();
+        for id in ids {
+            if let Some(l) = self.chunks.get(id) {
+                ids_at.entry(*l).or_default().push(*id);
+            }
+        }
+        let locations: Vec<Location> = ids_at.keys().copied().collect();
+        self.entries.stream(locations, |l, frame| {
+            ids_at
+                .get(&l)
+                .into_iter()
+                .flatten()
+                .all(|id| f(*id, l, frame))
+        });
     }
 
     /// The chunk `id` (in bundle order).
@@ -2372,6 +2572,48 @@ mod tests {
                 assert_eq!(ground_chunks(&tree, lo, hi), asked, "{lo:?}..{hi:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_ground_is_the_same_whatever_order_its_chunks_come_in() {
+        let tree = Tree::parse(&sample_with_root(HEIGHTFIELD)).unwrap();
+        let grey = coloured(rows(), block(0x8410, 0x8410, 0), block(0x8410, 0x8410, 0));
+        let green = coloured(vec![], block(0x07E0, 0x07E0, 0), block(0x07E0, 0x07E0, 0));
+        let chunk = |id: &[u8; 16]| match id[0] {
+            2 => Ok(green.clone()),
+            3 => Err(Error("unreadable".into())),
+            _ => Ok(grey.clone()),
+        };
+        let (lo, hi) = ([-500.0; 2], [500.0; 2]);
+        let want = ground(&tree, lo, hi, 16.0, &[2, 5], chunk);
+        assert_eq!((want.tiles, want.failed.len()), (4, 1));
+        let ids = ground_chunks(&tree, lo, hi);
+        assert_eq!(ids.len(), 5);
+        // Backwards, the layers known halfway; a chunk twice and one the walk
+        // doesn't read change nothing.
+        let mut walk = GroundWalk::new(&tree, lo, hi, 16.0);
+        assert_eq!(walk.chunks(), ids);
+        for (k, id) in ids.iter().rev().enumerate() {
+            if k == 2 {
+                walk.detail(&[2, 5]);
+            }
+            walk.chunk(id, chunk(id));
+        }
+        walk.chunk(&ids[0], Err(Error("again".into())));
+        walk.chunk(&[0xEE; 16], Ok(grey.clone()));
+        assert_eq!(walk.finish(|_| panic!("all came")), want);
+        // Only some come: the rest are read when it finishes, in the tree's order.
+        let mut walk = GroundWalk::new(&tree, lo, hi, 16.0);
+        walk.chunk(&ids[3], chunk(&ids[3]));
+        walk.detail(&[2, 5]);
+        let mut asked = Vec::new();
+        let got = walk.finish(|id| {
+            asked.push(*id);
+            chunk(id)
+        });
+        assert_eq!(got, want);
+        let rest: Vec<_> = ids.iter().filter(|&&id| id != ids[3]).copied().collect();
+        assert_eq!(asked, rest);
     }
 
     #[test]
