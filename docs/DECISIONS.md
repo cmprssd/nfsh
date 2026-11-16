@@ -1484,3 +1484,17 @@ nfsh lit them with the triangle's normal.
 - **Found on the way:** 251 of the sections are vegetation's shadow casters
   (`shaders/shadowmeshalpha`), which nfsh draws as if they were seen. Leaving them out
   is the next task.
+
+## 2026-11-16: Shadow casters left out (decided by Claude, pending review)
+
+251 sections (vegetation, material shader `shaders/shadowmeshalpha`) only cast the
+tree's shadow, and nfsh, which draws no shadows, drew them as if they were seen.
+
+- **Left out by their shader's name**, before they are decoded: not drawn, not
+  uploaded. Why: it is the only shader in the city whose name has "shadow" in it, and
+  every one of its sections is unnamed, the same in every LOD (docs/FORMATS.md,
+  "Meshes"). When nfsh draws shadows, these are what should cast them.
+- **No off switch**: leaving out geometry that is never seen is a fix, not a feature.
+- **The unnamed positions-only sections stay**: 16,723 of them, and their materials are
+  ordinary surfaces' (buildings, `generic`, vista), so the shader can't tell them apart;
+  whether they are shadow geometry is still open.

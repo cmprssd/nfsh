@@ -798,7 +798,7 @@ pub fn decode(
 }
 
 /// The sections of `lod`, the `k`th LOD of a mesh with `materials`, from its chunk
-/// `data`.
+/// `data`, less those that only cast a shadow ([`frostbite::texture::shadow_only`]).
 fn lod_sections(
     store: &Store,
     materials: &[Material],
@@ -809,25 +809,30 @@ fn lod_sections(
 ) -> frostbite::Result<Vec<Section>> {
     lod.sections
         .iter()
-        .map(|s| {
+        .filter_map(|s| {
             let material = materials.get(s.material as usize);
-            let look = material.and_then(|m| {
-                let shader = m.shader.and_then(|g| store.partition_name(&g));
-                look(shader.unwrap_or_default(), m)
-            });
+            let shader = material
+                .and_then(|m| m.shader)
+                .and_then(|g| store.partition_name(&g))
+                .unwrap_or_default();
+            // Shadow casters are never seen: not decoded, not drawn.
+            if frostbite::texture::shadow_only(shader) {
+                return None;
+            }
+            let look = material.and_then(|m| look(shader, m));
             let (layers, normal_map) = match (look, material) {
                 (Some((_, Shading::Asphalt(_))), Some(m)) => (asphalt_layers(m, noise), None),
                 (Some((_, Shading::Grey { .. })), _) => ([None; 6], None),
                 _ => ([None; 6], material.and_then(|m| m.texture("Normal"))),
             };
-            Ok(Section {
+            Some(lod.section(s, data).map(|geometry| Section {
                 lod: k,
-                geometry: lod.section(s, data)?,
+                geometry,
                 texture: look.map(|l| l.0),
                 layers,
                 normal_map,
                 shading: look.map(|l| l.1).unwrap_or_default(),
-            })
+            }))
         })
         .collect()
 }
@@ -1534,17 +1539,19 @@ mod tests {
         // Counted on the owner's store, 2026-10-31; the textures again on 2026-11-01,
         // with the normal maps (109 of them).
         assert_eq!(zone.placements.len(), 2171);
+        // 2026-11-16: less the trees' 20 shadow casters (75 over every LOD, 55,508
+        // triangles), which shared the foliage's textures.
         let first: Vec<_> = scene.draws.iter().filter(|d| d.lod == 0).collect();
-        assert_eq!(first.len(), 780);
+        assert_eq!(first.len(), 760);
         // 238 textures at the first LODs; the far roads' baked colours add 37.
         assert_eq!(scene.textures.len(), 275);
         assert_eq!(scene.instances.len(), 2171);
-        assert_eq!(scene.triangles(), 3_988_832);
+        assert_eq!(scene.triangles(), 3_933_324);
         // Every LOD, 2026-11-03: 6,061 LODs over the placements, and half as many
         // vertices again as the first LODs' 1,356,354.
         let lods = scene.lods.iter().map(|l| usize::from(l.count));
-        assert_eq!((scene.draws.len(), lods.sum::<usize>()), (2118, 6061));
-        assert_eq!(scene.positions.len(), 2_067_181);
+        assert_eq!((scene.draws.len(), lods.sum::<usize>()), (2043, 6061));
+        assert_eq!(scene.positions.len(), 2_011_727);
     }
 
     /// The roads near zone 495, from the store `NFSH_STORE` points at: asphalt is
@@ -1590,7 +1597,8 @@ mod tests {
         // 130 decals, 53 of them lines coloured by their vertices; the asphalt's
         // layers add 22 textures, and the normal maps 132. The far roads' baked
         // colours (2026-11-03) add 67.
-        assert_eq!(count, [1047, 20, 0, 88, 130]);
+        // The 20 cutouts were the trees' shadow casters, left out since 2026-11-16.
+        assert_eq!(count, [1047, 0, 0, 88, 130]);
         assert_eq!(edged, 58);
         assert_eq!(painted, 53);
         assert_eq!(scene.textures.len(), 377);
