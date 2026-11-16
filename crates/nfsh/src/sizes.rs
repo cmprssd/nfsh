@@ -18,7 +18,7 @@ use frostbite::ebx::Partition;
 use frostbite::install::Layer;
 use frostbite::level::{Level, bundle_key};
 use frostbite::mesh::MeshSet;
-use frostbite::plan::{CINEMATIC, Finder, language};
+use frostbite::plan::{CINEMATIC, Finder, language, loc_part};
 use frostbite::sb::res_type_hash;
 use frostbite::store::{Store, in_parallel, toc_chunk_id};
 use frostbite::texture::{self, Texture};
@@ -803,6 +803,11 @@ pub fn run(dir: &Path) -> Result<String> {
                 .any(|lang| l == format!("LocalizedWaveAsset {lang}"))
         })
     };
+    let english = |n: usize| {
+        entries[n]
+            .toc
+            .is_some_and(|s| loc_part(&store.superbundles[s as usize].name) == Some(1))
+    };
     let left = |needed: &dyn Fn(usize) -> bool| -> (u64, u64) {
         let mut copies: HashMap<(u64, u64), (bool, u64, u64)> = HashMap::new();
         for n in 0..entries.len() {
@@ -813,8 +818,10 @@ pub fn run(dir: &Path) -> Result<String> {
             let stored = u64::from(entries[n].location.size);
             if stored < c.1 {
                 c.1 = stored;
+                // The cinematic audio English doesn't need: every chunk of it that
+                // the `loc/en` table doesn't list.
                 let cinematic = label(n).is_some_and(|l| l.ends_with(CINEMATIC));
-                c.2 = if cinematic { stored } else { 0 };
+                c.2 = if cinematic && !english(n) { stored } else { 0 };
             }
         }
         copies
@@ -837,8 +844,8 @@ pub fn run(dir: &Path) -> Result<String> {
             one_language,
         ),
         (
-            "and 7/8 of the cinematic audio, if its 8 chunks are 8 languages",
-            one_language - cinematic / 8 * 7,
+            "and the cinematic audio of the other languages, which no `loc/en` table lists",
+            one_language - cinematic,
         ),
     ] {
         let _ = writeln!(out, "| {what} | {} |", gib(bytes));
