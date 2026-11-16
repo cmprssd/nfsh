@@ -807,6 +807,23 @@ poles) have the same geometry, with their parts already in place; the part data
 (header 0xB0, the section's part count and list, a LOD pointer at 0x98) is not read
 yet. Drawn whole, a composite looks as it does before anything breaks it.
 
+**Meshes authored away from their origin** (surveyed 2026-11-16 over the 232 zones'
+meshes: bounds centre over 500 m from the origin): seven. Six are big by nature: five
+`cableset_*_mesh` composites (a whole cable run, 670 to 1,100 m across, placed once with
+an identity-axes transform) and `plot_drv_fks_infra_swamp_01_mesh` (4.5 by 6.3 km, one
+placement), and `tnnl_brc_infra_road_01_section_01_mesh` (197 m long, centre 1.2 km off, one
+placement at the origin); those are already in world space on purpose. The seventh is
+the only small one: zone 495's `bldn_cmp_speedway_stand_01_steps_02_mesh` (4 x 3.9 x 6.1 m,
+centre (3917.8, 95.9, 3254.3)), placed 21 times by a `StaticModelGroupEntityData` at
+(3811..4024, 96.12, 3165..3293), next to `steps_01` and `steps_03`, whose meshes are
+centred on their origin (steps_01: +-2.5 x +-2.5 x +-3.9). Its ebx has no pivot, offset
+or transform field, and the mesh set's bounds equal its sections', so nothing in the data
+says what to subtract; drawn as placed, the 21 steps land about 4 km away (and 96 m too
+high). The y centre (95.9) is close to the placements' y (96.12), so the mesh looks
+exported with its object left at a world position; the likely fix is to recentre it
+(its own bounds centre), unverified. One asset in 5,475, so nfsh leaves it as the data
+says; revisit if a camera on the stand shows the gap.
+
 Checked on the whole city, 2026-10-31: the store test reads every mesh the 232 zones
 place (5,475 meshes; 14,112 LODs; 53,194 sections; 48,797,619 triangles), every
 LOD's chunk and every section. Each chunk is exactly its two buffers rounded up to
