@@ -170,6 +170,57 @@ pub fn add_within(zone: &mut Zone, other: &Zone, lo: [f32; 2], hi: [f32; 2]) -> 
     added
 }
 
+/// The bundle whose partitions hold the art zones' streamer.
+pub const WORLD_ART: &str = "levels/mainlevel/worldart";
+
+/// The art zones' bundles are this and their number (`worldart_zs_495`).
+pub const ART_ZONE: &str = "levels/mainlevel/worldart_zs_";
+
+/// A zone streamer's zones, and which border which, as the game streams them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Streamer {
+    /// Each zone's bundle, lowercased (`levels/mainlevel/worldart_zs_495`); the
+    /// streamer's regions follow its zones.
+    pub zones: Vec<String>,
+    /// For each of the first `neighbours.len()` zones, the zones bordering it, by
+    /// index into `zones` (only valid indices are kept).
+    pub neighbours: Vec<Vec<usize>>,
+}
+
+impl Streamer {
+    /// `name` and the zones up to `rings` borders away from it, nearest first, each
+    /// once; `None` when the streamer has no zone `name`. A ring is every zone
+    /// bordering the one before (either way: a few neighbour lists are one-sided).
+    pub fn around(&self, name: &str, rings: usize) -> Option<Vec<&str>> {
+        let start = self.zones.iter().position(|z| z == name)?;
+        let mut borders: Vec<Vec<usize>> = vec![Vec::new(); self.zones.len()];
+        for (a, list) in self.neighbours.iter().enumerate() {
+            for &b in list {
+                borders[a].push(b);
+                borders[b].push(a);
+            }
+        }
+        let mut seen = vec![false; self.zones.len()];
+        seen[start] = true;
+        let (mut out, mut ring) = (vec![start], vec![start]);
+        for _ in 0..rings {
+            let mut next = Vec::new();
+            for &z in &ring {
+                for &b in &borders[z] {
+                    if !seen[b] {
+                        seen[b] = true;
+                        next.push(b);
+                    }
+                }
+            }
+            next.sort_unstable();
+            out.extend(&next);
+            ring = next;
+        }
+        Some(out.into_iter().map(|z| self.zones[z].as_str()).collect())
+    }
+}
+
 /// A partition read from the store, with the bytes it borrows.
 struct Loaded {
     data: Vec<u8>,
@@ -457,6 +508,62 @@ impl<'s> Level<'s> {
             added += add_within(zone, &other, lo, hi);
         }
         Ok(added)
+    }
+
+    /// The zone streamer in the bundle `bundle` whose zones are the bundles
+    /// `prefix<name>` (any case), e.g. [`WORLD_ART`] and [`ART_ZONE`]: its
+    /// `ZoneStreamerEntityData`'s `BundleNames` and each zone's `Neighbours`.
+    pub fn streamer(&mut self, bundle: &str, prefix: &str) -> Result<Streamer> {
+        let Some(entry) = self.bundle(bundle) else {
+            bail!("no bundle {bundle} in the store");
+        };
+        for asset in &entry.bundle.ebx {
+            let data = self.entries.read(asset.location)?;
+            let p = Partition::parse(&data)
+                .map_err(|e| crate::Error(format!("{}: {e}", asset.name)))?;
+            for i in 0..p.instances.len() {
+                let o = instance_object(&p, i)?;
+                if p.type_name(o.type_index) != "ZoneStreamerEntityData" {
+                    continue;
+                }
+                let Some(Value::Struct(info)) = field(&p, o, "Info")? else {
+                    bail!("{}: a zone streamer without its Info", p.name);
+                };
+                let path = match field(&p, info, "SubLevelPath")? {
+                    Some(Value::String(Some(path))) => path.to_ascii_lowercase(),
+                    _ => continue,
+                };
+                if path != prefix {
+                    continue;
+                }
+                let zones: Vec<String> = elements(&p, info, "BundleNames")?
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::String(Some(n)) => Ok(format!("{prefix}{}", n.to_ascii_lowercase())),
+                        other => bail!("{}: a zone named {other:?}", p.name),
+                    })
+                    .collect::<Result<_>>()?;
+                let mut neighbours = Vec::new();
+                for v in elements(&p, info, "ZoneInfos")? {
+                    let Value::Struct(z) = v else {
+                        bail!("{}: a zone info {v:?}", p.name);
+                    };
+                    let list = elements(&p, z, "Neighbours")?
+                        .into_iter()
+                        .filter_map(|n| match n {
+                            Value::Int(n) => usize::try_from(n).ok(),
+                            Value::UInt(n) => usize::try_from(n).ok(),
+                            _ => None,
+                        })
+                        .filter(|&n| n < zones.len())
+                        .collect();
+                    neighbours.push(list);
+                }
+                neighbours.truncate(zones.len());
+                return Ok(Streamer { zones, neighbours });
+            }
+        }
+        bail!("{bundle}: no zone streamer of {prefix}<n>")
     }
 
     /// Reads the partition `guid`, preferring the home superbundle's copy; `None` if
@@ -1348,6 +1455,51 @@ mod tests {
             kinds,
             [("CompositeMeshAsset", 6738), ("RigidMeshAsset", 21_015)]
         );
+    }
+
+    /// A strip of zones a-b-c-d, with c listing b but not the other way round.
+    fn strip() -> Streamer {
+        Streamer {
+            zones: ["a", "b", "c", "d", "region"].map(String::from).to_vec(),
+            neighbours: vec![vec![1], vec![0], vec![1, 3], vec![2]],
+        }
+    }
+
+    #[test]
+    fn rings_come_nearest_first_each_zone_once() {
+        let s = strip();
+        assert_eq!(s.around("a", 0), Some(vec!["a"]));
+        assert_eq!(s.around("a", 1), Some(vec!["a", "b"]));
+        // b reaches c only through c's own list.
+        assert_eq!(s.around("a", 2), Some(vec!["a", "b", "c"]));
+        assert_eq!(s.around("c", 1), Some(vec!["c", "b", "d"]));
+        assert_eq!(s.around("b", 9), Some(vec!["b", "a", "c", "d"]));
+        assert_eq!(s.around("nowhere", 1), None);
+        // A region has no list and borders nothing.
+        assert_eq!(s.around("region", 3), Some(vec!["region"]));
+    }
+
+    #[test]
+    fn reads_the_art_zones_streamer() {
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let store = Store::open(Path::new(&dir)).unwrap();
+        let mut level = Level::new(&store, HOME).unwrap();
+        let s = level.streamer(WORLD_ART, ART_ZONE).unwrap();
+        // 232 zones, then the four regions, which border nothing.
+        assert_eq!((s.zones.len(), s.neighbours.len()), (236, 232));
+        assert_eq!(s.zones[0], "levels/mainlevel/worldart_zs_212");
+        let near = |n: &str, rings| s.around(&format!("{ART_ZONE}{n}"), rings).unwrap();
+        // Read 2026-11-16: the garage's zone and the six around it, which its
+        // placements' extents confirm (one each side of a hexagon).
+        let ring: Vec<&str> = near("494", 1)
+            .iter()
+            .map(|z| &z[ART_ZONE.len()..])
+            .collect();
+        assert_eq!(ring, ["494", "466", "493", "495", "521", "522", "523"]);
+        assert_eq!(near("494", 2).len(), 19);
     }
 
     #[test]

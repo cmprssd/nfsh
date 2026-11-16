@@ -10,12 +10,16 @@
 # in the last NFSH_IDLE_SECONDS, default 120) unless NFSH_ALLOW_WINDOW=1, set once the
 # owner has said a run may start now.
 #
+# RINGS (default 0: the zone alone, as the baselines before --rings measured) is how
+# many rings of the zones around it are loaded too (nfsh view --rings).
+#
 # Reads the store at NFSH_STORE (default D:\nfsh-store).
-# Usage: [MODE=window] [RUNS=3] bench/baseline.sh [PATH_FILE [ZONE]]
+# Usage: [MODE=window] [RUNS=3] [RINGS=0] bench/baseline.sh [PATH_FILE [ZONE]]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mode=${MODE:-headless}
 runs=${RUNS:-3}
+rings=${RINGS:-0}
 path_file=${1:-bench/paths/speedway.path}
 zone=${2:-495}
 store=${NFSH_STORE:-'D:\nfsh-store'}
@@ -48,7 +52,7 @@ path_win=$(wslpath -w "$work/bench/baseline.path")
 one() { # -> "load_s mean_ms median_ms p99_ms low1_ms max_ms"
 	[ "$mode" = window ] && require_idle
 	local out
-	out=$("$nfsh" view "$store" "$zone" --path "$path_win" "${flags[@]}" </dev/null 2>/dev/null) || {
+	out=$("$nfsh" view "$store" "$zone" --rings "$rings" --path "$path_win" "${flags[@]}" </dev/null 2>/dev/null) || {
 		echo "baseline: nfsh failed" >&2
 		return 1
 	}

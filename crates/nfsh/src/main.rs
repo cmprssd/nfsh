@@ -73,15 +73,16 @@ usage: nfsh sizes-trial STORE
   Recompresses a sample of the texture and mesh chunks with their fields gathered, and
   the textures split into a frame per tier (top mip, second, third, the rest), and
   compares with what they store now. Nothing is written.
-usage: nfsh view STORE ZONE [--shot PNG] [--vsync] [--night] [--no-sky]
+usage: nfsh view STORE ZONE [--rings N] [--shot PNG] [--vsync] [--night] [--no-sky]
                  [--camera X,Y,Z,YAW,PITCH] [--path FILE [--headless [--frames DIR]]]
-  Palm City's zone ZONE (as nfsh level takes it), the roads near it and the ground
-  under them from the store in the folder STORE, textured and lit, with the time of
+  Palm City's zone ZONE (as nfsh level takes it) and the zones up to N borders away
+  (default 1: the zones around it; 0: the zone alone), the roads near them and the
+  ground under them from the store in the folder STORE, textured and lit, with the time of
   day's sky behind them, in a window: mouse
   to look, W A S D to move, Space and C up and down, Shift to go faster, N to switch
   between midday and tealnight, Esc to quit;
   the title shows the time of day, the frame rate and frame time. With --shot, one
-  frame of the whole zone is drawn without a window and written to the file PNG.
+  frame of the whole of them is drawn without a window and written to the file PNG.
   --vsync waits for the display; --night starts at tealnight; --no-sky leaves the
   sky out (black, its textures not loaded); --camera starts at the
   point X,Y,Z turned YAW degrees from +z towards +x and PITCH up, rather than above
