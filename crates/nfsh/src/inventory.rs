@@ -179,7 +179,7 @@ impl Tally {
                 t.stored += u64::from(a.location.size);
                 t.original += u64::from(a.original_size);
                 if t.example.is_empty() {
-                    t.example = a.name.clone();
+                    t.example = a.name.to_string();
                 }
             }
             for ch in &b.chunks {

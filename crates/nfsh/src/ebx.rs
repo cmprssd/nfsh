@@ -26,7 +26,7 @@ pub fn run(dir: &Path, name: &str) -> Result<String> {
         .iter()
         .map(|i| {
             let at = store.partitions(&i.partition).ok()?.next()?;
-            Some(store.ebx_at(at)?.1.name.clone())
+            Some(store.ebx_at(at)?.1.name.to_string())
         })
         .collect();
     text(&p, &names)

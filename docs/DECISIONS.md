@@ -1498,3 +1498,23 @@ tree's shadow, and nfsh, which draws no shadows, drew them as if they were seen.
 - **The unnamed positions-only sections stay**: 16,723 of them, and their materials are
   ordinary surfaces' (buildings, `generic`, vista), so the shader can't tell them apart;
   whether they are shadow geometry is still open.
+
+## 2026-11-16: Asset names shared a text per bundle (decided by Claude, pending review)
+
+Opening the store made one `String` per asset's name (about 985,000 of them, 85.6 MB),
+the largest allocation count left in decoding the index after 0.42.0.
+
+- **`Asset::name` is a `Name`**: a range of a text shared by every name in its bundle
+  (an `Arc<str>`), so decoding the index makes about three allocations per bundle
+  (20,739) instead of one per asset. It reads as a `str` (deref, comparisons with `str`
+  and `String`, `Display`), the same size as a `String` (24 bytes), so callers outside
+  frostbite only changed where they kept a name as a `String` (`.to_string()`). Why not a
+  table held by the store, names as plain ranges: every user of a name would then need
+  the store at hand, a change across every crate; and not the index's own bytes held
+  whole: 0.16 GiB kept for 85.6 MB of names.
+- **Built after the bundle is read**: each asset is read with its name's range, then
+  given its `Name` once the bundle's text is one allocation; a placeholder name per
+  asset would have been an allocation each.
+- **The real index encodes back to itself byte for byte**, now a standing test
+  (`real_index_encodes_back_to_itself`, run by local-ci when the store is reachable).
+- Kept only if the warm A/B timing shows a gain; closed with the numbers if not.

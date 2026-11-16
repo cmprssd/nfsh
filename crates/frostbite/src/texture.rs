@@ -627,7 +627,7 @@ impl<'s> Textures<'s> {
         let Some((_, asset)) = copy.and_then(|at| self.store.ebx_at(at)) else {
             bail!("no partition {guid:02x?} in the store");
         };
-        let name = asset.name.clone();
+        let name = asset.name.to_string();
         let texture = self.by_location(asset.location, &name)?;
         Ok((name, texture))
     }

@@ -12,10 +12,156 @@ use crate::{CasRef, Location, Result, bail};
 
 const BUNDLE_MAGIC: u32 = 0x9d79_8ed6;
 
+/// An asset's name: a range of a text shared by many names (a store's bundle keeps
+/// all its names in one), so opening a store makes one allocation per bundle rather
+/// than one per asset. Reads as a `str`.
+#[derive(Clone)]
+pub struct Name {
+    text: std::sync::Arc<str>,
+    start: u32,
+    end: u32,
+}
+
+impl Name {
+    /// The names at `ranges` of `text`; `None` if one is outside it or splits a
+    /// character.
+    pub fn shared(text: String, ranges: &[std::ops::Range<u32>]) -> Option<Vec<Name>> {
+        let ok = ranges
+            .iter()
+            .all(|r| text.get(r.start as usize..r.end as usize).is_some());
+        let text: std::sync::Arc<str> = text.into();
+        ok.then(|| {
+            ranges
+                .iter()
+                .map(|r| Name {
+                    text: text.clone(),
+                    start: r.start,
+                    end: r.end,
+                })
+                .collect()
+        })
+    }
+    pub fn as_str(&self) -> &str {
+        // Checked when made: `shared` and `From` only make ranges that lie on
+        // character boundaries of `text`.
+        &self.text[self.start as usize..self.end as usize]
+    }
+}
+
+impl std::ops::Deref for Name {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for Name {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::borrow::Borrow<str> for Name {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<String> for Name {
+    fn from(s: String) -> Self {
+        let end = u32::try_from(s.len()).expect("a name under 4 GiB");
+        Name {
+            text: s.into(),
+            start: 0,
+            end,
+        }
+    }
+}
+
+impl From<&str> for Name {
+    fn from(s: &str) -> Self {
+        s.to_owned().into()
+    }
+}
+
+impl From<Name> for String {
+    fn from(n: Name) -> Self {
+        n.as_str().to_owned()
+    }
+}
+
+impl Default for Name {
+    fn default() -> Self {
+        String::new().into()
+    }
+}
+
+impl PartialEq for Name {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+impl Eq for Name {}
+impl PartialEq<str> for Name {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+impl PartialEq<&str> for Name {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+impl PartialEq<String> for Name {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+impl PartialEq<Name> for str {
+    fn eq(&self, other: &Name) -> bool {
+        self == other.as_str()
+    }
+}
+impl PartialEq<Name> for &str {
+    fn eq(&self, other: &Name) -> bool {
+        *self == other.as_str()
+    }
+}
+impl PartialEq<Name> for String {
+    fn eq(&self, other: &Name) -> bool {
+        self == other.as_str()
+    }
+}
+impl std::hash::Hash for Name {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.as_str().hash(h)
+    }
+}
+impl PartialOrd for Name {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Name {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+impl std::fmt::Debug for Name {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+impl std::fmt::Display for Name {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.as_str(), f)
+    }
+}
+
 /// An ebx (asset description) or res (resource) entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
-    pub name: String,
+    pub name: Name,
     pub sha1: [u8; 20],
     /// Size once decompressed.
     pub original_size: u32,
@@ -150,7 +296,7 @@ pub fn parse(data: &[u8]) -> Result<Bundle> {
     let mut asset = |(name, original_size): (String, u32)| {
         let (sha1, location) = next();
         Asset {
-            name,
+            name: name.into(),
             sha1,
             original_size,
             location,
@@ -242,6 +388,26 @@ fn read_locations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_share_one_text() {
+        let names = Name::shared("abcdé".into(), &[0..1, 1..3, 3..6, 6..6]).unwrap();
+        let strs: Vec<&str> = names.iter().map(Name::as_str).collect();
+        assert_eq!(strs, ["a", "bc", "dé", ""]);
+        assert!(std::sync::Arc::ptr_eq(&names[0].text, &names[2].text));
+        assert_eq!(names[1], "bc");
+        assert_eq!(names[1], Name::from("bc"));
+        assert_eq!(format!("{:?} {}", names[2], names[2]), "\"dé\" dé");
+    }
+
+    #[test]
+    fn names_outside_their_text_are_refused() {
+        // Past the end, splitting the two bytes of "é", and backwards.
+        let refused = |text: &str, start, end| Name::shared(text.into(), &[0..0, start..end]);
+        assert!(refused("abc", 0, 4).is_none());
+        assert!(refused("é", 0, 1).is_none());
+        assert!(refused("abc", 2, 1).is_none());
+    }
 
     fn words(out: &mut Vec<u8>, words: &[u32]) {
         out.extend(words.iter().flat_map(|w| w.to_be_bytes()));

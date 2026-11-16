@@ -1381,6 +1381,15 @@ const SUPERBUNDLE_CHUNK: usize = 16 + 1 + LOCATION;
 /// The bundles are decoded on every core in runs of about this many bytes of the index.
 const BUNDLE_BATCH: u64 = 1 << 20;
 
+/// An asset read from an index before its bundle's names are shared: its name is a
+/// range of the bundle's names.
+struct PendingAsset {
+    name: std::ops::Range<u32>,
+    sha1: [u8; 20],
+    original_size: u32,
+    location: Location,
+}
+
 /// Where a superbundle lies in an index: its name, each bundle's bytes, and where its
 /// chunk list starts.
 struct Outline {
@@ -1424,9 +1433,20 @@ impl IndexReader<'_> {
             _ => bail!("{size} bytes at {offset:#x} in pack {pack} are outside the packs"),
         }
     }
-    fn asset(&mut self) -> Result<Asset> {
-        Ok(Asset {
-            name: self.string()?,
+    /// An asset whose name is appended to `names`: everything but its name, and the
+    /// name's range there.
+    fn asset(&mut self, names: &mut String) -> Result<PendingAsset> {
+        let len = self.r.u32_be()? as usize;
+        let Ok(name) = std::str::from_utf8(self.r.bytes(len)?) else {
+            bail!("a name is not UTF-8");
+        };
+        let start = names.len();
+        names.push_str(name);
+        let (Ok(start), Ok(end)) = (u32::try_from(start), u32::try_from(names.len())) else {
+            bail!("a bundle's names are over 4 GiB");
+        };
+        Ok(PendingAsset {
+            name: start..end,
             sha1: self.r.array()?,
             original_size: self.r.u32_be()?,
             location: self.location()?,
@@ -1437,14 +1457,15 @@ impl IndexReader<'_> {
         let layer = self.layer()?;
         let meta_len = self.r.u32_be()? as usize;
         let meta = self.r.bytes(meta_len)?.to_vec();
-        let ebx = self.list(Self::asset)?;
+        let mut names = String::new();
+        let ebx = self.list(|i| i.asset(&mut names))?;
         let res = self.list(|i| {
-            Ok(Res {
-                asset: i.asset()?,
-                res_type: i.r.u32_be()?,
-                meta: i.r.array()?,
-                id: i.r.u64_be()?,
-            })
+            Ok((
+                i.asset(&mut names)?,
+                i.r.u32_be()?,
+                i.r.array()?,
+                i.r.u64_be()?,
+            ))
         })?;
         let chunks = self.list(|i| {
             Ok(Chunk {
@@ -1455,6 +1476,31 @@ impl IndexReader<'_> {
                 location: i.location()?,
             })
         })?;
+        // The bundle's names become one shared text, then each asset takes its own.
+        let ranges = ebx
+            .iter()
+            .chain(res.iter().map(|r| &r.0))
+            .map(|a| a.name.clone());
+        let Some(shared) = crate::sb::Name::shared(names, &ranges.collect::<Vec<_>>()) else {
+            bail!("a bundle's names are out of their table");
+        };
+        let mut shared = shared.into_iter();
+        let mut asset = |a: PendingAsset| Asset {
+            name: shared.next().unwrap_or_default(),
+            sha1: a.sha1,
+            original_size: a.original_size,
+            location: a.location,
+        };
+        let ebx = ebx.into_iter().map(&mut asset).collect();
+        let res = res
+            .into_iter()
+            .map(|(a, res_type, meta, id)| Res {
+                asset: asset(a),
+                res_type,
+                meta,
+                id,
+            })
+            .collect();
         Ok(BundleEntry {
             name,
             layer,
@@ -1677,6 +1723,19 @@ fn check_frames(packs: &[u64], parts: &[String], frames: &[Frame]) -> Result<()>
 mod tests {
     use super::*;
 
+    /// The real index (the store `NFSH_STORE` points at; local-ci sets it) decodes and
+    /// encodes back to itself byte for byte, its names shared a table per bundle.
+    #[test]
+    fn real_index_encodes_back_to_itself() {
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let bytes = std::fs::read(std::path::Path::new(&dir).join(INDEX)).unwrap();
+        let index = decode(&bytes).unwrap();
+        assert!(encode(&index) == bytes, "the index encodes to other bytes");
+    }
+
     #[test]
     fn chunk_ids_in_toc_and_bundle_order() {
         let memory: [u8; 16] = std::array::from_fn(|i| i as u8);
@@ -1762,7 +1821,7 @@ mod tests {
                         let ebx = bundle.bundle.ebx[0].clone();
                         bundle.bundle.ebx = (0..b + 1)
                             .map(|e| Asset {
-                                name: format!("sb{s}/b{b}/e{e}"),
+                                name: format!("sb{s}/b{b}/e{e}").into(),
                                 ..ebx.clone()
                             })
                             .collect();

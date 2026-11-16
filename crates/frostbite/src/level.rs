@@ -385,7 +385,7 @@ impl<'s> Level<'s> {
                     }
                     match field(&p, instance_object(&p, i)?, "BundleName")? {
                         Some(Value::String(Some(link))) => {
-                            queue.push_back((bundle_key(link), depth + 1, asset.name.clone()))
+                            queue.push_back((bundle_key(link), depth + 1, asset.name.to_string()))
                         }
                         other => bail!("{}: a sub-level link to {other:?}", p.name),
                     }
@@ -467,7 +467,7 @@ impl<'s> Level<'s> {
         };
         Ok(Some(Loaded {
             data: self.entries.read(asset.location)?,
-            name: asset.name.clone(),
+            name: asset.name.to_string(),
         }))
     }
 
@@ -909,7 +909,7 @@ mod tests {
                 };
                 pack.extend(frame);
                 ebx.push(Asset {
-                    name: name.to_string(),
+                    name: (*name).into(),
                     sha1: [0; 20],
                     original_size: data.len() as u32,
                     location,
