@@ -1515,3 +1515,35 @@ cold). Decided by Claude, pending review.
 - **No release**: the command's output is the same.
 - Measured on the owner's store (D:, USB; one run, not the timing queue): first call 64 s,
   repeat 1.2 s, same output; a damaged file is rebuilt.
+
+## 2026-11-16: Zones outward
+
+The art zones' streamer (`ZoneStreamerEntityData` in `levels/mainlevel/worldart`, its
+`SubLevelPath` `levels/mainlevel/worldart_ZS_`) lists each of its 232 zones' neighbours
+(docs/FORMATS.md, "The zones' neighbours"): a hexagonal grid, six around most zones.
+
+- **"Around" is the game's own neighbour lists, by rings** (a ring is every zone bordering
+  the one before), not distance from the zone's middle (decided by Claude, pending
+  review). Why: the zones' places are known only by walking all
+  of them (50 s over the store) or by guessing a grid from their numbers, which fits
+  badly (the zones are staggered and their extents ragged); the lists are one small
+  partition and are what Heat itself streams by.
+- **One ring by default, `--rings N` for more, 0 for the zone alone** (chosen by the
+  owner). Zone 494 and one ring are 7 zones; two rings are 19. Why: a single zone was the
+  first step's scope, not the viewer's; the 0 keeps the comparisons.
+- **The baseline and the history views keep the zone alone** (`bench/baseline.sh`'s
+  `RINGS`, default 0; `bench/history.sh` passes `--rings 0` to builds that know it), so
+  their numbers stay comparable across releases. The gallery and the fly-throughs
+  (`bench/media.sh`) show the default (decided by Claude, pending review).
+- **The zones are merged into one scene, as the roads already were**: one walk each,
+  their placements added to the named zone's (each mesh listed once), then the roads and
+  the ground under all of them, the ground over the box that holds them. Why: the scene,
+  culling and LODs already handle a zone of any size; streaming zones in and out as the
+  camera moves is a later step (decided by Claude, pending review).
+- **A zone around the named one that fails to walk is left out and printed**; only the
+  named zone must load. A zone the streamer doesn't list (a drivable-surface zone named
+  on the command line) or a streamer that can't be read draws the zone alone.
+- Measured once while building (not a timing; on the owner's PC in use, store partly in
+  the file cache): zone 494 with one ring is 12,742 placements of 1,524 meshes, 35 million
+  triangles in 14,955 draws, 1,606 textures (1,685 MiB uploaded), 46 s to the screenshot.
+  The load and frame times are measured on an idle PC (nightq).
