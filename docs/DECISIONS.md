@@ -1466,3 +1466,21 @@ next thing while timing runs wait on the PC's idle queue.
 - **Left for later:** distant geometry's haze still fades to the colour of the sky's
   light (`SkyColor` with the sun), not the panorama's horizon behind it; the clouds don't
   move (`FlowPeriod`); the lens flares and sun glare are not drawn.
+
+## 2026-11-16: The normal without a frame (decided by Claude, pending review)
+
+1,646 sections store their normal as element 0x06, four halves, and no tangent frame;
+nfsh lit them with the triangle's normal.
+
+- **0x06 in four halves is a normal and lights its section**, as the frame's normal
+  does. Why: every one is unit length with its fourth half 1, and 97% agree with their
+  triangles (docs/FORMATS.md, "Meshes"); a section with a frame takes the frame's.
+- **No tangent, so no normal map**: the tangent is left 0, which the shader already
+  reads as none. A normal far from unit length (never seen) takes the triangle's.
+- **No off switch**: it is how the meshes' own normals are read (2026-11-01), not a new
+  feature.
+- **What it changes is small**: the cables are flat ribbons whose normal is their face's,
+  so they look the same; the trunks, cloth and leaves among the rest are shaded smoothly.
+- **Found on the way:** 251 of the sections are vegetation's shadow casters
+  (`shaders/shadowmeshalpha`), which nfsh draws as if they were seen. Leaving them out
+  is the next task.

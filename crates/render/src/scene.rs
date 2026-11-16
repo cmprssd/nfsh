@@ -523,7 +523,16 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Model
                     scene.tangents.extend(f.iter().map(tangent));
                 }
                 _ => {
-                    scene.normals.resize(scene.positions.len(), [0; 4]);
+                    // A normal without a tangent: lit by it, with no normal map to bend;
+                    // one far from unit length (never seen) takes the triangle's.
+                    let unit =
+                        |n: [f32; 3]| (n.iter().map(|x| x * x).sum::<f32>() - 1.0).abs() < 0.1;
+                    match &g.normals {
+                        Some(n) if n.len() == g.positions.len() => scene
+                            .normals
+                            .extend(n.iter().map(|&n| if unit(n) { normal(n) } else { [0; 4] })),
+                        _ => scene.normals.resize(scene.positions.len(), [0; 4]),
+                    }
                     scene.tangents.resize(scene.positions.len(), [0; 4]);
                 }
             }
@@ -976,6 +985,21 @@ mod tests {
                 [0, 0, 127, 127]
             ]
         );
+    }
+
+    #[test]
+    fn normals_without_a_frame_light_without_a_tangent() {
+        let mut lit = triangle();
+        lit.geometry.normals = Some(vec![[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [0.0; 3]]);
+        let zone = Zone {
+            meshes: vec![mesh("lit")],
+            placements: vec![at(0, 0.0)],
+            ..Zone::default()
+        };
+        let scene = build(&zone, |_| Ok(Model::whole(vec![lit.clone()])));
+        // The zero normal (never seen) takes the triangle's.
+        assert_eq!(scene.normals, [[0, 127, 0, 127], [0, 0, -127, 127], [0; 4]]);
+        assert_eq!(scene.tangents, [[0; 4]; 3]);
     }
 
     fn draw(first_index: u32, vertex_offset: i32, first_instance: u32, instances: u32) -> Draw {
