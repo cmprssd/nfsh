@@ -129,9 +129,28 @@ pub struct LayerRecord {
     pub paged: bool,
     /// Whether no square below lists the layer.
     pub leaf: bool,
-    /// Which of the 1 + 4 + 16 + 64 cells below the square the layer touches, as
-    /// bits; not read yet.
+    /// The cells of the square the layer touches, as a pyramid of bits; read them
+    /// with [`LayerRecord::touches`].
     pub cells: [u8; 11],
+}
+
+/// The levels of a record's cell pyramid: 1, 2, 4 and 8 cells a side.
+pub const CELL_LEVELS: usize = 4;
+
+impl LayerRecord {
+    /// Whether the layer touches cell (`row`, `column`) of `level` (0 to 3, with
+    /// 2^level cells a side, rows along z, as the pages): bit (4^level − 1)/3 + row ×
+    /// 2^level + column of `cells`, least significant first. A set bit's cell, grown by
+    /// the pages' 4-texel border, has weight in the layer's page; false outside the
+    /// pyramid.
+    pub fn touches(&self, level: usize, row: usize, column: usize) -> bool {
+        let n = 1 << level.min(CELL_LEVELS);
+        if level >= CELL_LEVELS || row >= n || column >= n {
+            return false;
+        }
+        let bit = (n * n - 1) / 3 + row * n + column;
+        self.cells[bit / 8] >> (bit % 8) & 1 == 1
+    }
 }
 
 /// The streaming tree's tiles; the first is the root.
@@ -197,7 +216,7 @@ impl Tree {
     }
 
     /// The layers of `tile`'s pages, in page order: the paged layers at its square,
-    /// ascending (likely; see docs/FORMATS.md, "Terrain layers"). Empty when no node of
+    /// ascending (docs/FORMATS.md, "Terrain"). Empty when no node of
     /// the layer tree is at its square: such a tile has no pages.
     pub fn pages(&self, tile: &Tile) -> Vec<u16> {
         self.layers
@@ -560,6 +579,12 @@ impl Pages {
         })
     }
 
+    /// Page `page`'s weights, [`PAGE_SIDE`] rows of as many (rows along z, a 4-texel
+    /// border). Panics when there is no such page.
+    pub fn mask(&self, page: usize) -> &[u8] {
+        &self.masks[page * PAGE_SIDE * PAGE_SIDE..][..PAGE_SIDE * PAGE_SIDE]
+    }
+
     /// Each of `slots`' share of the weight at `at` (x and z) of a tile at `min` of
     /// side `size`, out of all its pages' (255 is all of it): each page blended
     /// between the four nearest texels' middles. Zero for a layer it has no page for,
@@ -573,7 +598,7 @@ impl Pages {
         let (c1, r1) = ((c0 + 1).min(PAGE_SIDE - 1), (r0 + 1).min(PAGE_SIDE - 1));
         let (fu, fv) = (u - c0 as f32, v - r0 as f32);
         let weight = |page: usize| {
-            let m = &self.masks[page * PAGE_SIDE * PAGE_SIDE..][..PAGE_SIDE * PAGE_SIDE];
+            let m = self.mask(page);
             let t = |r: usize, c: usize| f32::from(m[r * PAGE_SIDE + c]);
             let top = t(r0, c0) * (1.0 - fu) + t(r0, c1) * fu;
             let bottom = t(r1, c0) * (1.0 - fu) + t(r1, c1) * fu;
@@ -1427,6 +1452,46 @@ mod tests {
     }
 
     #[test]
+    fn a_records_cells_are_a_pyramid_row_by_row() {
+        // Palm City's commonest pattern after "all of it": the square, its last
+        // quadrant, and the last cell of each level below (bits 0, 4, 20 and 84).
+        let mut cells = [0; 11];
+        for bit in [0, 4, 20, 84] {
+            cells[bit / 8] |= 1 << (bit % 8);
+        }
+        assert_eq!(cells, [0x11, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 0x10]);
+        let record = LayerRecord {
+            layer: 3,
+            paged: true,
+            leaf: true,
+            cells,
+        };
+        let set: Vec<_> = (0..CELL_LEVELS)
+            .flat_map(|l| {
+                let n = 1 << l;
+                (0..n * n).map(move |k| (l, k / n, k % n))
+            })
+            .filter(|&(l, r, c)| record.touches(l, r, c))
+            .collect();
+        assert_eq!(set, [(0, 0, 0), (1, 1, 1), (2, 3, 3), (3, 7, 7)]);
+        // A row-major level: bit 5 + 1·4 + 2 is row 1, column 2 of the 4 × 4 level.
+        let mut one = [0; 11];
+        one[11 / 8] |= 1 << (11 % 8);
+        let record = LayerRecord {
+            cells: one,
+            ..record
+        };
+        assert!(record.touches(2, 1, 2) && !record.touches(2, 2, 1));
+        // Outside the pyramid: nothing.
+        let all = LayerRecord {
+            cells: [0xFF; 11],
+            ..record
+        };
+        assert!(all.touches(3, 7, 7));
+        assert!(!all.touches(4, 0, 0) && !all.touches(1, 2, 0) && !all.touches(0, 0, 1));
+    }
+
+    #[test]
     fn a_damaged_layer_tree_is_an_error() {
         let good = layer_block();
         assert!(read_layers(&good).is_ok());
@@ -1771,7 +1836,52 @@ mod tests {
             .find(|t| (t.min, t.size) == ([3_712.0, 2_944.0], 128.0))
             .unwrap();
         assert_eq!(tree.pages(speedway), [2, 8, 9, 24, 25]);
+        // Every record's pyramid nests: its square is touched, and no cell is touched
+        // whose parent cell isn't (counting the touched cells with no touched child).
+        let mut childless = 0;
+        for r in tree.layers.values().flatten() {
+            assert!(r.touches(0, 0, 0), "a record not touching its square");
+            for level in 1..CELL_LEVELS {
+                for row in 0..1 << level {
+                    for column in 0..1 << level {
+                        let parent = r.touches(level - 1, row / 2, column / 2);
+                        assert!(parent || !r.touches(level, row, column));
+                    }
+                }
+                for row in 0..1 << (level - 1) {
+                    for column in 0..1 << (level - 1) {
+                        let kids =
+                            (0..4).any(|k| r.touches(level, 2 * row + k / 2, 2 * column + k % 2));
+                        childless += usize::from(r.touches(level - 1, row, column) && !kids);
+                    }
+                }
+            }
+        }
+        assert_eq!(childless, 205);
+        // A square listing a layer is touched by its parent's record of it (counting
+        // the records whose parent doesn't list their layer).
+        let mut orphans = 0;
+        let root = square([-8_192.0; 2], 16_384.0);
+        for (key, records) in tree.layers.iter().filter(|(k, _)| **k != root) {
+            let [x, z, s] = key.map(f32::from_bits);
+            let parent_min = [x, z].map(|v| v - (v + 8_192.0).rem_euclid(2.0 * s));
+            let parent = &tree.layers[&square(parent_min, 2.0 * s)];
+            let (row, column) = (
+                usize::from(z != parent_min[1]),
+                usize::from(x != parent_min[0]),
+            );
+            for r in records {
+                match parent.iter().find(|p| p.layer == r.layer) {
+                    Some(p) => assert!(p.touches(1, row, column), "layer {} at {key:?}", r.layer),
+                    None => orphans += 1,
+                }
+            }
+        }
+        assert_eq!(orphans, 163);
         let mut bounds = HashMap::new();
+        // Per level, the set bits whose cell, grown by the pages' border, has no
+        // weight in the layer's page, and the cells with weight inside but no bit.
+        let mut cells = [[0usize; 2]; CELL_LEVELS];
         let mut coarse = HashMap::new();
         let heights: Vec<Option<Heightfield>> = tree
             .tiles
@@ -1781,6 +1891,35 @@ mod tests {
                 let (id, _) = t.chunk?;
                 let chunk = chunks.read(&id).unwrap();
                 Colour::parse(&chunk).unwrap();
+                let records = tree.layers.get(&square(t.min, t.size));
+                let pages = Pages::parse(&chunk, tree.pages(t)).unwrap();
+                for (k, r) in records
+                    .iter()
+                    .copied()
+                    .flatten()
+                    .filter(|r| r.paged)
+                    .enumerate()
+                {
+                    let mask = pages.mask(k);
+                    for (level, count) in cells.iter_mut().enumerate() {
+                        let (n, side) = (1 << level, CELLS >> level);
+                        for row in 0..n {
+                            for column in 0..n {
+                                let weight = |grow: usize| {
+                                    let rows = BORDER + row * side - grow
+                                        ..BORDER + (row + 1) * side + grow;
+                                    rows.into_iter().any(|y| {
+                                        let at = y * PAGE_SIDE + BORDER + column * side;
+                                        mask[at - grow..at + side + grow].iter().any(|&w| w > 0)
+                                    })
+                                };
+                                let touched = r.touches(level, row, column);
+                                count[0] += usize::from(touched && !weight(BORDER));
+                                count[1] += usize::from(!touched && weight(0));
+                            }
+                        }
+                    }
+                }
                 if t.has_heights() {
                     bounds.insert(i, height_bounds(&chunk).unwrap());
                     coarse.insert(i, coarse_heights(&chunk).unwrap());
@@ -1789,6 +1928,9 @@ mod tests {
             })
             .collect();
         assert_eq!(heights.iter().flatten().count(), 7_618);
+        // Next to no touched cell lacks weight; about 1% of the cells with weight are
+        // not touched, mostly where layers above share them (docs/FORMATS.md).
+        assert_eq!(cells, [[0, 0], [0, 278], [2, 1_970], [4, 12_613]]);
         // Pairs whose samples all agree, and those agreeing only within 2 units
         // (1/16 m) or where one of them has a hole: holes are cut at the finer tile.
         let (mut equal, mut near, mut holes) = (0, 0, 0);
