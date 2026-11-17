@@ -475,16 +475,41 @@ records follow, then a zero byte and a byte that is 1 when four children follow.
 A **record** is 31 bytes: the layer (u16, an index into the `TerrainData`'s
 `TerrainLayers`), the node's square (four f32: minimum x, z, then maximum), a byte
 that is 1 when no node below lists the layer, a byte that is 1 when the layer has
-**no page** at this square, and an 85-bit pyramid (11 bytes) of the node's
-1 + 4 + 16 + 64 cells below it that the layer touches (not read yet). A node's
-records are in ascending layer order. The root's one record is layer 0, which no
-shader lists.
+**no page** at this square, and an 85-bit pyramid (11 bytes) of the cells of the
+square the layer touches. A node's records are in ascending layer order. The root's
+one record is layer 0, which no shader lists.
+
+**The cell pyramid** (worked out on 2026-11-17; `LayerRecord::touches` reads it, a
+store test checks it): bits, least significant first, for the square, then its 2 × 2,
+4 × 4 and 8 × 8 cells, each level row by row (rows along z, as the pages): cell (r, c)
+of the level with n a side is bit (n² − 1)/3 + r·n + c (offsets 0, 1, 5 and 21). Row
+by row is the only order that fits: against the pages' nonzero texels on 400 tiles,
+95% of the 8 × 8 bits agree, against 77% laid out as a Z-order curve and 73% column
+by column.
+
+- Every record has the square's bit, and the levels nest: no cell is touched whose
+  parent cell isn't; 205 touched cells have no touched cell below them.
+- A square listing a layer is touched by its parent's record of it, always (163
+  records have a parent that doesn't list their layer).
+- 2,773 of the 3,749 records with no page have all 85 bits.
+- Against the pages (all 20,454 of them): a touched cell, grown by the pages' 4-texel
+  border, has weight in the layer's page, all but 6 of about 930,000. The other way
+  round, about 1% of the cells with weight inside are not touched (12,613 of the
+  8 × 8 cells, 1,970 of the 4 × 4, 278 of the 2 × 2). Those are shared: on 400 tiles,
+  none is in the tile's last (top) page, 77% are in its first, and the layer holds at
+  most half the cell's weight in three quarters of them. So the bits likely mark where
+  the layer shows, with some cells it shares with layers above it left out; the rule
+  for which is not found (painting each layer over the last, with 255 as covered,
+  fits no better).
 
 **A tile's pages are its square's records that have one**: on all 6,972 tiles with a
 node at their square, the page count (from the chunk's size, below) is exactly that
 node's count of records with a page; the other 1,276 tiles have no node of their own
 and no pages. The speedway tile at (3,712, 2,944) has pages for layers 2, 8, 9, 24
-and 25. **The pages are likely in the records' (ascending) order**: predicting each
+and 25. **The pages are in the records' (ascending) order**: each page's nonzero texels
+match the cell pyramid (above) of its record best in that order on 4,516 of the 4,533
+tiles of two to six pages; the other 17 are won by up to 10 of 85 bits. Before that
+was known (2026-11-01): predicting each
 colour texel (below) as the pages' weighted mean of their layers' diffuse colours,
 on 150 128 m tiles whose layers all have plain colour maps, ascending order gives an
 RMS error of 24.8 (in 0 to 255 units), the best order for each tile 21.8, the reverse

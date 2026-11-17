@@ -6,6 +6,17 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-11-17
+
+### Added
+
+- The terrain readers read each layer record's cell pyramid (docs/FORMATS.md,
+  "Terrain"): which of the square's 1 + 4 + 16 + 64 cells the layer touches
+  (`LayerRecord::touches`), with a tile's pages readable one by one (`Pages::mask`).
+  A store test checks it against every page. It also settles that a tile's pages
+  come in their layers' ascending order, which nfsh already assumed. nfsh does not
+  use the cells yet.
+
 ## [0.49.0] - 2026-11-17
 
 ### Added
