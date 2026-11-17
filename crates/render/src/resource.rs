@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use ash::vk;
+use frostbite::staging::{Bytes, Ring, Slot};
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
 
@@ -409,6 +410,32 @@ impl Drop for Image {
     }
 }
 
+/// A ring of `size` bytes for entries to be decoded into and copied from
+/// ([`Uploader::sampled`]), in memory the processor caches: `None` where the device
+/// has none, as decoding into uncached memory is about 8 times slower than into the
+/// processor's own (docs/BASELINE.md).
+pub fn staging_ring(gpu: &Arc<Gpu>, size: u64) -> Result<Option<Arc<Ring>>> {
+    let mut buffer = Buffer::new(
+        gpu,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        size,
+        MemoryLocation::GpuToCpu,
+    )?;
+    let cached = buffer.allocation.as_ref().is_some_and(|a| {
+        a.memory_properties()
+            .contains(vk::MemoryPropertyFlags::HOST_CACHED)
+    });
+    if !cached {
+        return Ok(None);
+    }
+    buffer.mapped_mut()?;
+    // SAFETY: the buffer's mapping stays where it is until the buffer is dropped, and
+    // nothing else uses the buffer.
+    Ok(Some(unsafe {
+        Ring::new(buffer, |b| b.mapped_mut().unwrap_or_default())
+    }))
+}
+
 /// Where each texture's bytes start in a staging half: a multiple of every block size
 /// and of the copy alignment devices prefer.
 const STAGING_ALIGN: u64 = 256;
@@ -417,7 +444,9 @@ const STAGING_ALIGN: u64 = 256;
 /// with its own command buffer and fence: textures are copied into one half while the
 /// GPU copies the other's into their images, several to a submit, instead of a staging
 /// buffer and a wait for the GPU per texture. A texture larger than a half goes up on
-/// its own. The images are only filled once [`Uploader::finish`] returns.
+/// its own; one decoded into a [`staging_ring`] is copied from there, its slot kept
+/// until the copy is done. The images are only filled once [`Uploader::finish`]
+/// returns.
 pub struct Uploader {
     gpu: Arc<Gpu>,
     pool: vk::CommandPool,
@@ -431,6 +460,10 @@ struct Half {
     fence: vk::Fence,
     /// Bytes of `staging` taken by the copies recorded since the last submit.
     used: u64,
+    /// The ring slots copied from since the last submit, kept until the copies are
+    /// done, and their bytes.
+    held: Vec<Slot>,
+    held_bytes: u64,
     recording: bool,
     submitted: bool,
 }
@@ -474,6 +507,8 @@ impl Uploader {
                 cmd,
                 fence,
                 used: 0,
+                held: Vec::new(),
+                held_bytes: 0,
                 recording: false,
                 submitted: false,
             });
@@ -481,9 +516,33 @@ impl Uploader {
         Ok(u)
     }
 
-    /// [`Image::sampled`], filled once [`Uploader::finish`] returns.
-    pub fn sampled(&mut self, format: vk::Format, mips: &[Mip], data: &[u8]) -> Result<Image> {
-        self.sampled_layers(format, mips, (1, 0), data, false)
+    /// [`Image::sampled`], filled once [`Uploader::finish`] returns: from the ring
+    /// slot `data` is in, or else through a half.
+    pub fn sampled(&mut self, format: vk::Format, mips: &[Mip], data: Bytes) -> Result<Image> {
+        let slot = match data {
+            Bytes::Staged(slot) => slot,
+            Bytes::Heap(data) => return self.sampled_layers(format, mips, (1, 0), &data, false),
+        };
+        let Some(buffer) = slot
+            .ring()
+            .owner()
+            .downcast_ref::<Buffer>()
+            .map(|b| b.buffer)
+        else {
+            return self.sampled_layers(format, mips, (1, 0), &slot, false);
+        };
+        let image = Image::for_sampling(&self.gpu, format, mips, 1, false)?;
+        let half_size = self.halves[self.current].staging.size;
+        let half = self.begin()?;
+        image.record_fill(half.cmd, buffer, slot.offset() as u64, mips, (1, 0));
+        half.held_bytes += slot.len() as u64;
+        half.held.push(slot);
+        // As many bytes as fill a half go to a submit, so the slots are given back
+        // about as often as the half's own bytes would be.
+        if half.held_bytes >= half_size {
+            self.submit()?;
+        }
+        Ok(image)
     }
 
     /// [`Image::sampled_array`], filled once [`Uploader::finish`] returns.
@@ -536,6 +595,7 @@ impl Uploader {
                     d.reset_fences(&[half.fence])?;
                 }
                 half.submitted = false;
+                half.held.clear();
             }
             unsafe {
                 d.begin_command_buffer(
@@ -546,6 +606,7 @@ impl Uploader {
             }
             half.recording = true;
             half.used = 0;
+            half.held_bytes = 0;
         }
         Ok(half)
     }
@@ -586,6 +647,9 @@ impl Uploader {
             .collect();
         if !fences.is_empty() {
             unsafe { self.gpu.device.wait_for_fences(&fences, true, u64::MAX)? };
+        }
+        for half in &mut self.halves {
+            half.held.clear();
         }
         Ok(())
     }
@@ -847,7 +911,9 @@ mod tests {
                 .map(|b| (b as u8).wrapping_mul(31).wrapping_add(i as u8 * 17))
                 .collect();
             let image = if layers == 1 {
-                uploader.sampled(format, &mips, &data).unwrap()
+                uploader
+                    .sampled(format, &mips, data.clone().into())
+                    .unwrap()
             } else {
                 uploader
                     .sampled_array(format, &mips, (layers, size), &data)
@@ -863,6 +929,59 @@ mod tests {
     }
 
     #[test]
+    fn textures_decoded_into_the_ring_go_up_from_it_and_give_it_back() {
+        let gpu = Gpu::new_headless().unwrap();
+        let format = vk::Format::R8G8B8A8_UNORM;
+        // 8x8 textures (340 bytes, 512 with the slots' alignment): four fill the ring,
+        // and also a half's worth of copies, which submits them; the next ones go
+        // through the halves until the ring's slots come back.
+        let ring = staging_ring(&gpu, 2048)
+            .unwrap()
+            .expect("memory the processor caches");
+        let mut uploader = Uploader::new(&gpu, 1024).unwrap();
+        let (mips, size) = rgba_mips(8);
+        let (mut wanted, mut staged) = (Vec::new(), 0);
+        for i in 0..16u8 {
+            let data: Vec<u8> = (0..size).map(|b| (b as u8).wrapping_mul(7) ^ i).collect();
+            let bytes = match ring.slot(data.len()) {
+                Some(mut slot) => {
+                    slot.bytes_mut().copy_from_slice(&data);
+                    staged += 1;
+                    Bytes::Staged(slot)
+                }
+                None => Bytes::Heap(data.clone()),
+            };
+            wanted.push((uploader.sampled(format, &mips, bytes).unwrap(), data));
+        }
+        uploader.finish().unwrap();
+        // Some went up from slots given back and handed out again.
+        assert!(staged > 4, "{staged} of 16 staged");
+        assert_eq!(ring.held(), 0);
+        for (i, (image, data)) in wanted.iter().enumerate() {
+            let got = read_back(&gpu, image, &mips, 1, data.len() as u64);
+            assert!(got == *data, "texture {i} came back different");
+        }
+    }
+
+    #[test]
+    fn a_ring_not_on_the_gpu_goes_up_through_the_halves() {
+        let gpu = Gpu::new_headless().unwrap();
+        // SAFETY: a Vec's heap memory stays put when the Vec moves.
+        let ring = unsafe { Ring::new(vec![0u8; 1024], |v| &mut v[..]) };
+        let mut uploader = Uploader::new(&gpu, 1024).unwrap();
+        let (mips, size) = rgba_mips(8);
+        let mut slot = ring.slot(size as usize).unwrap();
+        slot.bytes_mut().fill(9);
+        let image = uploader
+            .sampled(vk::Format::R8G8B8A8_UNORM, &mips, Bytes::Staged(slot))
+            .unwrap();
+        // Copied into a half: the slot is given back at once.
+        assert_eq!(ring.held(), 0);
+        uploader.finish().unwrap();
+        assert!(read_back(&gpu, &image, &mips, 1, size) == vec![9; size as usize]);
+    }
+
+    #[test]
     fn an_uploader_dropped_unfinished_frees_its_copies() {
         let gpu = Gpu::new_headless().unwrap();
         let mut uploader = Uploader::new(&gpu, 1024).unwrap();
@@ -871,7 +990,7 @@ mod tests {
         let images: Vec<_> = (0..5)
             .map(|_| {
                 uploader
-                    .sampled(vk::Format::R8G8B8A8_UNORM, &mips, &data)
+                    .sampled(vk::Format::R8G8B8A8_UNORM, &mips, data.clone().into())
                     .unwrap()
             })
             .collect();

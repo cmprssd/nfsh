@@ -6,6 +6,16 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-11-17
+
+### Changed
+
+- The load decodes the textures straight into a 128 MiB ring of cached GPU-visible memory
+  that the GPU copies from, instead of into buffers of their own and then a staging copy:
+  the warm load of zone 494 is about 0.3 s faster (3.56 s against 3.88 s), the cold one
+  unchanged, the peak working set 106 MiB higher (docs/BASELINE.md). Devices without
+  cached host-visible memory keep the old path.
+
 ## [0.45.0] - 2026-11-17
 
 ### Added

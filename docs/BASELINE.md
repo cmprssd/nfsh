@@ -752,6 +752,41 @@ draws, 1,606 textures). Same path, headless `--shot`, idle PC (nightq job
   off the load. The first warm load of ring 0 (3.9 s) is far under its four siblings;
   it is not explained, and the median ignores it.
 
+### Decoding into the staging memory (PR #74)
+
+The load decodes each texture chunk straight into a ring of cached GPU memory
+(`GpuToCpu`, host-cached; no ring where the device has none, as uncached memory is 8
+times slower, "Which memory to decode the textures into") and the GPU copies it from
+there, its slot given back once the copy is done. A texture that doesn't fit while the
+ring is full is decoded into memory of its own, as before, rather than wait. Zone 494,
+loads alternating with the sky's build (main at 9620887; 2026-11-16, the PC idle over
+five minutes; the first three warm pairs discarded; cold after reading 12 packs of the
+old store, different ones each time):
+
+| Zone 494 | Load, warm | Load, cold | Peak working set | Decoded into the ring, warm |
+|---|---|---|---|---|
+| main (the sky) | 3.65, 3.72, 3.77, 3.68 s (median 3.70) | 21.75, 21.25 s | 2,024 to 2,028 MiB | |
+| 256 MiB ring | 3.50, 3.49, 3.51, 3.52 s (median 3.51) | 21.63, 21.53 s | 2,198 to 2,220 MiB | 695 of 860 MiB |
+
+Smaller rings, each against main in its own run (2026-11-17, the same method; the load's
+"decoded into the staging ring" line gives the ring and its own-memory split):
+
+| Zone 494 | Load, warm (median) | Its main pair | Load, cold | Peak working set | Ring / own memory, warm |
+|---|---|---|---|---|---|
+| 64 MiB ring | 4.13, 4.35, 3.86, 3.56 s (4.00) | 4.39, 4.32, 4.09, 3.93 s (4.20) | 21.61, 21.48 s | 2,098 to 2,102 MiB | 252 / 608 MiB |
+| 128 MiB ring | 3.76, 3.49, 3.56, 3.55 s (3.56) | 3.87, 3.88, 3.77, 4.19 s (3.88) | 21.45, 21.49 s | 2,131 to 2,134 MiB | 513 / 347 MiB |
+
+- **Warm, 0.2 s faster (5%)**, every ring load faster than its pair; the texture stage
+  uploads in 1.8 s against 2.0 s.
+- **Cold, unchanged**: reading the packs is what a cold load waits on.
+- **But 192 MiB more at the peak** (9.5%), the ring's memory, which the mimalloc trial
+  showed cold loads pay for on this 8 GB PC once it grows by hundreds of MiB.
+- **The ring's size trades peak for warm load**: against its own main, 64, 128 and 256
+  MiB loaded 0.2, 0.32 and 0.19 s faster warm (5%, 8%, 5%) and the same cold, for a peak
+  +75, +106 and +192 MiB. 64 MiB's four loads overlap main's (3 of 4 faster; the machine
+  was noisier in that run); 128 MiB's all beat their pair, and 256 MiB's extra 86 MiB
+  buys no more time, so **128 MiB is kept**.
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)

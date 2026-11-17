@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use frostbite::layers;
@@ -20,9 +20,11 @@ use frostbite::level::{ART_ZONE, Level, WORLD_ART, Zone};
 use frostbite::level::{add_within, xz_bounds};
 use frostbite::lighting::{self, Lighting, Sky as SkyData};
 use frostbite::mesh::Meshes;
+use frostbite::staging::{Bytes, Ring};
 use frostbite::store::Store;
 use frostbite::terrain::{self, Chunks, Ground, Tree};
 use frostbite::texture::{Asset, Textures, decode_workers};
+use nfsh_render::resource::staging_ring;
 use nfsh_render::scene::{self, Scene};
 use nfsh_render::sky::{self, Sky};
 use nfsh_render::zone::{DetailTextures, Loaded};
@@ -410,6 +412,10 @@ fn renderer(
         renderer.texture_upload.as_secs_f64(),
         rest.as_secs_f64()
     );
+    let [staged, own] = split.decoded_to.map(|b| b as f64 / f64::from(1 << 20));
+    eprintln!(
+        "  decoded into the staging ring {staged:.1} MiB, into memory of their own {own:.1} MiB"
+    );
     for (texture, why) in &renderer.missing {
         eprintln!("  drawn grey: {texture}: {why}");
     }
@@ -426,7 +432,15 @@ struct Split {
     found: Duration,
     waited: Duration,
     decoded: Duration,
+    /// Bytes decoded into the staging ring, and into memory of their own.
+    decoded_to: [u64; 2],
 }
+
+/// The staging ring's size ([`staging_ring`]). 128 MiB takes about 60% of a warm load's
+/// decoded bytes and makes it about 0.3 s faster for a peak 106 MiB higher (256 MiB: 80%,
+/// +192 MiB; 64 MiB: 30%, +75 MiB); what doesn't fit is decoded into memory of its own
+/// (docs/BASELINE.md, "Decoding into the staging memory").
+const STAGING_RING: u64 = 128 << 20;
 
 /// [`renderer`]'s textures, read ahead on a thread of `scope`, and the upload; then
 /// the skies `skies_wanted` asks for of `times`, their textures read ahead after the
@@ -444,15 +458,27 @@ fn upload<'scope>(
     let mut textures = Textures::new(store).map_err(|e| e.to_string())?;
     let far_maps = scene::far_maps(&scene.detail);
     let sky = sky_textures(times, skies_wanted);
-    let order = plan_textures(&mut textures, scope, scene, &far_maps, &sky);
+    let ring = staging_ring(gpu, STAGING_RING).unwrap_or_else(|e| {
+        eprintln!("no staging ring, textures decoded into memory of their own: {e}");
+        None
+    });
+    let order = plan_textures(&mut textures, scope, scene, &far_maps, &sky, ring);
     let found = std::cell::Cell::new(start.elapsed());
     let find = |took: Duration| found.set(found.get() + took);
+    // Bytes decoded into the staging ring, and into memory of their own.
+    let decoded_to = std::cell::Cell::new([0u64; 2]);
+    let count = |pixels: &Bytes| {
+        let mut d = decoded_to.get();
+        d[usize::from(matches!(pixels, Bytes::Heap(_)))] += pixels.len() as u64;
+        decoded_to.set(d);
+    };
     let textures = std::cell::RefCell::new(textures);
     let by_name = |name: &str| -> frostbite::Result<Loaded> {
         let (texture, took) = timed(|| textures.borrow_mut().by_name(name));
         find(took);
         let texture = texture?;
         let (texture, pixels) = textures.borrow_mut().pixels(&texture)?;
+        count(&pixels);
         Ok((name.to_owned(), texture, pixels))
     };
     let detail = scene
@@ -472,6 +498,7 @@ fn upload<'scope>(
             .borrow_mut()
             .pixels(&texture)
             .map_err(|e| frostbite::Error(format!("{name}: {e}")))?;
+        count(&pixels);
         Ok((name, texture, pixels))
     };
     let renderer = ZoneRenderer::new(gpu, scene, format, &mut load, &order, detail, far)
@@ -483,6 +510,7 @@ fn upload<'scope>(
             found: found.get(),
             waited: t.waited,
             decoded: t.decoded,
+            decoded_to: decoded_to.get(),
         }
     };
     let sky = skies(gpu, times, format, skies_wanted, load);
@@ -499,6 +527,7 @@ fn plan_textures<'scope>(
     scene: &Scene,
     far_maps: &[String],
     sky: &[[u8; 16]],
+    ring: Option<Arc<Ring>>,
 ) -> Vec<usize> {
     let mut assets = Vec::new();
     for d in &scene.detail {
@@ -518,7 +547,7 @@ fn plan_textures<'scope>(
         .iter()
         .chain(order.iter().map(|&i| &own[i]))
         .chain(sky);
-    textures.read_ahead(scope, queue.flatten().copied());
+    textures.read_ahead(scope, queue.flatten().copied(), ring);
     order
 }
 

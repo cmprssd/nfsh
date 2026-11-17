@@ -45,7 +45,7 @@ fn bc1(block: [u8; 8]) -> Loaded {
         chunk: [0; 16],
         group: "Sky".into(),
     };
-    ("sky".into(), texture, block.repeat(3))
+    ("sky".into(), texture, block.repeat(3).into())
 }
 
 /// A look whose textures' values are drawn as they are (before the tonemap), the

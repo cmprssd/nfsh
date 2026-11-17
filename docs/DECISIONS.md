@@ -1467,6 +1467,38 @@ next thing while timing runs wait on the PC's idle queue.
   light (`SkyColor` with the sun), not the panorama's horizon behind it; the clouds don't
   move (`FlowPeriod`); the lens flares and sun glare are not drawn.
 
+## 2026-11-15: The textures decoded into the staging memory (decided by Claude, pending review)
+
+A probe (BASELINE.md, "What limits decoding the textures") showed decoding into memory
+that is already there runs at 345 to 822 MiB/s on 1 to 3 threads against 266 to 554
+MiB/s into a new buffer per chunk, and that the uploader's staging memory (`CpuToGpu`,
+write-combined on the owner's integrated GPU) decodes about 8 times slower, while memory
+the processor caches (`GpuToCpu`, `HOST_CACHED`) decodes as fast as its own.
+
+- **The chunks are decoded straight into a ring of cached, GPU-visible memory, and copied
+  to their images from there**, not decoded into a buffer of their own and copied again
+  into a staging half. Why: it saves the new buffers' page faults and the upload
+  thread's copy of every byte (0.8 s of uploading down to 0.4 s in rough loads).
+- **No ring where the device has no cached host-visible memory**: the chunks then go
+  through the halves as before. Why: decoding into write-combined memory is the 8 times
+  slower case.
+- **Slots are handed out in the order the chunks are used**, by the thread that hands a
+  batch to the decoders, so the ring is given back about as it fills; a slot is given
+  back when its copy's submit is done (or at once when it is copied elsewhere).
+- **A full ring never makes anything wait: that chunk goes into memory of its own**, as
+  before. Why: the upload thread can be waiting for the very batch a decoder would wait
+  on, and a deadlock would hang the load; the load prints how many bytes went each way.
+- **The ring is 128 MiB** (2026-11-17, decided by Claude, pending review). The first
+  guess was 256 MiB, about the three decoded batches the load holds at once; measured
+  (BASELINE.md, "Decoding into the staging memory"), 64, 128 and 256 MiB all load
+  warm about 0.2 to 0.3 s faster and cold the same, but cost +75, +106 and +192 MiB at
+  the peak. 128 MiB has the clearest warm win (every load faster than its pair, 3.56 s
+  against 3.88 s) for 106 MiB; 64 MiB's loads overlap the main's. About 60% of the
+  decoded bytes still go through the ring; the rest go into memory of their own.
+- **The ground's detail layers are uploaded before the scene's textures**, not after.
+  Why: their chunks are read first, so they would hold the start of the ring until the
+  end; the images keep their numbers, and the picture is byte for byte the same.
+
 ## 2026-11-16: The normal without a frame (decided by Claude, pending review)
 
 1,646 sections store their normal as element 0x06, four halves, and no tangent frame;
