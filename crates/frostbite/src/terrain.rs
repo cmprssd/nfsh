@@ -41,10 +41,14 @@ pub const CELLS: usize = 128;
 const HEIGHTFIELD: u32 = 42_231;
 const PAGES: u32 = 18_496;
 /// What follows the heights in a heightfield chunk: [`BOUNDS`] min/max pairs of u16,
-/// then 2,041 bytes not worked out (see docs/FORMATS.md).
+/// the coarse heights ([`COARSE_SIDES`]), then 1,225 bytes not worked out (see
+/// docs/FORMATS.md).
 const AFTER_HEIGHTS: usize = 2_381;
 /// The height bounds: the tile, then its 4, 16 and 64 blocks, each row by row.
 pub const BOUNDS: usize = 1 + 4 + 16 + 64;
+/// The sides of the coarse heights' grids, coarsest first: a point every `CELLS /
+/// (side - 1)` samples from the border's inner edge, the last level every 8.
+pub const COARSE_SIDES: [usize; 5] = [2, 3, 5, 9, 17];
 /// A heightfield in a finer chunk: the heights and what follows them, no colour.
 const FINER_HEIGHTS: usize = 2 * SAMPLES * SAMPLES + AFTER_HEIGHTS;
 /// The order a finer chunk stores its quadrants in, as indices into [`QUADRANTS`]:
@@ -598,6 +602,27 @@ pub fn height_bounds(chunk: &[u8]) -> Result<Vec<[u16; 2]>> {
     (0..BOUNDS)
         .map(|_| Ok([r.u16_le()?, r.u16_le()?]))
         .collect()
+}
+
+/// The coarse heights after a heightfield chunk's bounds: one grid for each of
+/// [`COARSE_SIDES`], coarsest first, each row by row (rows along z), in the heights'
+/// units. Each is close to the heights at its points, closer level by level, and a
+/// coarser level's value is at or below the next one's at the points they share;
+/// what reads them in Heat is not known (see docs/FORMATS.md).
+pub fn coarse_heights(chunk: &[u8]) -> Result<[Vec<u16>; 5]> {
+    let mut r = Reader::at(chunk, 2 * SAMPLES * SAMPLES + 4 * BOUNDS)?;
+    let mut level = |side: usize| {
+        (0..side * side)
+            .map(|_| r.u16_le())
+            .collect::<Result<Vec<_>>>()
+    };
+    Ok([
+        level(COARSE_SIDES[0])?,
+        level(COARSE_SIDES[1])?,
+        level(COARSE_SIDES[2])?,
+        level(COARSE_SIDES[3])?,
+        level(COARSE_SIDES[4])?,
+    ])
 }
 
 /// What a finer chunk of `size` bytes holds: whether it has four heightfields, how
@@ -1350,6 +1375,25 @@ mod tests {
     }
 
     #[test]
+    fn the_coarse_heights_follow_the_bounds() {
+        let mut d = rows();
+        d.extend(std::iter::repeat_n(0xAB, 4 * BOUNDS));
+        let count: usize = COARSE_SIDES.iter().map(|s| s * s).sum();
+        assert_eq!(count, 408);
+        for k in 0..count as u16 {
+            d.extend_from_slice(&k.to_le_bytes());
+        }
+        let levels = coarse_heights(&d).unwrap();
+        assert_eq!(levels[0], [0, 1, 2, 3]);
+        assert_eq!((levels[1][0], levels[1][8]), (4, 12));
+        assert_eq!(
+            (levels[4].len(), levels[4][0], levels[4][288]),
+            (289, 119, 407)
+        );
+        assert!(coarse_heights(&d[..d.len() - 1]).is_err());
+    }
+
+    #[test]
     fn a_damaged_tree_is_an_error() {
         let d = sample();
         for cut in [10, HEADER + 20, d.len() - 1] {
@@ -1728,6 +1772,7 @@ mod tests {
             .unwrap();
         assert_eq!(tree.pages(speedway), [2, 8, 9, 24, 25]);
         let mut bounds = HashMap::new();
+        let mut coarse = HashMap::new();
         let heights: Vec<Option<Heightfield>> = tree
             .tiles
             .iter()
@@ -1738,6 +1783,7 @@ mod tests {
                 Colour::parse(&chunk).unwrap();
                 if t.has_heights() {
                     bounds.insert(i, height_bounds(&chunk).unwrap());
+                    coarse.insert(i, coarse_heights(&chunk).unwrap());
                 }
                 t.has_heights().then(|| Heightfield::parse(&chunk).unwrap())
             })
@@ -1853,6 +1899,23 @@ mod tests {
         }
         // Most are exactly their own samples' (the others have finer tiles).
         assert_eq!((exact, bounds.len()), (5_489, 7_618));
+        // Each coarse level's value is at or below the next level's at the points
+        // they share (counting those above), and next to none is above the tile's
+        // greatest height (counting those), though many are below its least.
+        let (mut above, mut over) = (0, 0);
+        for (i, levels) in &coarse {
+            for (k, pair) in levels.windows(2).enumerate() {
+                let (n, m) = (COARSE_SIDES[k], COARSE_SIDES[k + 1]);
+                for r in 0..n {
+                    for c in 0..n {
+                        above += usize::from(pair[0][r * n + c] > pair[1][2 * r * m + 2 * c]);
+                    }
+                }
+            }
+            let greatest = bounds[i][0][1];
+            over += levels.iter().flatten().filter(|&&v| v > greatest).count();
+        }
+        assert_eq!((above, over, coarse.len()), (11, 87, 7_618));
         // Every finer chunk's size holds the paged layers at its quadrants' squares.
         let finer: Vec<(usize, ([u8; 16], u32))> = tree
             .tiles
