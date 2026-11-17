@@ -1,5 +1,5 @@
-//! `nfsh view`: one streaming zone of Palm City with the roads and ground under it,
-//! textured and lit, in a window to fly
+//! `nfsh view`: a streaming zone of Palm City and the zones around it (`--rings`), with
+//! the roads and ground under them, textured and lit, in a window to fly
 //! through: mouse to look, W A S D to move, Space and C up and down, Shift to go
 //! faster, N to switch between midday and tealnight, Esc to quit. The title shows
 //! the time of day, the frame rate and frame time. With `--shot`, one frame is drawn
@@ -16,8 +16,8 @@ use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use frostbite::layers;
-use frostbite::level::xz_bounds;
-use frostbite::level::{Level, Zone};
+use frostbite::level::{ART_ZONE, Level, WORLD_ART, Zone};
+use frostbite::level::{add_within, xz_bounds};
 use frostbite::lighting::{self, Lighting, Sky as SkyData};
 use frostbite::mesh::Meshes;
 use frostbite::store::Store;
@@ -55,10 +55,14 @@ const TITLE_EVERY: Duration = Duration::from_millis(500);
 const HEADLESS_STEP: f64 = 1.0 / 60.0;
 /// With `--frames`, every this many headless frames is written: 30 a second.
 const FRAMES_EVERY: usize = 2;
+/// How many rings of bordering zones are drawn around the one named, by default.
+const RINGS: usize = 1;
 
 pub struct Options {
     pub store: PathBuf,
     pub zone: String,
+    /// How many rings of the zones bordering it are drawn too (0: the zone alone).
+    pub rings: usize,
     pub shot: Option<PathBuf>,
     pub vsync: bool,
     /// Start at tealnight rather than midday.
@@ -86,12 +90,12 @@ fn camera(s: &str) -> Option<[f32; 5]> {
     v.iter().all(|n| n.is_finite()).then_some(v)
 }
 
-/// Parses `STORE ZONE [--shot PNG] [--vsync] [--night] [--no-sky]
+/// Parses `STORE ZONE [--rings N] [--shot PNG] [--vsync] [--night] [--no-sky]
 /// [--camera X,Y,Z,YAW,PITCH] [--path FILE [--headless [--frames DIR]]]`: a path is not a screenshot, only a path
 /// is drawn headless, and only a headless path writes its frames.
 pub fn options(args: &[String]) -> Option<Options> {
     let (mut positional, mut shot, mut vsync, mut night) = (Vec::new(), None, false, false);
-    let mut no_sky = false;
+    let (mut no_sky, mut rings) = (false, RINGS);
     let (mut start, mut path, mut headless, mut frames) = (None, None, false, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -99,6 +103,7 @@ pub fn options(args: &[String]) -> Option<Options> {
             "--vsync" => vsync = true,
             "--night" => night = true,
             "--no-sky" => no_sky = true,
+            "--rings" => rings = it.next()?.parse().ok()?,
             "--camera" => start = Some(camera(it.next()?)?),
             "--shot" => shot = Some(PathBuf::from(it.next()?)),
             "--path" => path = Some(PathBuf::from(it.next()?)),
@@ -120,6 +125,7 @@ pub fn options(args: &[String]) -> Option<Options> {
     Some(Options {
         store: store.into(),
         zone: zone.clone(),
+        rings,
         shot,
         vsync,
         night,
@@ -293,7 +299,7 @@ pub fn run(o: &Options) -> Result<String, String> {
     let opening = Instant::now();
     let store = Store::open(&o.store).map_err(|e| e.to_string())?;
     eprintln!("store opened in {:.2} s", opening.elapsed().as_secs_f64());
-    let scene = load(&store, &name).map_err(|e| e.to_string())?;
+    let scene = load(&store, &name, o.rings).map_err(|e| e.to_string())?;
     let times = Times::read(&store);
     match (&o.shot, &path) {
         (Some(png), _) => shot(o, &store, &scene, &times, png),
@@ -537,28 +543,43 @@ fn disk_line(bytes: u64, reads: u64) -> String {
     )
 }
 
-/// The zone's placements and meshes, ready to upload; prints what it read and what
-/// it could not.
+/// The placements and meshes of the zone `name` and of the zones up to `rings` borders
+/// away ([`zones_around`]), ready to upload; prints what it read and what it could not.
+/// A zone around it that fails to walk is left out; only `name` itself must.
 ///
 /// The disk and the processor take turns: the ground's layers, mostly decoding and
 /// independent of the zone, are worked out on a thread from the start, and the ground
 /// tiles are read on another once the zone's extent is known and its meshes are read
 /// (and walked once the layers are done, which weight them), while the meshes are
 /// built from memory ([`build`], on threads of their own).
-fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
+fn load(store: &Store, name: &str, rings: usize) -> frostbite::Result<Scene> {
     let start = Instant::now();
     let disk = frostbite::cas::read_so_far();
     std::thread::scope(|s| {
         let layers = s.spawn(|| timed(|| layers::textures(store)));
         let mut parts = Parts::new();
         let mut level = Level::new(store, SUPERBUNDLE)?;
-        // The zone and every drivable-surface zone, whose roads near it are added.
-        let mut walked = vec![name.to_owned()];
+        let zones = zones_around(&mut level, name, rings);
+        // The zones and every drivable-surface zone, whose roads near them are added.
+        let mut walked = zones.clone();
         walked.extend(level.drivable_zones());
         let partitions_read = level.prefetch(&walked);
         let mut zone = level.zone(name)?;
+        let short = |z: &'_ str| z.strip_prefix(ART_ZONE).unwrap_or(z).to_owned();
+        let mut drawn = vec![short(name)];
+        for other in &zones[1..] {
+            match level.zone(other) {
+                // All of it: the placements' origins are finite, each zone's own.
+                Ok(z) => {
+                    add_within(&mut zone, &z, [f32::MIN; 2], [f32::MAX; 2]);
+                    drawn.push(short(other));
+                }
+                Err(e) => eprintln!("  zone {other} left out: {e}"),
+            }
+        }
         let roads = level.add_drivable_surfaces(&mut zone, ROAD_MARGIN)?;
         drop(level);
+        eprintln!("  zones: {}", drawn.join(" "));
         parts.done(&format!("walk ({partitions_read} partitions)"));
         let mut meshes = Meshes::new(store)?;
         let partitions: Vec<[u8; 16]> = zone.meshes.iter().map(|m| m.partition).collect();
@@ -650,6 +671,28 @@ fn load(store: &Store, name: &str) -> frostbite::Result<Scene> {
         }
         Ok(scene)
     })
+}
+
+/// The art zone `name` and the zones up to `rings` borders away, nearest first, from
+/// the art zones' streamer; `name` alone when it has none (a drivable-surface zone,
+/// say) or can't be read, which is printed.
+fn zones_around(level: &mut Level, name: &str, rings: usize) -> Vec<String> {
+    if rings == 0 {
+        return vec![name.to_owned()];
+    }
+    match level.streamer(WORLD_ART, ART_ZONE) {
+        Ok(s) => match s.around(name, rings) {
+            Some(zones) => zones.into_iter().map(String::from).collect(),
+            None => {
+                eprintln!("  {name} is not one of the art zones' streamer: drawn alone");
+                vec![name.to_owned()]
+            }
+        },
+        Err(e) => {
+            eprintln!("  the zones around {name} not found ({e}): drawn alone");
+            vec![name.to_owned()]
+        }
+    }
 }
 
 /// The scene of `zone`'s meshes: each planned here from `meshes` ([`scene::plan`]),
@@ -1208,6 +1251,13 @@ mod tests {
             (o.shot, o.vsync, o.night, o.camera),
             (None, false, false, None)
         );
+        // One ring of zones around it unless told otherwise.
+        assert_eq!(o.rings, 1);
+        let o = options(&args("store 494 --rings 0")).unwrap();
+        assert_eq!(o.rings, 0);
+        assert_eq!(options(&args("store 494 --rings 2")).unwrap().rings, 2);
+        assert!(options(&args("store 494 --rings -1")).is_none());
+        assert!(options(&args("store 494 --rings")).is_none());
         let o = options(&args("store 495 --camera 1,2.5,-3,90,-10")).unwrap();
         assert_eq!(o.camera, Some([1.0, 2.5, -3.0, 90.0, -10.0]));
         assert!(options(&args("store 495 --camera 1,2,3,4")).is_none());

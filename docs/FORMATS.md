@@ -304,6 +304,25 @@ probe and emitter volumes, effects locators, sound locators, `ClothObjectBluepri
 - The ground is in two other places: the roads in the drivable-surface zones and the
   terrain in the root bundle (the next two sections).
 
+**The zones' neighbours** (read 2026-11-16, by `Level::streamer`). Each streamer's
+`ZoneStreamerEntityData` sits in an `overridenassets/<guid>_subworlddata` partition of its
+parent bundle; the art zones' is in `levels/mainlevel/worldart`, the drivable surfaces',
+the collectibles' and the vistas' streamers beside theirs. Its `Info`
+(`ZoneStreamerInfo`) holds:
+
+| field | what it is |
+|-------|------------|
+| `SubLevelPath` | the zones' bundle prefix, `levels/mainlevel/worldart_ZS_` |
+| `BundleNames` | each zone's suffix (`"212"`, …, `"630"`), then the streamer's regions (`"Mainlevel_Region_Rural"`, …): 236 for the art zones |
+| `BundleParents` | an index into `BundleNames` for each, its region |
+| `ZoneInfos` | one per zone (232), in `BundleNames`' order: `Neighbours`, the indices (`Int16`) of the zones bordering it |
+| `GridResource` | a res, not read yet (the zones' shapes, presumably) |
+
+The art zones form a staggered (hexagonal) grid: 148 of the 232 have six neighbours, the
+rest, at the city's edges, three to seven. Zone 494's are 466, 493, 495, 521, 522 and 523,
+one on each side, as their placements' extents show. 14 of the lists name a zone whose own
+list doesn't name it back; the viewer takes a border either way.
+
 ## Drivable surfaces
 
 The roads, kerbs, bridges, car parks and their decals are not in the art zones: they

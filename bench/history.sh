@@ -35,10 +35,13 @@ for tag in $(git -C "$repo" tag -l 'v*' --sort=v:refname); do
 	echo "== $tag"
 	git -C "$wt" checkout -q --detach "$tag"
 	(cd "$wt" && "$cargo" build -q --release --locked -p nfsh </dev/null) || { echo "   build failed"; continue; }
+	# The views are of zone 495 alone; builds since --rings draw the zones around it
+	# unless told not to (their usage, printed with no arguments, names the flag).
+	alone=(); "$nfsh" 2>&1 | grep -q -- '--rings' && alone=(--rings 0)
 	echo "$views" | while read -r name camera time _; do
 		echo "$missing" | grep -qx "$name" || continue
 		night=(); [ "$time" = tealnight ] && night=(--night)
-		timeout 1200 "$nfsh" view "$store" 495 --shot "$(wslpath -w "$out")\\$name.png" --camera "$camera" "${night[@]}" \
+		timeout 1200 "$nfsh" view "$store" 495 "${alone[@]}" --shot "$(wslpath -w "$out")\\$name.png" --camera "$camera" "${night[@]}" \
 			</dev/null >/dev/null 2>&1 || echo "   $name: not drawn by this build"
 	done
 done
