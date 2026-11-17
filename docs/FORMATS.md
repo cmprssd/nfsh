@@ -736,6 +736,30 @@ every sample, 61 differ by at most 2 units (1/16 m) on a few dozen samples, and 
 differ only where one of them has a hole. The heights of every leaf also span exactly
 its node's y range in the node tree. A store test checks the first rule on every pair.
 
+**The ground height grid** (worked out on 2026-11-17; `terrain::GroundHeights` reads
+it, a store test checks it) lies outside the streaming tree, in the level's ebx
+`levels/mainlevel/default`: a `GroundHeightEntityData` whose `Data`
+(`GroundHeightData`) holds `Data`, 4,096 u16, a `HeightSpan` (x 0, y 840.7628) and a
+`WorldSize` (16,384). It is 64 × 64 squares of 256 m over the world's square, rows
+along z and columns along x (square (r, c) covers from (−8,192 + 256c,
+−8,192 + 256r)), each the **least height of the ground** in the square, as
+x + v/65,535 · (y − x) m. Against the height bounds (above) of the smallest heightfield
+of 256 to 2,048 m with a block at the square:
+
+- all 407 squares whose least is the sea floor (0.156 m) read under 0.1 m (0 on most);
+- 3,292 of the 3,305 others are within 0.1 m of their least (in grid steps, mostly
+  within 1 on 256 m tiles and within 6 on 512 m ones), and `HeightSpan`'s y is the
+  greatest of them (840.75 m, at (−4,352, −7,168)). Of the 13 left, a block of four
+  squares at x 5,376 to 5,888 m, z 1,792 to 2,304 m reads 35.5 m where the ground
+  is at least 44 to 61 m, and one at (0, −1,792) reads 14 m above it; none has a
+  hole. Perhaps the grid was made from an earlier ground; not looked into;
+- 384 squares are under no such block (4,096 m tiles and tiles without heights,
+  mostly open sea); read the other way round (transposed or mirrored), the grid
+  correlates with the bounds at 0.68 at best, against 1.000.
+
+What reads it in Heat is not known (a cheap "how low can the ground be here" for
+anything placed or flying above it is the likeliest).
+
 ### Scattering
 
 The `VisualResource` (worked out on 2026-11-17; `frostbite::scatter` reads it and a
@@ -775,7 +799,14 @@ nothing, the forest floor (7) ferns and clover, the burnt forest floor (6) twigs
 gravels (5, 13) rocks; read as `TerrainLayers` indices, layer 8 (a road) would grow
 ferns. Every mesh is a `RigidMeshAsset` in the store whose `MeshSetResource` is the
 type's id. nfsh does not draw them yet; where the scattering puts each mesh (the
-density over a layer's weight, and the seed) is not worked out.
+density over a layer's weight, and the seed) is not worked out. Looked for on
+2026-11-17: no ebx in the store uses a scattering settings type (the only ebx types
+named like it are the layers' `TerrainMeshScatteringType` and particle ones), so the
+header's values have no ebx source to match, and the tile chunks hold nothing besides
+what is above. The terrain's decals (`TerrainEntityData`'s `DecalsResource`, not read)
+use `…_scattermask` textures (tyre tracks, ploughed and crop fields, rivers, cracks),
+likely where decals keep the scattering off; placement itself is likely made at run
+time from the layers' weights.
 
 ### Terrain layers
 
