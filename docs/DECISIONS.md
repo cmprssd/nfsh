@@ -1584,3 +1584,9 @@ The art zones' streamer (`ZoneStreamerEntityData` in `levels/mainlevel/worldart`
   1% low falls from 60 to 28 FPS on the integrated GPU. Decided by Claude, pending
   review: the baseline stays at 0 rings (as above) and the viewer's default one ring
   stays as the owner chose; streaming zones by the camera is the way to take the cost off.
+
+## 2026-11-17
+
+- **`D:\nfsh-store-0.4.0` (28 GiB, the old v3 store) is kept, by the owner's choice
+  (2026-11-09).** Don't delete it when cleaning up `D:`; `nfsh-store` is the current one.
+  The bench procedure now lives in CLAUDE.md ("Measuring") and `bench/baseline.sh`.
