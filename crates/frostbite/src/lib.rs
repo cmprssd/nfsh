@@ -5,6 +5,7 @@
 pub mod cas;
 pub mod copy;
 pub mod dbobject;
+pub mod decals;
 pub mod dxbc;
 pub mod ebx;
 pub mod frames;

@@ -6,6 +6,18 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-11-18
+
+### Added
+
+- The terrain's decals are read (docs/FORMATS.md, "Terrain decals"; `decals::Decals`):
+  the res the terrain entity's `DecalsResource` names holds 2,678 meshes laid on the
+  ground (tyre tracks, dirt roads, rivers, fields, road cracks and the like), each with
+  its colour, scatter mask and displacement shaders, its bounds and its vertices (x and
+  z, the ground's normal and a tangent, texture coordinates and opacity) and
+  triangles. A store test checks that they lie on the ground: their heights span the
+  ground's under them and their normals are the ground's.
+
 ## [0.55.0] - 2026-11-17
 
 ### Added
