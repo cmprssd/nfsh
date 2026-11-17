@@ -6,6 +6,15 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-11-17
+
+### Added
+
+- `nfsh verify` checks every entry of an install against the SHA-1 its bundles list, a
+  new "SHA-1 checked" column, and `nfsh import` refuses an install whose bytes don't
+  match, so a damaged install is reported instead of copied into the store. Heat's SHA-1s
+  are of the stored, still compressed bytes; a store's frames keep their own checksums.
+
 ## [0.46.0] - 2026-11-17
 
 ### Changed

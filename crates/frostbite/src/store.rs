@@ -753,6 +753,23 @@ fn train_dictionary(
     Ok(frames::train(&samples))
 }
 
+/// An install entry, checked against the SHA-1s its bundles list and decompressed,
+/// with its location in any error: a damaged install is refused, not copied.
+fn read_checked(
+    archives: &mut Archives,
+    entry: &plan::Entry,
+    decoder: &dyn Decoder,
+) -> Result<Vec<u8>> {
+    let l = entry.location;
+    archives
+        .stored(l)
+        .and_then(|stored| {
+            crate::cas::check_sha1(&stored, &entry.sha1s)?;
+            crate::cas::decompress(&stored, decoder)
+        })
+        .map_err(|e| crate::Error(format!("{l:?}: {e}")))
+}
+
 /// An install entry, decompressed, with its location in any error.
 fn read(archives: &mut Archives, l: Location, decoder: &dyn Decoder) -> Result<Vec<u8>> {
     archives
@@ -778,8 +795,8 @@ pub struct Imported {
 }
 
 /// Copies the superbundles `names` of `install` into a store in `dir`. Every distinct
-/// entry they point at is read once with `decoder` (the install's Oodle) to decide what
-/// to keep ([`plan`]); what is kept is written as its frames, on every core. Then it
+/// entry they point at is read once, checked against its listed SHA-1s and decompressed
+/// with `decoder` (the install's Oodle) to decide what to keep ([`plan`]); what is kept is written as its frames, on every core. Then it
 /// reopens the store and checks that it lists the same superbundles, less the chunks
 /// left out, and that every other entry reads back as the install's, byte for byte.
 /// `dir` may be missing, empty, or an earlier store, which is replaced; anything else
@@ -804,7 +821,7 @@ pub fn import(
         &listing.entries,
         || Ok(Archives::new(install)),
         |archives, entry| {
-            let data = read(archives, entry.location, decoder)?;
+            let data = read_checked(archives, entry, decoder)?;
             Ok(plan::scan(entry, &data, &listing, &finder))
         },
     )?;

@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use sha1::{Digest, Sha1};
+
 use crate::install::Install;
 use crate::reader::Reader;
 use crate::{CasRef, Location, Result, bail};
@@ -92,6 +94,25 @@ pub fn decompress(stored: &[u8], decoder: &dyn Decoder) -> Result<Vec<u8>> {
         pos += b.size;
     }
     Ok(out)
+}
+
+/// Checks an entry's stored bytes, as its archive holds them, against the SHA-1s its
+/// bundles list for it (none for a chunk only a `.toc` lists): Heat hashes the stored,
+/// still compressed bytes, not what they decompress to.
+pub fn check_sha1(stored: &[u8], listed: &[[u8; 20]]) -> Result<()> {
+    if listed.is_empty() {
+        return Ok(());
+    }
+    let ours: [u8; 20] = Sha1::digest(stored).into();
+    if let Some(theirs) = listed.iter().find(|s| **s != ours) {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        bail!(
+            "the stored bytes' SHA-1 is {}, listed as {}",
+            hex(&ours),
+            hex(theirs)
+        );
+    }
+    Ok(())
 }
 
 /// Reads stored bytes from archives (an install's, or a store's packs), keeping each
@@ -266,6 +287,25 @@ fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sha1s_are_of_the_stored_bytes() {
+        // SHA-1("abc"), from FIPS 180's examples.
+        let abc = [
+            0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e, 0x25, 0x71, 0x78, 0x50,
+            0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d,
+        ];
+        assert_eq!(check_sha1(b"abc", &[abc]), Ok(()));
+        assert_eq!(check_sha1(b"abc", &[abc, abc]), Ok(()));
+        assert_eq!(check_sha1(b"abd", &[]), Ok(()));
+        let err = check_sha1(b"abd", &[abc]).unwrap_err().0;
+        assert!(
+            err.ends_with("listed as a9993e364706816aba3e25717850c26c9cd0d89d"),
+            "{err}"
+        );
+        // Two bundles disagreeing can't both be right.
+        assert!(check_sha1(b"abc", &[abc, [0; 20]]).is_err());
+    }
 
     /// Stands in for Oodle: each "compressed" byte expands to two copies of itself.
     struct Doubler;

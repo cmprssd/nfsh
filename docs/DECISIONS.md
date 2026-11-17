@@ -1590,3 +1590,17 @@ The art zones' streamer (`ZoneStreamerEntityData` in `levels/mainlevel/worldart`
 - **`D:\nfsh-store-0.4.0` (28 GiB, the old v3 store) is kept, by the owner's choice
   (2026-11-09).** Don't delete it when cleaning up `D:`; `nfsh-store` is the current one.
   The bench procedure now lives in CLAUDE.md ("Measuring") and `bench/baseline.sh`.
+
+## 2026-11-17: SHA-1s checked (decided by Claude, pending review)
+
+- **Heat's SHA-1s are of an entry's stored bytes, as its archive holds them**, not of what
+  they decompress to: 45 of 45 decompressed entries didn't match, 30 of 30 stored ones did
+  (ebx, res and chunks, both layers). A chunk only a `.toc` lists has none.
+- **`nfsh verify` checks them for an install, and `nfsh import` on its first read of each
+  entry, failing on a mismatch** (decided by Claude, pending review). Why: the import's
+  byte-for-byte check only proves the copy matches the install; a damaged install would be
+  copied faithfully, and the install may be deleted afterwards. A store isn't checked
+  against them: its frames are recompressed and carry zstd's own checksums.
+- **Overlapping archive entries need nothing more**: every overlap in the install
+  (186 pairs, 76 MB) is a bundle's copy of a chunk's end inside the whole chunk, ending
+  where it ends, which the store already reads from the whole chunk (0.26.0, `plan.rs`).
