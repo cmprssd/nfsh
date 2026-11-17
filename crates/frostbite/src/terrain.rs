@@ -1,4 +1,5 @@
-//! Palm City's terrain: the streaming tree's quadtree of tiles, a tile's heightfield,
+//! Palm City's terrain: the streaming tree's quadtree of tiles, its blocks (layer tree,
+//! outlines, surface map), a tile's heightfield,
 //! height bounds, pages and colour, its finer chunk, and a mesh of the ground under an
 //! area (see docs/FORMATS.md, "Terrain").
 //! Little-endian, packed with no alignment.
@@ -27,6 +28,36 @@ const LAST_BLOCK: u8 = 0xFF;
 /// The block holding the layer tree, and its header's size.
 const LAYER_BLOCK: u8 = 1;
 const LAYER_HEADER: usize = 0x38;
+/// The blocks holding outlines, quadtrees with no data of their own: kind, header
+/// size, where its square and node count are, and the flag bytes before a node's
+/// children byte.
+const OUTLINE_BLOCKS: [(u8, OutlineLayout); 2] = [
+    (
+        2,
+        OutlineLayout {
+            header: 0x34,
+            square_at: 0x14,
+            count_at: 0x2C,
+            flags: 3,
+        },
+    ),
+    (
+        4,
+        OutlineLayout {
+            header: 0x28,
+            square_at: 0x08,
+            count_at: 0x18,
+            flags: 2,
+        },
+    ),
+];
+/// The block holding the surface map, its header's size, and where its counts are.
+const SURFACE_BLOCK: u8 = 3;
+const SURFACE_HEADER: usize = 0x24;
+const SURFACE_NODES_AT: usize = 0x18;
+const SURFACE_MAPS_AT: usize = 0x1C;
+/// A surface value is 4 bits, an index into a table of at most this many entries.
+pub const SURFACE_KINDS: usize = 16;
 /// Deeper than any tree the readers accept (Palm City's goes 9 levels down, to 64 m),
 /// so a malformed file can't recurse without end.
 const MAX_DEPTH: usize = 16;
@@ -153,6 +184,93 @@ impl LayerRecord {
     }
 }
 
+/// Where an outline block keeps its parts (see [`OUTLINE_BLOCKS`]).
+struct OutlineLayout {
+    header: usize,
+    square_at: usize,
+    count_at: usize,
+    flags: usize,
+}
+
+/// A block's quadtree with no data of its own (kinds 2 and 4): over the world's square,
+/// in the tiles' child order. What it stands for is not worked out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Outline {
+    /// The block's kind.
+    pub kind: u8,
+    /// The block's first u32: 68 for kind 2 (a colour's side), 137 for kind 4 (a
+    /// heightfield's).
+    pub side: u32,
+    pub nodes: usize,
+    /// Its leaves' least x and z and side, depth first.
+    pub leaves: Vec<([f32; 2], f32)>,
+}
+
+/// The surface map (block kind 3): 4-bit values in a grid over the land, each an index
+/// into [`Surfaces::table`]. Likely the ground's surface kinds (physics materials), not
+/// confirmed (docs/FORMATS.md, "Terrain").
+#[derive(Debug, Clone, PartialEq)]
+pub struct Surfaces {
+    /// Values along each side of a map: 256.
+    pub side: usize,
+    /// The quadtree's node count.
+    pub nodes: usize,
+    /// The squares that have a map, by [`square`].
+    pub maps: HashMap<[u32; 3], SurfaceMap>,
+    /// What each value stands for, as stored (u32 each, not worked out).
+    pub table: Vec<u32>,
+}
+
+/// One square's surface values, kept as stored: each row run-length coded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceMap {
+    pub min: [f32; 2],
+    pub size: f32,
+    rows: Vec<u8>,
+    lengths: Vec<u16>,
+}
+
+impl SurfaceMap {
+    /// Its values, `side` × `side` (the [`Surfaces::side`]), rows along z and columns
+    /// along x, value (r, c) covering from (min x + c·size/side, min z + r·size/side).
+    /// A row is run-length coded bytes, two values each, the low 4 bits first: two equal
+    /// bytes and a count n stand for n + 1 of that byte, any other byte for itself.
+    pub fn values(&self, side: usize) -> Result<Vec<u8>> {
+        if self.lengths.len() != side {
+            bail!("{} rows, {side} expected", self.lengths.len());
+        }
+        let mut out = Vec::with_capacity(side * side);
+        let mut row = Vec::with_capacity(side / 2);
+        let mut at = 0;
+        for (r, &len) in self.lengths.iter().enumerate() {
+            let src = self
+                .rows
+                .get(at..at + usize::from(len))
+                .ok_or_else(|| Error(format!("row {r} runs past the map")))?;
+            at += usize::from(len);
+            row.clear();
+            let mut i = 0;
+            while i < src.len() {
+                if src.get(i + 1) == Some(&src[i]) {
+                    let n = *src
+                        .get(i + 2)
+                        .ok_or_else(|| Error(format!("row {r}: a run with no count")))?;
+                    row.resize(row.len() + usize::from(n) + 1, src[i]);
+                    i += 3;
+                } else {
+                    row.push(src[i]);
+                    i += 1;
+                }
+            }
+            if row.len() * 2 != side {
+                bail!("row {r} holds {} values, {side} expected", row.len() * 2);
+            }
+            out.extend(row.iter().flat_map(|b| [b & 0xF, b >> 4]));
+        }
+        Ok(out)
+    }
+}
+
 /// The streaming tree's tiles; the first is the root.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tree {
@@ -161,6 +279,10 @@ pub struct Tree {
     pub nodes: usize,
     /// The layer tree: each square's layers, in ascending order, by [`square`].
     pub layers: HashMap<[u32; 3], Vec<LayerRecord>>,
+    /// The blocks with outlines, kinds 2 and 4, in block order.
+    pub outlines: Vec<Outline>,
+    /// The surface map, when the tree has one.
+    pub surfaces: Option<Surfaces>,
 }
 
 /// A square's key in [`Tree::layers`]: its least x and z and its side, as bits.
@@ -185,6 +307,8 @@ impl Tree {
             bail!("the node tree has {nodes} nodes, its header says {node_count}");
         }
         let mut layers = HashMap::new();
+        let mut outlines = Vec::new();
+        let mut surfaces = None;
         loop {
             let kind = r.u8()?;
             if kind == LAST_BLOCK {
@@ -192,8 +316,13 @@ impl Tree {
             }
             let len = r.u32_le()? as usize;
             let block = r.bytes(len)?;
+            let in_block = |e: Error| Error(format!("block {kind}: {e}"));
             if kind == LAYER_BLOCK {
                 layers = read_layers(block).map_err(|e| Error(format!("the layer tree: {e}")))?;
+            } else if kind == SURFACE_BLOCK {
+                surfaces = Some(read_surfaces(block).map_err(in_block)?);
+            } else if let Some((_, layout)) = OUTLINE_BLOCKS.iter().find(|(k, _)| *k == kind) {
+                outlines.push(read_outline(kind, block, layout).map_err(in_block)?);
             }
         }
         let mut tiles = Vec::with_capacity(tile_count.min(data.len() / 23));
@@ -212,6 +341,8 @@ impl Tree {
             tiles,
             nodes,
             layers,
+            outlines,
+            surfaces,
         })
     }
 
@@ -391,6 +522,169 @@ fn read_layer_node(
         }),
         c => bail!("node {nodes}: children flag {c}"),
     }
+}
+
+/// The square at `at` in a block's header (four f32: least x and z, then greatest).
+fn block_square(block: &[u8], at: usize) -> Result<([f32; 2], f32)> {
+    let mut r = Reader::at(block, at)?;
+    let mut b = [0.0; 4];
+    for v in &mut b {
+        *v = f32_le(&mut r)?;
+    }
+    let size = b[2] - b[0];
+    if !(size > 0.0 && size.is_finite() && b[3] - b[1] == size) {
+        bail!("the square {b:?} is not a square");
+    }
+    Ok(([b[0], b[1]], size))
+}
+
+/// A u32 at `at` in `block`.
+fn block_u32(block: &[u8], at: usize) -> Result<u32> {
+    Reader::at(block, at)?.u32_le()
+}
+
+/// A byte that must be 0 or 1.
+fn flag(r: &mut Reader, what: &str) -> Result<bool> {
+    match r.u8()? {
+        b @ (0 | 1) => Ok(b == 1),
+        b => bail!("{what} flag {b} at {:#x}", r.pos() - 1),
+    }
+}
+
+/// The child squares of `min` + `size`, in [`QUADRANTS`] order.
+fn quadrants(min: [f32; 2], size: f32) -> [[f32; 2]; 4] {
+    QUADRANTS.map(|[qx, qz]| {
+        [
+            min[0] + qx as f32 * size / 2.0,
+            min[1] + qz as f32 * size / 2.0,
+        ]
+    })
+}
+
+/// Reads an outline block: a header, then a quadtree whose nodes are flag bytes
+/// and a byte that is 1 when four children follow.
+fn read_outline(kind: u8, block: &[u8], layout: &OutlineLayout) -> Result<Outline> {
+    let side = block_u32(block, 0)?;
+    let (min, size) = block_square(block, layout.square_at)?;
+    let count = block_u32(block, layout.count_at)? as usize;
+    let mut r = Reader::at(block, layout.header)?;
+    let mut outline = Outline {
+        kind,
+        side,
+        nodes: 0,
+        leaves: Vec::new(),
+    };
+    fn node(
+        r: &mut Reader,
+        flags: usize,
+        min: [f32; 2],
+        size: f32,
+        depth: usize,
+        out: &mut Outline,
+    ) -> Result<()> {
+        if depth > MAX_DEPTH {
+            bail!("deeper than {MAX_DEPTH}");
+        }
+        out.nodes += 1;
+        for _ in 0..flags {
+            flag(r, "node")?;
+        }
+        if flag(r, "children")? {
+            quadrants(min, size)
+                .into_iter()
+                .try_for_each(|at| node(r, flags, at, size / 2.0, depth + 1, out))
+        } else {
+            out.leaves.push((min, size));
+            Ok(())
+        }
+    }
+    node(&mut r, layout.flags, min, size, 0, &mut outline)?;
+    if outline.nodes != count {
+        bail!("{} nodes, the header says {count}", outline.nodes);
+    }
+    if r.pos() != block.len() {
+        bail!("{} bytes after the last node", block.len() - r.pos());
+    }
+    Ok(outline)
+}
+
+/// Reads the surface map's block: a header, a quadtree whose nodes may hold a map,
+/// then the values' table.
+fn read_surfaces(block: &[u8]) -> Result<Surfaces> {
+    let side = block_u32(block, 0)? as usize;
+    if side == 0 || !side.is_multiple_of(2) || side > 4096 {
+        bail!("a map side of {side}");
+    }
+    let (min, size) = block_square(block, 0x08)?;
+    let node_count = block_u32(block, SURFACE_NODES_AT)? as usize;
+    let map_count = block_u32(block, SURFACE_MAPS_AT)? as usize;
+    let mut r = Reader::at(block, SURFACE_HEADER)?;
+    let mut surfaces = Surfaces {
+        side,
+        nodes: 0,
+        maps: HashMap::new(),
+        table: Vec::new(),
+    };
+    fn node(
+        r: &mut Reader,
+        min: [f32; 2],
+        size: f32,
+        depth: usize,
+        out: &mut Surfaces,
+    ) -> Result<()> {
+        if depth > MAX_DEPTH {
+            bail!("deeper than {MAX_DEPTH}");
+        }
+        out.nodes += 1;
+        let has_map = flag(r, "map")?;
+        let _unknown = flag(r, "second")?;
+        if has_map {
+            let len = r.u32_le()? as usize;
+            let rows = r.bytes(len)?.to_vec();
+            let lengths = (0..out.side)
+                .map(|_| r.u16_le())
+                .collect::<Result<Vec<_>>>()?;
+            let total: usize = lengths.iter().map(|&l| usize::from(l)).sum();
+            if total != len {
+                bail!(
+                    "node {}: its rows' lengths sum to {total}, not {len}",
+                    out.nodes
+                );
+            }
+            let map = SurfaceMap {
+                min,
+                size,
+                rows,
+                lengths,
+            };
+            out.maps.insert(square(min, size), map);
+        }
+        if flag(r, "children")? {
+            quadrants(min, size)
+                .into_iter()
+                .try_for_each(|at| node(r, at, size / 2.0, depth + 1, out))
+        } else {
+            Ok(())
+        }
+    }
+    node(&mut r, min, size, 0, &mut surfaces)?;
+    if (surfaces.nodes, surfaces.maps.len()) != (node_count, map_count) {
+        bail!(
+            "{} nodes and {} maps, the header says {node_count} and {map_count}",
+            surfaces.nodes,
+            surfaces.maps.len()
+        );
+    }
+    let kinds = r.u32_le()? as usize;
+    if kinds > SURFACE_KINDS {
+        bail!("a table of {kinds} values");
+    }
+    surfaces.table = (0..kinds).map(|_| r.u32_le()).collect::<Result<_>>()?;
+    let _unknown = r.u32_le()?;
+    if r.pos() != block.len() {
+        bail!("{} bytes after the table", block.len() - r.pos());
+    }
+    Ok(surfaces)
 }
 
 /// Reads the tile at `r` covering `min` to `min + size`, and its children.
@@ -1245,7 +1539,7 @@ mod tests {
         d.push(LAYER_BLOCK);
         d.extend_from_slice(&(layers.len() as u32).to_le_bytes());
         d.extend_from_slice(&layers);
-        d.extend_from_slice(&[3, 3, 0, 0, 0, 9, 9, 9, LAST_BLOCK]);
+        d.extend_from_slice(&[9, 3, 0, 0, 0, 9, 9, 9, LAST_BLOCK]);
         tile(&mut d, root, 0, false, true);
         tile(&mut d, HEIGHTFIELD, 1, false, false);
         tile(&mut d, 2312, 2, false, false);
@@ -1280,6 +1574,112 @@ mod tests {
         assert_eq!(heights, [false, true, false, true, true]);
         let pages: Vec<_> = t.iter().map(Tile::page_count).collect();
         assert_eq!(pages, [0, 0, 0, 1, 0]);
+    }
+
+    /// An outline block of `kind` over 256 m from −128: the root with four children,
+    /// the second split again.
+    fn outline_block(kind: u8) -> Vec<u8> {
+        let (_, layout) = OUTLINE_BLOCKS.iter().find(|(k, _)| *k == kind).unwrap();
+        let mut d = vec![0; layout.header];
+        d[0..4].copy_from_slice(&68u32.to_le_bytes());
+        for (i, v) in [-128.0f32, -128.0, 128.0, 128.0].into_iter().enumerate() {
+            let at = layout.square_at + 4 * i;
+            d[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        d[layout.count_at..layout.count_at + 4].copy_from_slice(&9u32.to_le_bytes());
+        let node = |d: &mut Vec<u8>, kids: bool| {
+            d.extend(std::iter::repeat_n(1, layout.flags));
+            d.push(u8::from(kids));
+        };
+        node(&mut d, true);
+        node(&mut d, false);
+        node(&mut d, true);
+        (0..4).for_each(|_| node(&mut d, false));
+        node(&mut d, false);
+        node(&mut d, false);
+        d
+    }
+
+    #[test]
+    fn reads_an_outline_blocks_leaves() {
+        for (kind, layout) in &OUTLINE_BLOCKS {
+            let o = read_outline(*kind, &outline_block(*kind), layout).unwrap();
+            assert_eq!((o.kind, o.side, o.nodes), (*kind, 68, 9));
+            assert_eq!(o.leaves.len(), 7);
+            assert_eq!(o.leaves[0], ([-128.0, -128.0], 128.0));
+            // The second child's quadrants, then the third and fourth children.
+            assert_eq!(o.leaves[1], ([0.0, -128.0], 64.0));
+            assert_eq!(o.leaves[3], ([64.0, -64.0], 64.0));
+            assert_eq!(o.leaves[6], ([-128.0, 0.0], 128.0));
+            let mut short = outline_block(*kind);
+            short.pop();
+            assert!(read_outline(*kind, &short, layout).is_err());
+            let mut bad = outline_block(*kind);
+            let at = layout.count_at;
+            bad[at..at + 4].copy_from_slice(&8u32.to_le_bytes());
+            assert!(read_outline(*kind, &bad, layout).is_err());
+        }
+    }
+
+    /// A surface block over 8 m from 0 with maps of 4 × 4 values: the root, its first
+    /// child with a map (rows coded `rows`), the others empty; a table of two values.
+    fn surface_block(rows: &[&[u8]]) -> Vec<u8> {
+        let mut d = vec![0; SURFACE_HEADER];
+        d[0..4].copy_from_slice(&4u32.to_le_bytes());
+        for (i, v) in [0.0f32, 0.0, 8.0, 8.0].into_iter().enumerate() {
+            d[8 + 4 * i..12 + 4 * i].copy_from_slice(&v.to_le_bytes());
+        }
+        d[SURFACE_NODES_AT..SURFACE_NODES_AT + 4].copy_from_slice(&5u32.to_le_bytes());
+        d[SURFACE_MAPS_AT..SURFACE_MAPS_AT + 4].copy_from_slice(&1u32.to_le_bytes());
+        d.extend_from_slice(&[0, 0, 1]);
+        d.extend_from_slice(&[1, 1]);
+        let len: usize = rows.iter().map(|r| r.len()).sum();
+        d.extend_from_slice(&(len as u32).to_le_bytes());
+        rows.iter().for_each(|r| d.extend_from_slice(r));
+        rows.iter()
+            .for_each(|r| d.extend_from_slice(&(r.len() as u16).to_le_bytes()));
+        d.push(0);
+        (0..3).for_each(|_| d.extend_from_slice(&[0, 1, 0]));
+        for v in [2u32, 0x0510_8780, 0x00A0_0280, 0x80] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        d
+    }
+
+    #[test]
+    fn reads_the_surface_map_run_length_coded_low_values_first() {
+        // A run (two equal bytes, then one more), literals, and a run of exactly two.
+        let rows: [&[u8]; 4] = [
+            &[0x11, 0x11, 1],
+            &[0x21, 0x43],
+            &[0xFF, 0xFF, 1],
+            &[0x10, 0x10, 1],
+        ];
+        let s = read_surfaces(&surface_block(&rows)).unwrap();
+        assert_eq!((s.side, s.nodes, s.maps.len()), (4, 5, 1));
+        assert_eq!(s.table, [0x0510_8780, 0x00A0_0280]);
+        let map = &s.maps[&square([0.0, 0.0], 4.0)];
+        assert_eq!((map.min, map.size), ([0.0, 0.0], 4.0));
+        assert_eq!(
+            map.values(4).unwrap(),
+            [1, 1, 1, 1, 1, 2, 3, 4, 15, 15, 15, 15, 0, 1, 0, 1]
+        );
+        assert!(map.values(8).is_err());
+        // A row decoding to too many values, and a run with no count.
+        let long: [&[u8]; 4] = [&[0x11, 0x11, 2], &[0, 0, 1], &[0, 0, 1], &[0, 0, 1]];
+        let s = read_surfaces(&surface_block(&long)).unwrap();
+        assert!(s.maps.values().next().unwrap().values(4).is_err());
+        let cut: [&[u8]; 4] = [&[0, 0, 1], &[0, 0, 1], &[0, 0, 1], &[0x11, 0x11]];
+        let s = read_surfaces(&surface_block(&cut)).unwrap();
+        assert!(s.maps.values().next().unwrap().values(4).is_err());
+        // A block cut short, and a row length off by one.
+        let mut short = surface_block(&rows);
+        short.pop();
+        assert!(read_surfaces(&short).is_err());
+        let mut bad = surface_block(&rows);
+        let at = SURFACE_HEADER + 3 + 2 + 4 + 11;
+        bad[at] += 1;
+        assert!(read_surfaces(&bad).is_err());
     }
 
     #[test]
@@ -1807,6 +2207,56 @@ mod tests {
         let store = Store::open(Path::new(&dir)).unwrap();
         let tree = Tree::read(&store).unwrap();
         assert_eq!((tree.nodes, tree.tiles.len()), (10_077, 8_253));
+        // The outlines: kind 2 down to 32 m, kind 4 every square down to 1,024 m.
+        let leaves = |o: &Outline| {
+            let mut by_side = std::collections::BTreeMap::new();
+            o.leaves
+                .iter()
+                .for_each(|(_, s)| *by_side.entry(*s as u32).or_insert(0) += 1);
+            by_side.into_iter().collect::<Vec<_>>()
+        };
+        let outlines: Vec<_> = tree
+            .outlines
+            .iter()
+            .map(|o| (o.kind, o.side, o.nodes, leaves(o)))
+            .collect();
+        assert_eq!(
+            outlines,
+            [
+                (
+                    2,
+                    68,
+                    32_021,
+                    vec![(32, 128), (64, 18_656), (128, 3_072), (256, 2_160)]
+                ),
+                (4, 137, 341, vec![(1_024, 256)])
+            ]
+        );
+        // The surface map: 521 maps of 256 × 256 values over 512 and 1,024 m squares,
+        // every row decoding to its 256 values; a table of 16.
+        let s = tree.surfaces.as_ref().unwrap();
+        assert_eq!(
+            (s.side, s.nodes, s.maps.len(), s.table.len()),
+            (256, 797, 521, 16)
+        );
+        let mut counts = [0usize; SURFACE_KINDS];
+        let mut sides = (0, 0);
+        for map in s.maps.values() {
+            map.values(s.side)
+                .unwrap()
+                .iter()
+                .for_each(|&v| counts[usize::from(v)] += 1);
+            match map.size {
+                512.0 => sides.0 += 1,
+                1_024.0 => sides.1 += 1,
+                other => panic!("a map of {other} m"),
+            }
+        }
+        assert_eq!(sides, (414, 107));
+        assert_eq!(
+            (counts[0], counts[1], counts[15]),
+            (4_206_202, 19_289_697, 715_785)
+        );
         let mut chunks = Chunks::new(&store).unwrap();
         // The root and the four 8,192 m quadrants have no chunk.
         let without: Vec<_> = tree

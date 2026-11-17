@@ -460,8 +460,47 @@ ends at `0x54083`.
 
 Then **blocks**, each a kind (u8) and a length (u32) before its bytes, until a kind
 of 0xFF with no length. Palm City has four, kinds 1 to 4 (1,335,460, 128,136,
-3,836,271 and 1,063 bytes). Kinds 2 to 4 are not worked out (each starts with the
-world's square as four f32, −8,192 to 8,192; kind 3 is mostly 3-byte cells).
+3,836,271 and 1,063 bytes). Each is a header, then a quadtree over the world's square
+(−8,192 to 8,192) in the tiles' child order, depth first. Every header starts with a
+side (u32): 136 for kind 1 (a page's), 68 for kind 2 (a colour's), 256 for kind 3 and
+137 for kind 4 (a heightfield's). Kinds 1 and 2 then give two more u32 that look like
+an atlas of those squares, 30 across (4,096 × 6,144 and 2,048 × 2,048), not checked.
+Kinds 2 to 4 were worked out on 2026-11-17; `frostbite::terrain` reads them and a
+store test checks them:
+
+- **Kinds 2 and 4 are outlines**, quadtrees with no data of their own. Kind 2: a
+  0x34-byte header (68, 2, 2,048, 2,048, 2, the square as four f32 at 0x14, 54, 4,
+  the node count, 32,021, at 0x2C, then 0), then 4-byte nodes: three flags (the first
+  is 1 for the root and the four 8,192 m nodes, the second for every other node, the
+  third always 0) and a byte that is 1 when four children follow. Every square is split
+  down to 256 m; over the city it goes to 64 m (18,656 leaves) and in one 256 m square
+  in the north-east to 32 m (128 leaves). Kind 4: a 0x28-byte header (137, 0, the
+  square at 0x08, the node count, 341, at 0x18, then 0, 4 and 4), then 3-byte nodes
+  (0, 1, and the children byte): every square down to 1,024 m. What either is for is
+  not worked out.
+- **Kind 3 is a surface map**: 4-bit values at 2 m over the land (`terrain::Surfaces`).
+  A 0x24-byte header: 256, 0, the square at 0x08, the node count (797) at 0x18, how
+  many nodes have a map (521) at 0x1C, and the depth (5). A node is a byte that is 1
+  when it has a map, a second flag (not worked out), the map if it has one, and a byte
+  that is 1 when four children follow. A map is a length n (u32), n bytes of rows,
+  then each of its 256 rows' byte lengths (u16 each, summing to n). A row is
+  run-length coded: two equal bytes and a count c stand for c + 1 of that byte, any
+  other byte for itself, and it decodes to 128 bytes, 256 values, the low 4 bits
+  first. Rows run along z and columns along x: value (r, c) of a map at (x0, z0) of
+  size S covers from (x0 + c·S/256, z0 + r·S/256), with no border. Maps are on leaves
+  only: 414 of 512 m (a value every 2 m) and 107 of 1,024 m (every 4 m); 163 hold a
+  single value. After the tree, a table: a count (16) and that many u32, then a u32
+  (128). The values are likely the ground's surface kinds (physics materials), the
+  table naming them, not confirmed. What was checked:
+  - every one of the 133,376 rows decodes to exactly 128 bytes; all 16 values occur,
+    1 the most (19,289,697 of 34,144,256);
+  - neighbouring values agree as often across a map's edge as inside it (95% between
+    two columns), so maps tile with no border;
+  - on 80 512 m squares, knowing the value cuts the uncertainty of the layer with the
+    most weight in the tile's pages from 1.42 to 0.72 bits; read rotated or mirrored,
+    every other way stays above 1.30. Some values follow one layer (14 lies on
+    layer 6 everywhere, 8 on layer 13 82% of the time, 7 on layer 2 86%), others
+    span several, as kinds of surface would.
 
 **Kind 1 is the layer tree**, where each layer lies (worked out on 2026-11-01;
 `frostbite::terrain` reads it and a store test checks it): a 0x38-byte header (0x88,
