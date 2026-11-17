@@ -6,6 +6,16 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-11-17
+
+### Added
+
+- The surface table's last two bytes are read (docs/FORMATS.md, "Terrain";
+  `terrain::property`): a packed material is a pair, the material and a modifier, the
+  modifier another row of the level's material grid that holds race physics alone
+  (`VstFairlySlow`, `VstSlow`, `VstFairlyFast` or `VstMedium` on the ground). A store
+  test checks every entry's modifier row.
+
 ## [0.53.0] - 2026-11-17
 
 ### Added

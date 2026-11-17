@@ -497,20 +497,35 @@ store test checks them:
   index into the `MaterialGridData` ebx's (`levels/mainlevel/mainlevel/materialgrid_win32`)
   `MaterialIndexMap` (140), which gives its row of `MaterialProperties` (123): race
   physics (`SurfaceType`, from `VstFast` to `VstFairlySlow`), tyre, debris and rim
-  sounds. The trailing 128 is the grid's `DefaultMaterial` (material 0). The two high
-  bytes are not worked out (0x10, 0x20 or 0xA0; 5, 6 or 0; 0xA0 and 0 on the plain
-  grass and dirt alone). Palm City's 16, by the debris sound each names:
+  sounds. The trailing 128 is the grid's `DefaultMaterial` (material 0). The next four
+  bits are 0, and the **top 12 bits are a modifier** (`terrain::property`, worked out
+  on 2026-11-17, a store test checks it): another index into `MaterialIndexMap`, for
+  a row with no sounds of its own. A `MaterialDecl` is a pair, as the fields holding
+  one name it (`MaterialPair`, `GripWheelMaterialPair`): a material and what modifies
+  it. The grid has 8 rows holding race physics alone (indices 8 to 11, 80 to 82 and
+  97), and the ground's modifiers are always four of them: 81 (`VstFairlySlow`), 82
+  (`VstSlow`, the swamp, sugarcane and sparse forest floor), 97 (`VstFairlyFast`, the
+  asphalts and the quarry) and 10 (`VstMedium`, with `DemoteFromToiToNormal`, the
+  plain grass and dirt). Their `SurfaceType` often differs from the material's own
+  (the swamp is `VstFairlyFast`, its modifier `VstSlow`); which one the game drives
+  on is not known. Across the store's 19,400 `MaterialDecl` values (in 9,020 ebx:
+  rigid bodies mostly, vehicles, characters, wheels), the low byte is 0x80 with flags
+  0x08 and 0x02 on some props, the four bits are always 0, and 327 carry a modifier,
+  none a row with sounds: race physics, strength (`MaterialPropertyStrengthData`, the
+  vehicles' damage) or, on the wheels, a tyre's row with no properties (its
+  relations are in `InteractionGrid`). Palm City's 16, by the debris sound each
+  names:
 
-  | value | material | sounds | | value | material | sounds |
-  |---:|---:|---|---|---:|---:|---|
-  | 0 | 0x87 | dirt, beach | | 8 | 0x86 | sugarcane field |
-  | 1 | 0x7D | grass, high | | 9 | 0x0E | asphalt |
-  | 2 | 0x88 | dirt, swamp | | 10 | 0x7C | forest floor, bushes and ferns |
-  | 3 | 0x55 | dirt, mud | | 11 | 0x7B | forest floor, sparse |
-  | 4 | 0x80 | dirt, quarry | | 12 | 0x54 | dirt, sand |
-  | 5 | 0x45 | dirt with stones | | 13 | 0x02 | grass |
-  | 6 | 0x56 | forest floor, sparse | | 14 | 0x7A | forest floor, burnt |
-  | 7 | 0x57 | damaged asphalt | | 15 | 0x04 | dirt |
+  | value | material | modifier | sounds | | value | material | modifier | sounds |
+  |---:|---:|---:|---|---|---:|---:|---:|---|
+  | 0 | 0x87 | 81 | dirt, beach | | 8 | 0x86 | 82 | sugarcane field |
+  | 1 | 0x7D | 81 | grass, high | | 9 | 0x0E | 97 | asphalt |
+  | 2 | 0x88 | 82 | dirt, swamp | | 10 | 0x7C | 81 | forest floor, bushes and ferns |
+  | 3 | 0x55 | 81 | dirt, mud | | 11 | 0x7B | 82 | forest floor, sparse |
+  | 4 | 0x80 | 97 | dirt, quarry | | 12 | 0x54 | 81 | dirt, sand |
+  | 5 | 0x45 | 81 | dirt with stones | | 13 | 0x02 | 10 | grass |
+  | 6 | 0x56 | 81 | forest floor, sparse | | 14 | 0x7A | 81 | forest floor, burnt |
+  | 7 | 0x57 | 97 | damaged asphalt | | 15 | 0x04 | 10 | dirt |
 
   They fit the layers under them: at the texels of 600 128 m tiles, the heaviest
   layer is the burnt forest floor (6) under 99% of value 14, the forest floor (7)

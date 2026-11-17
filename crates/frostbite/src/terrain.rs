@@ -220,7 +220,7 @@ pub struct Surfaces {
     pub maps: HashMap<[u32; 3], SurfaceMap>,
     /// Each value's physics material, packed as the level's material grid packs one
     /// (`MaterialDecl`): 0x80 in the low byte, the material in the next ([`material`]),
-    /// two bytes not worked out.
+    /// four zero bits, and a modifier in the top 12 bits ([`property`]).
     pub table: Vec<u32>,
     /// The material where the map has none, packed the same way: the material grid's
     /// `DefaultMaterial` (0x80, material 0).
@@ -231,6 +231,13 @@ pub struct Surfaces {
 /// `MaterialIndexMap`, which gives its row of properties.
 pub fn material(packed: u32) -> u8 {
     (packed >> 8) as u8
+}
+
+/// The modifier of a packed `MaterialDecl` (its top 12 bits; 0 for none): another
+/// index into `MaterialIndexMap`, for a row with no sounds of its own. On the ground
+/// it is always a row holding race physics alone (its `SurfaceType`).
+pub fn property(packed: u32) -> u16 {
+    (packed >> 20) as u16
 }
 
 /// One square's surface values, kept as stored: each row run-length coded.
@@ -1672,6 +1679,10 @@ mod tests {
         assert_eq!((s.side, s.nodes, s.maps.len()), (4, 5, 1));
         assert_eq!(s.table, [0x0510_8780, 0x00A0_0280]);
         assert_eq!((s.default, material(s.table[0])), (0x80, 0x87));
+        assert_eq!(
+            s.table.iter().map(|&e| property(e)).collect::<Vec<_>>(),
+            [81, 10]
+        );
         let map = &s.maps[&square([0.0, 0.0], 4.0)];
         assert_eq!((map.min, map.size), ([0.0, 0.0], 4.0));
         assert_eq!(
@@ -2652,7 +2663,23 @@ mod tests {
                     .iter()
                     .any(|t| t == "RaceMaterialPropertyPhysicsData")
             );
+            // The modifier's row holds race physics and nothing else.
+            assert_eq!(e >> 16 & 0xF, 0, "{e:#010x}");
+            let Value::Struct(modifier) = rows[map[usize::from(property(e))]] else {
+                panic!("a row is not a struct");
+            };
+            let held: Vec<String> = ["PhysicsPropertyProperties", "PhysicsMaterialProperties"]
+                .iter()
+                .flat_map(|name| types(modifier, name))
+                .collect();
+            assert_eq!(held, ["RaceMaterialPropertyPhysicsData"], "{e:#010x}");
         }
+        assert_eq!(
+            s.table.iter().map(|&e| property(e)).collect::<Vec<_>>(),
+            [
+                81, 81, 82, 81, 97, 81, 81, 97, 82, 97, 81, 82, 81, 10, 81, 10
+            ]
+        );
         // Value 14's sounds are the burnt forest floor's.
         let row = row_of(s.table[14]);
         let sound = ["PhysicsPropertyProperties", "PhysicsMaterialProperties"]
