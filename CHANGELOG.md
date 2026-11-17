@@ -6,6 +6,15 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-11-17
+
+### Added
+
+- `nfsh view` draws the zones around the one named: one ring by default, `--rings N` for
+  more, `--rings 0` for the zone alone. The neighbours come from the game's own zone
+  streamer lists (docs/FORMATS.md). One ring costs about 1.5 times the load and twice
+  the memory (docs/BASELINE.md).
+
 ### Changed
 
 - `nfsh level STORE X,Z` keeps the zones' extents in the store (`zone-extents.nfsh`): a

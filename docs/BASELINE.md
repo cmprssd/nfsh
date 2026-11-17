@@ -731,6 +731,27 @@ after reading 12 packs of the old store, different ones each time):
   loads of zone 494 at 0.44.2 (2026-11-16, the PC in use): under the 0.05 s that would
   make batching them worth a change.
 
+## The zones around one (`--rings`, 2026-11-16)
+
+Zone 494 alone (`--rings 0`, what the baseline measures) against zone 494 and one ring
+(`--rings 1`: 7 zones, 12,742 placements of 1,524 meshes, 35 million triangles in 14,955
+draws, 1,606 textures). Same path, headless `--shot`, idle PC (nightq job
+2026-11-16-004), five warm loads and one cold (the file cache dropped).
+
+| | Load, warm (median of 5) | Load, cold | Frame median | 1% low | Peak |
+|---|---|---|---|---|---|
+| 0 rings | 19.6 s (3.9 to 21.7) | 21.6 s | 13.1 ms | 16.5 ms (60 FPS) | 2,027 MiB |
+| 1 ring | 29.5 s (29.1 to 31.3) | 39.3 s | 17.8 ms | 35.4 ms (28 FPS) | 4,429 MiB |
+
+- **One ring costs 1.5 times the load warm and 1.8 times cold**, twice the peak memory
+  and, on this integrated GPU, a path that drops under 30 FPS at its worst frames (the
+  35 million triangles). The ring-1 zone read is about 15 s of the warm load and its
+  textures' upload about 14 s of that.
+- **So the default stays at the zone alone for measurement**, and `--rings` is opt-in
+  until streaming zones in and out as the camera moves (a later step) takes the cost
+  off the load. The first warm load of ring 0 (3.9 s) is far under its four siblings;
+  it is not explained, and the median ignores it.
+
 ## The original's half
 
 ### Results, 2026-11-12 (Heat, Steam, through the EA app)

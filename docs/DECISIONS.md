@@ -1547,3 +1547,8 @@ The art zones' streamer (`ZoneStreamerEntityData` in `levels/mainlevel/worldart`
   the file cache): zone 494 with one ring is 12,742 placements of 1,524 meshes, 35 million
   triangles in 14,955 draws, 1,606 textures (1,685 MiB uploaded), 46 s to the screenshot.
   The load and frame times are measured on an idle PC (nightq).
+- **Measured** (docs/BASELINE.md, "The zones around one"): one ring is 1.5 times the warm
+  load (19.6 to 29.5 s), 1.8 times cold, twice the peak (2.0 to 4.4 GiB), and the path's
+  1% low falls from 60 to 28 FPS on the integrated GPU. Decided by Claude, pending
+  review: the baseline stays at 0 rings (as above) and the viewer's default one ring
+  stays as the owner chose; streaming zones by the camera is the way to take the cost off.
