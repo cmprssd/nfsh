@@ -304,6 +304,25 @@ probe and emitter volumes, effects locators, sound locators, `ClothObjectBluepri
 - The ground is in two other places: the roads in the drivable-surface zones and the
   terrain in the root bundle (the next two sections).
 
+**The zones' neighbours** (read 2026-11-16, by `Level::streamer`). Each streamer's
+`ZoneStreamerEntityData` sits in an `overridenassets/<guid>_subworlddata` partition of its
+parent bundle; the art zones' is in `levels/mainlevel/worldart`, the drivable surfaces',
+the collectibles' and the vistas' streamers beside theirs. Its `Info`
+(`ZoneStreamerInfo`) holds:
+
+| field | what it is |
+|-------|------------|
+| `SubLevelPath` | the zones' bundle prefix, `levels/mainlevel/worldart_ZS_` |
+| `BundleNames` | each zone's suffix (`"212"`, …, `"630"`), then the streamer's regions (`"Mainlevel_Region_Rural"`, …): 236 for the art zones |
+| `BundleParents` | an index into `BundleNames` for each, its region |
+| `ZoneInfos` | one per zone (232), in `BundleNames`' order: `Neighbours`, the indices (`Int16`) of the zones bordering it |
+| `GridResource` | a res, not read yet (the zones' shapes, presumably) |
+
+The art zones form a staggered (hexagonal) grid: 148 of the 232 have six neighbours, the
+rest, at the city's edges, three to seven. Zone 494's are 466, 493, 495, 521, 522 and 523,
+one on each side, as their placements' extents show. 14 of the lists name a zone whose own
+list doesn't name it back; the viewer takes a border either way.
+
 ## Drivable surfaces
 
 The roads, kerbs, bridges, car parks and their decals are not in the art zones: they
@@ -762,7 +781,8 @@ Vertex elements seen (usage/format, bytes):
 | 0x22-0x26 | the same | further texture coordinate sets: on roads, 0x22 maps the road's mask (`detailMask`, 0 to 1 across the mask) and 0x23 the shoulder (`Shoulder_NH`) |
 | 0x1E | 0x0D (4 bytes) | a vertex colour, RGBA, a byte each: road lines are white (219 to 255) or yellow (255, 146, 19); on cracks and tyre marks only red varies, 0 to 255 (taken as their fade) |
 | 0x34 | 0x0D (4 bytes) | the tangent frame: the normal and tangent, packed (below) |
-| 0x02-0x08, 0x1F, 0x2A, 0x33, 0xBC, 0xD0 | 0x0C, 0x0D (4 bytes), 0x13 (4), 0x17, 0x19 (8), 0x03, 0x08 | not worked out: a second set of lightmap coordinates is likely among them; 0x1F is a second four-byte colour on roads; 0x2A (3 floats, the third 0) runs 0 to 1 across a road piece |
+| 0x06 | 0x08 (4 halves, 8) | a normal without a tangent, on sections without 0x34: x, y, z, then always 1 (below) |
+| 0x02-0x05, 0x07, 0x08, 0x1F, 0x2A, 0x33, 0xBC, 0xD0 | 0x0C, 0x0D (4 bytes), 0x13 (4), 0x17, 0x19 (8), 0x03, 0x08 | not worked out: a second set of lightmap coordinates is likely among them; 0x1F is a second four-byte colour on roads; 0x2A (3 floats, the third 0) runs 0 to 1 across a road piece |
 
 **The tangent frame** (0x34; worked out on 2026-11-01 from the meshes' faces and the
 vertex programs that read it) is four bytes. The fourth is flags: bit 0, the sign of
@@ -783,13 +803,45 @@ take a normal within 30° of their triangles' average, the rest mostly where a v
 joins faces at an angle and the art chose its normal. The axis code 3 has not been
 seen.
 
+**The normal alone** (0x06, worked out on 2026-11-16) is on 1,646 sections of the
+city, none with a tangent frame. Every one of its 1,217,187 vertices is unit length to
+the halves' rounding with a fourth half of exactly 1, and 97.1% (1,182,150 of 1,217,071
+with triangles) are within 30° of their triangles' average, 193 the other way. By the
+material's shader: 1,291 are cables (`s_defaultcableshader`), flat vertical ribbons
+two vertices tall whose normal is their face's (923,028 of 923,030); 251 are
+vegetation's shadow casters (`shaders/shadowmeshalpha`, unnamed, the same in every
+LOD); the other 104 are trunks, cloth, `generic` and a few leaves, where foliage bends
+it outward (61 to 100% within 30° by species).
+
+`shaders/shadowmeshalpha` is the only shader in the city whose name has "shadow" in
+it (2026-11-16); nfsh leaves its sections out, as it draws no shadows.
+
 Sections with positions only and no name (usually the last one or two of a LOD) look
-like shadow geometry: the same one often repeats in every LOD.
+like shadow geometry: the same one often repeats in every LOD. Their materials don't
+say so: the 16,723 in the city use ordinary surfaces' shaders (buildings, `generic`,
+vista; counted 2026-11-16), so they are still drawn.
 
 **Composite meshes** (`CompositeMeshAsset`, the breakable `brk` props such as trees and
 poles) have the same geometry, with their parts already in place; the part data
 (header 0xB0, the section's part count and list, a LOD pointer at 0x98) is not read
 yet. Drawn whole, a composite looks as it does before anything breaks it.
+
+**Meshes authored away from their origin** (surveyed 2026-11-16 over the 232 zones'
+meshes: bounds centre over 500 m from the origin): seven. Six are big by nature: five
+`cableset_*_mesh` composites (a whole cable run, 670 to 1,100 m across, placed once with
+an identity-axes transform) and `plot_drv_fks_infra_swamp_01_mesh` (4.5 by 6.3 km, one
+placement), and `tnnl_brc_infra_road_01_section_01_mesh` (197 m long, centre 1.2 km off, one
+placement at the origin); those are already in world space on purpose. The seventh is
+the only small one: zone 495's `bldn_cmp_speedway_stand_01_steps_02_mesh` (4 x 3.9 x 6.1 m,
+centre (3917.8, 95.9, 3254.3)), placed 21 times by a `StaticModelGroupEntityData` at
+(3811..4024, 96.12, 3165..3293), next to `steps_01` and `steps_03`, whose meshes are
+centred on their origin (steps_01: +-2.5 x +-2.5 x +-3.9). Its ebx has no pivot, offset
+or transform field, and the mesh set's bounds equal its sections', so nothing in the data
+says what to subtract; drawn as placed, the 21 steps land about 4 km away (and 96 m too
+high). The y centre (95.9) is close to the placements' y (96.12), so the mesh looks
+exported with its object left at a world position; the likely fix is to recentre it
+(its own bounds centre), unverified. One asset in 5,475, so nfsh leaves it as the data
+says; revisit if a camera on the stand shows the gap.
 
 Checked on the whole city, 2026-10-31: the store test reads every mesh the 232 zones
 place (5,475 meshes; 14,112 LODs; 53,194 sections; 48,797,619 triangles), every

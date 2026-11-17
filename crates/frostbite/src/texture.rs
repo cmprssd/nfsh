@@ -411,6 +411,13 @@ impl Material {
     }
 }
 
+/// Whether a section of the shader named `shader` only casts a shadow: the
+/// vegetation's `shaders/shadowmeshalpha` (see `docs/FORMATS.md`, "Meshes"), never
+/// seen, as nfsh draws no shadows.
+pub fn shadow_only(shader: &str) -> bool {
+    shader == "shaders/shadowmeshalpha"
+}
+
 /// Each of the mesh asset's `Materials`, in order (a section's material indexes this
 /// list).
 pub fn materials(p: &Partition) -> Result<Vec<Material>> {
@@ -869,6 +876,13 @@ mod tests {
             put(&mut d, at, &bytes);
             assert!(Texture::parse(&d).is_err(), "{at:#x}");
         }
+    }
+
+    #[test]
+    fn only_the_shadow_mesh_shader_casts_shadows_alone() {
+        assert!(shadow_only("shaders/shadowmeshalpha"));
+        assert!(!shadow_only("shaders/world/generic/generic"));
+        assert!(!shadow_only(""));
     }
 
     #[test]

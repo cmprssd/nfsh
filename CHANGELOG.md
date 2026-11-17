@@ -6,6 +6,49 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-11-17
+
+### Changed
+
+- The load decodes the textures straight into a 128 MiB ring of cached GPU-visible memory
+  that the GPU copies from, instead of into buffers of their own and then a staging copy:
+  the warm load of zone 494 is about 0.3 s faster (3.56 s against 3.88 s), the cold one
+  unchanged, the peak working set 106 MiB higher (docs/BASELINE.md). Devices without
+  cached host-visible memory keep the old path.
+
+## [0.45.0] - 2026-11-17
+
+### Added
+
+- `nfsh view` draws the zones around the one named: one ring by default, `--rings N` for
+  more, `--rings 0` for the zone alone. The neighbours come from the game's own zone
+  streamer lists (docs/FORMATS.md). One ring costs about 1.5 times the load and twice
+  the memory (docs/BASELINE.md).
+
+### Changed
+
+- `nfsh level STORE X,Z` keeps the zones' extents in the store (`zone-extents.nfsh`): a
+  repeat call takes about a second instead of reading all 205 zones again.
+
+## [0.44.2] - 2026-11-16
+
+### Fixed
+
+- **Trees no longer draw their shadow casters.** 251 sections of the city's vegetation
+  (material shader `shaders/shadowmeshalpha`) are geometry that only casts the tree's
+  shadow; nfsh drew them as if they were seen, as extra leaf cards inside the canopy.
+  They are now left out: not decoded, not drawn, not uploaded (at the speedway, 75
+  draws and 55,508 triangles fewer).
+
+## [0.44.1] - 2026-11-16
+
+### Fixed
+
+- **Meshes that store a normal without a tangent are lit by it** (vertex element 0x06,
+  four halves; 1,646 sections of the city, mostly cables, then vegetation's trunks,
+  cloth and leaves), where they took their triangles' normal. The cables look the same
+  (they are flat ribbons); the rest are shaded smoothly.
+
 ## [0.44.0] - 2026-11-16
 
 ### Added

@@ -725,8 +725,34 @@ after reading 12 packs of the old store, different ones each time):
 - **The sky costs nothing measurable in the load**: warm and cold within the spread
   between loads (the sky found in 0.01 s, its 7 reads and 4.7 MiB behind the zone's).
 - **About 4 MiB more at the peak** (0.2%), its textures in memory before their upload.
+- **Its upload is not worth batching:** the sky's 3 textures go up one submit each, not
+  through the zone's batched uploader. The whole sky line (finding, decoding and
+  uploading them) reads 0.01 s warm and 0.02 s at most cold, in three headless `--shot`
+  loads of zone 494 at 0.44.2 (2026-11-16, the PC in use): under the 0.05 s that would
+  make batching them worth a change.
 
-### Decoding into the staging memory (PR #74, being timed)
+## The zones around one (`--rings`, 2026-11-16)
+
+Zone 494 alone (`--rings 0`, what the baseline measures) against zone 494 and one ring
+(`--rings 1`: 7 zones, 12,742 placements of 1,524 meshes, 35 million triangles in 14,955
+draws, 1,606 textures). Same path, headless `--shot`, idle PC (nightq job
+2026-11-16-004), five warm loads and one cold (the file cache dropped).
+
+| | Load, warm (median of 5) | Load, cold | Frame median | 1% low | Peak |
+|---|---|---|---|---|---|
+| 0 rings | 19.6 s (3.9 to 21.7) | 21.6 s | 13.1 ms | 16.5 ms (60 FPS) | 2,027 MiB |
+| 1 ring | 29.5 s (29.1 to 31.3) | 39.3 s | 17.8 ms | 35.4 ms (28 FPS) | 4,429 MiB |
+
+- **One ring costs 1.5 times the load warm and 1.8 times cold**, twice the peak memory
+  and, on this integrated GPU, a path that drops under 30 FPS at its worst frames (the
+  35 million triangles). The ring-1 zone read is about 15 s of the warm load and its
+  textures' upload about 14 s of that.
+- **So the default stays at the zone alone for measurement**, and `--rings` is opt-in
+  until streaming zones in and out as the camera moves (a later step) takes the cost
+  off the load. The first warm load of ring 0 (3.9 s) is far under its four siblings;
+  it is not explained, and the median ignores it.
+
+### Decoding into the staging memory (PR #74)
 
 The load decodes each texture chunk straight into a ring of cached GPU memory
 (`GpuToCpu`, host-cached; no ring where the device has none, as uncached memory is 8
@@ -742,13 +768,24 @@ old store, different ones each time):
 | main (the sky) | 3.65, 3.72, 3.77, 3.68 s (median 3.70) | 21.75, 21.25 s | 2,024 to 2,028 MiB | |
 | 256 MiB ring | 3.50, 3.49, 3.51, 3.52 s (median 3.51) | 21.63, 21.53 s | 2,198 to 2,220 MiB | 695 of 860 MiB |
 
+Smaller rings, each against main in its own run (2026-11-17, the same method; the load's
+"decoded into the staging ring" line gives the ring and its own-memory split):
+
+| Zone 494 | Load, warm (median) | Its main pair | Load, cold | Peak working set | Ring / own memory, warm |
+|---|---|---|---|---|---|
+| 64 MiB ring | 4.13, 4.35, 3.86, 3.56 s (4.00) | 4.39, 4.32, 4.09, 3.93 s (4.20) | 21.61, 21.48 s | 2,098 to 2,102 MiB | 252 / 608 MiB |
+| 128 MiB ring | 3.76, 3.49, 3.56, 3.55 s (3.56) | 3.87, 3.88, 3.77, 4.19 s (3.88) | 21.45, 21.49 s | 2,131 to 2,134 MiB | 513 / 347 MiB |
+
 - **Warm, 0.2 s faster (5%)**, every ring load faster than its pair; the texture stage
   uploads in 1.8 s against 2.0 s.
 - **Cold, unchanged**: reading the packs is what a cold load waits on.
 - **But 192 MiB more at the peak** (9.5%), the ring's memory, which the mimalloc trial
   showed cold loads pay for on this 8 GB PC once it grows by hundreds of MiB.
-- **A smaller ring is being timed** (64 and 128 MiB, on the night queue) before PR #74 is
-  merged or closed.
+- **The ring's size trades peak for warm load**: against its own main, 64, 128 and 256
+  MiB loaded 0.2, 0.32 and 0.19 s faster warm (5%, 8%, 5%) and the same cold, for a peak
+  +75, +106 and +192 MiB. 64 MiB's four loads overlap main's (3 of 4 faster; the machine
+  was noisier in that run); 128 MiB's all beat their pair, and 256 MiB's extra 86 MiB
+  buys no more time, so **128 MiB is kept**.
 
 ## The original's half
 

@@ -1488,8 +1488,99 @@ the processor caches (`GpuToCpu`, `HOST_CACHED`) decodes as fast as its own.
 - **A full ring never makes anything wait: that chunk goes into memory of its own**, as
   before. Why: the upload thread can be waiting for the very batch a decoder would wait
   on, and a deadlock would hang the load; the load prints how many bytes went each way.
-- **The ring is 256 MiB**, about the three decoded batches the load holds at once (64
-  MiB stored, about 90 MiB decoded each). In zone 494 every byte fits.
+- **The ring is 128 MiB** (2026-11-17, decided by Claude, pending review). The first
+  guess was 256 MiB, about the three decoded batches the load holds at once; measured
+  (BASELINE.md, "Decoding into the staging memory"), 64, 128 and 256 MiB all load
+  warm about 0.2 to 0.3 s faster and cold the same, but cost +75, +106 and +192 MiB at
+  the peak. 128 MiB has the clearest warm win (every load faster than its pair, 3.56 s
+  against 3.88 s) for 106 MiB; 64 MiB's loads overlap the main's. About 60% of the
+  decoded bytes still go through the ring; the rest go into memory of their own.
 - **The ground's detail layers are uploaded before the scene's textures**, not after.
   Why: their chunks are read first, so they would hold the start of the ring until the
   end; the images keep their numbers, and the picture is byte for byte the same.
+
+## 2026-11-16: The normal without a frame (decided by Claude, pending review)
+
+1,646 sections store their normal as element 0x06, four halves, and no tangent frame;
+nfsh lit them with the triangle's normal.
+
+- **0x06 in four halves is a normal and lights its section**, as the frame's normal
+  does. Why: every one is unit length with its fourth half 1, and 97% agree with their
+  triangles (docs/FORMATS.md, "Meshes"); a section with a frame takes the frame's.
+- **No tangent, so no normal map**: the tangent is left 0, which the shader already
+  reads as none. A normal far from unit length (never seen) takes the triangle's.
+- **No off switch**: it is how the meshes' own normals are read (2026-11-01), not a new
+  feature.
+- **What it changes is small**: the cables are flat ribbons whose normal is their face's,
+  so they look the same; the trunks, cloth and leaves among the rest are shaded smoothly.
+- **Found on the way:** 251 of the sections are vegetation's shadow casters
+  (`shaders/shadowmeshalpha`), which nfsh draws as if they were seen. Leaving them out
+  is the next task.
+
+## 2026-11-16: Shadow casters left out (decided by Claude, pending review)
+
+251 sections (vegetation, material shader `shaders/shadowmeshalpha`) only cast the
+tree's shadow, and nfsh, which draws no shadows, drew them as if they were seen.
+
+- **Left out by their shader's name**, before they are decoded: not drawn, not
+  uploaded. Why: it is the only shader in the city whose name has "shadow" in it, and
+  every one of its sections is unnamed, the same in every LOD (docs/FORMATS.md,
+  "Meshes"). When nfsh draws shadows, these are what should cast them.
+- **No off switch**: leaving out geometry that is never seen is a fix, not a feature.
+- **The unnamed positions-only sections stay**: 16,723 of them, and their materials are
+  ordinary surfaces' (buildings, `generic`, vista), so the shader can't tell them apart;
+  whether they are shadow geometry is still open.
+
+## 2026-11-16: `nfsh level STORE X,Z` keeps the zones' extents
+
+Finding the zones that hold a point read all 205 zones on every call (17 s warm, 43 s
+cold). Decided by Claude, pending review.
+
+- **Kept in `zone-extents.nfsh` in the store's folder**, a text file of one line per zone.
+  Why `.nfsh`: writing a new store into a folder clears only files with that ending and
+  refuses others, so the cache goes with the store it belongs to.
+- **Keyed on the index's size and modification time and each pack's size**: a re-imported
+  store misses the key and is read again. A cache that is missing, from another store, cut
+  off, or has a line that doesn't read is ignored and rebuilt; a folder that can't be
+  written to just goes without. It is written aside and renamed, so no reader sees half
+  of it. Nothing about it can fail the command.
+- **No release**: the command's output is the same.
+- Measured on the owner's store (D:, USB; one run, not the timing queue): first call 64 s,
+  repeat 1.2 s, same output; a damaged file is rebuilt.
+
+## 2026-11-16: Zones outward
+
+The art zones' streamer (`ZoneStreamerEntityData` in `levels/mainlevel/worldart`, its
+`SubLevelPath` `levels/mainlevel/worldart_ZS_`) lists each of its 232 zones' neighbours
+(docs/FORMATS.md, "The zones' neighbours"): a hexagonal grid, six around most zones.
+
+- **"Around" is the game's own neighbour lists, by rings** (a ring is every zone bordering
+  the one before), not distance from the zone's middle (decided by Claude, pending
+  review). Why: the zones' places are known only by walking all
+  of them (50 s over the store) or by guessing a grid from their numbers, which fits
+  badly (the zones are staggered and their extents ragged); the lists are one small
+  partition and are what Heat itself streams by.
+- **One ring by default, `--rings N` for more, 0 for the zone alone** (chosen by the
+  owner). Zone 494 and one ring are 7 zones; two rings are 19. Why: a single zone was the
+  first step's scope, not the viewer's; the 0 keeps the comparisons.
+- **The baseline and the history views keep the zone alone** (`bench/baseline.sh`'s
+  `RINGS`, default 0; `bench/history.sh` passes `--rings 0` to builds that know it), so
+  their numbers stay comparable across releases. The gallery and the fly-throughs
+  (`bench/media.sh`) show the default (decided by Claude, pending review).
+- **The zones are merged into one scene, as the roads already were**: one walk each,
+  their placements added to the named zone's (each mesh listed once), then the roads and
+  the ground under all of them, the ground over the box that holds them. Why: the scene,
+  culling and LODs already handle a zone of any size; streaming zones in and out as the
+  camera moves is a later step (decided by Claude, pending review).
+- **A zone around the named one that fails to walk is left out and printed**; only the
+  named zone must load. A zone the streamer doesn't list (a drivable-surface zone named
+  on the command line) or a streamer that can't be read draws the zone alone.
+- Measured once while building (not a timing; on the owner's PC in use, store partly in
+  the file cache): zone 494 with one ring is 12,742 placements of 1,524 meshes, 35 million
+  triangles in 14,955 draws, 1,606 textures (1,685 MiB uploaded), 46 s to the screenshot.
+  The load and frame times are measured on an idle PC (nightq).
+- **Measured** (docs/BASELINE.md, "The zones around one"): one ring is 1.5 times the warm
+  load (19.6 to 29.5 s), 1.8 times cold, twice the peak (2.0 to 4.4 GiB), and the path's
+  1% low falls from 60 to 28 FPS on the integrated GPU. Decided by Claude, pending
+  review: the baseline stays at 0 rings (as above) and the viewer's default one ring
+  stays as the owner chose; streaming zones by the camera is the way to take the cost off.

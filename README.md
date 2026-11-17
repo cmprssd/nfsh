@@ -53,7 +53,9 @@ cargo run --release -- level <store folder> 495
 
 `reindex` lists every partition's GUID in a store made before 0.6.0 (new imports do it
 already). `level` then prints Palm City's level graph: the bundles it loads and its 232
-streaming zones, or, given a zone, every mesh that zone places and where.
+streaming zones, or, given a zone, every mesh that zone places and where. Given `X,Z`, it lists the zones
+that hold that point; the first call reads every zone and keeps their extents in the
+store, so later calls take about a second.
 
 ## License
 

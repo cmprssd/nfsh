@@ -46,6 +46,9 @@ pub const COLOUR0: u8 = 0x1E;
 pub const COLOUR1: u8 = 0x1F;
 /// The normal and tangent, packed in four bytes ([`Frame::unpack`]).
 pub const TANGENT_FRAME: u8 = 0x34;
+/// A normal alone, as four halves (the fourth always 1), on meshes without a
+/// [`TANGENT_FRAME`]: cables and vegetation (see `docs/FORMATS.md`).
+pub const NORMAL: u8 = 0x06;
 
 /// Vertex element formats read so far, with their sizes.
 pub const FLOAT2: u8 = 0x02;
@@ -149,6 +152,8 @@ pub struct Geometry {
     pub uvs3: Option<Vec<[f32; 2]>>,
     /// Each vertex's normal and tangent, if the section has them.
     pub frames: Option<Vec<Frame>>,
+    /// Each vertex's normal, if the section has one without a tangent ([`NORMAL`]).
+    pub normals: Option<Vec<[f32; 3]>>,
     /// Three a triangle, counting from the section's first vertex.
     pub indices: Vec<u32>,
 }
@@ -270,6 +275,14 @@ impl Lod {
         };
         let (uvs2, colours2, uvs3) = (uvs(TEXCOORD1)?, colours(COLOUR1)?, uvs(TEXCOORD2)?);
         let frames = colours(TANGENT_FRAME)?.map(|f| f.into_iter().map(Frame::unpack).collect());
+        let normals = match section.element(NORMAL) {
+            Some(n) if frames.is_none() && n.format == HALF4 => {
+                Some(self.attribute(section, n, data, |v| {
+                    Some([half_at(v, 0)?, half_at(v, 2)?, half_at(v, 4)?])
+                })?)
+            }
+            _ => None,
+        };
         let (uvs, colours) = (uvs(TEXCOORD0)?, colours(COLOUR0)?);
 
         let width = usize::from(self.index_width);
@@ -315,6 +328,7 @@ impl Lod {
             colours2,
             uvs3,
             frames,
+            normals,
             indices,
         })
     }
@@ -1012,6 +1026,37 @@ mod tests {
     }
 
     #[test]
+    fn reads_normals_without_a_frame() {
+        let (res, mut chunk) = sample();
+        let set = MeshSet::parse(&res).unwrap();
+        let lod = &set.lods[0];
+        let mut s = lod.sections[0].clone();
+        assert_eq!(lod.section(&s, &chunk).unwrap().normals, None);
+        // Over the first vertex's position: 0, 0, 1 and 1 as halves.
+        for (i, h) in [0u16, 0, 0x3C00, 0x3C00].iter().enumerate() {
+            put(&mut chunk, 2 * i, &h.to_le_bytes());
+        }
+        s.elements.push(Element {
+            usage: NORMAL,
+            format: HALF4,
+            offset: 0,
+            stream: 0,
+        });
+        let normals = lod.section(&s, &chunk).unwrap().normals.unwrap();
+        assert_eq!(normals.len(), 3);
+        assert_eq!(normals[0], [0.0, 0.0, 1.0]);
+        // A section with a frame takes the frame's normal.
+        s.elements.push(Element {
+            usage: TANGENT_FRAME,
+            format: UNORM4,
+            offset: 0,
+            stream: 1,
+        });
+        let g = lod.section(&s, &chunk).unwrap();
+        assert!(g.frames.is_some() && g.normals.is_none());
+    }
+
+    #[test]
     fn reads_the_second_and_third_coordinates_and_colours() {
         let (res, chunk) = sample();
         let set = MeshSet::parse(&res).unwrap();
@@ -1169,7 +1214,7 @@ mod tests {
     /// LOD switches read.
     /// How many of the vertices that have triangles take a normal within 30 degrees
     /// of their triangles' (weighted by area), and of how many.
-    fn frames_agreeing(g: &Geometry, frames: &[Frame]) -> (u64, u64) {
+    fn agreeing(g: &Geometry, normals: impl Iterator<Item = [f32; 3]>) -> (u64, u64) {
         let mut sum = vec![[0f32; 3]; g.positions.len()];
         for t in g.indices.as_chunks::<3>().0 {
             let [a, b, c] = t.map(|i| g.positions[i as usize]);
@@ -1183,12 +1228,12 @@ mod tests {
         }
         let mut agree = 0;
         let mut of = 0;
-        for (n, f) in sum.iter().zip(frames) {
+        for (n, normal) in sum.iter().zip(normals) {
             if n.iter().all(|&x| x == 0.0) {
                 continue;
             }
             of += 1;
-            let cos: f32 = (0..3).map(|k| normalize(*n)[k] * f.normal[k]).sum();
+            let cos: f32 = (0..3).map(|k| normalize(*n)[k] * normal[k]).sum();
             agree += u64::from(cos > 30f32.to_radians().cos());
         }
         (agree, of)
@@ -1224,8 +1269,10 @@ mod tests {
         let mut outliers: Vec<String> = Vec::new();
         let mut unsorted: Vec<String> = Vec::new();
         let (mut frames_agree, mut frames_of) = (0u64, 0u64);
+        let (mut normals_agree, mut normals_of) = (0u64, 0u64);
         for m in &placed {
             let set = meshes.by_partition(&m.partition).unwrap();
+            let materials = meshes.materials(&m.partition).unwrap();
             *count.entry("meshes").or_default() += 1;
             match meshes.switches(&m.partition) {
                 Ok(s) if s == Switches::NEVER => {
@@ -1254,13 +1301,20 @@ mod tests {
                         broken.push(format!("{}: strides add to {strides}", lod.name));
                     }
                     let g = lod.section(s, &data).unwrap();
+                    let shader = materials
+                        .get(s.material as usize)
+                        .and_then(|m| m.shader)
+                        .and_then(|g| store.partition_name(&g));
+                    if shader.is_some_and(crate::texture::shadow_only) {
+                        *count.entry("sections only casting a shadow").or_default() += 1;
+                    }
                     *count.entry("triangles").or_default() += u64::from(s.triangles);
                     *count.entry("vertices").or_default() += u64::from(s.vertices);
                     if g.uvs.is_some() {
                         *count.entry("sections with uvs").or_default() += 1;
                     }
                     if let Some(frames) = &g.frames {
-                        let (agree, of) = frames_agreeing(&g, frames);
+                        let (agree, of) = agreeing(&g, frames.iter().map(|f| f.normal));
                         frames_agree += agree;
                         frames_of += of;
                         let unit =
@@ -1280,6 +1334,18 @@ mod tests {
                                 "{}: {}: a frame is not orthonormal",
                                 lod.name, s.name
                             ));
+                        }
+                    }
+                    if let Some(normals) = &g.normals {
+                        *count.entry("sections with normals alone").or_default() += 1;
+                        let (agree, of) = agreeing(&g, normals.iter().copied());
+                        normals_agree += agree;
+                        normals_of += of;
+                        let unit = |v: &[f32; 3]| {
+                            (v.iter().map(|x| x * x).sum::<f32>() - 1.0).abs() < 2e-3
+                        };
+                        if !normals.iter().all(unit) {
+                            broken.push(format!("{}: {}: a normal is not unit", lod.name, s.name));
                         }
                     }
                     // The bounds are the positions' before they were stored: floats
@@ -1306,6 +1372,7 @@ mod tests {
         eprintln!("{count:?}");
         eprintln!("elements (usage, format) {formats:x?}");
         eprintln!("normals within 30 degrees of their triangles': {frames_agree} of {frames_of}");
+        eprintln!("normals alone, likewise: {normals_agree} of {normals_of}");
         for b in broken.iter().take(20) {
             eprintln!("{b}");
         }
@@ -1330,6 +1397,13 @@ mod tests {
             frames_agree as f64 >= 0.93 * frames_of as f64,
             "{frames_agree} of {frames_of}"
         );
+        // 2026-11-16: 1,182,150 of 1,217,071 (193 the other way); never with a
+        // frame. Cables (923,028 of 923,030) are flat ribbons whose normal is their
+        // face's; on foliage it bends outward, 61 to 100% within 30 degrees by species.
+        assert!(
+            normals_agree as f64 >= 0.95 * normals_of as f64,
+            "{normals_agree} of {normals_of}"
+        );
         // Counted on the whole install, 2026-10-31: each mesh once, every LOD.
         let count: Vec<(&str, u64)> = count.into_iter().collect();
         assert_eq!(
@@ -1338,6 +1412,10 @@ mod tests {
                 ("lods", 14_112),
                 ("meshes", 5_475),
                 ("sections", 53_194),
+                // 2026-11-16: no other shader's name has "shadow" in it; all are
+                // unnamed, with normals alone.
+                ("sections only casting a shadow", 251),
+                ("sections with normals alone", 1_646),
                 ("sections with uvs", 35_110),
                 ("triangles", 48_797_619),
                 ("vertices", 50_467_702),
