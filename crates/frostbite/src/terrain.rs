@@ -208,8 +208,8 @@ pub struct Outline {
 }
 
 /// The surface map (block kind 3): 4-bit values in a grid over the land, each an index
-/// into [`Surfaces::table`]. Likely the ground's surface kinds (physics materials), not
-/// confirmed (docs/FORMATS.md, "Terrain").
+/// into [`Surfaces::table`] of the ground's physics materials (docs/FORMATS.md,
+/// "Terrain").
 #[derive(Debug, Clone, PartialEq)]
 pub struct Surfaces {
     /// Values along each side of a map: 256.
@@ -218,8 +218,19 @@ pub struct Surfaces {
     pub nodes: usize,
     /// The squares that have a map, by [`square`].
     pub maps: HashMap<[u32; 3], SurfaceMap>,
-    /// What each value stands for, as stored (u32 each, not worked out).
+    /// Each value's physics material, packed as the level's material grid packs one
+    /// (`MaterialDecl`): 0x80 in the low byte, the material in the next ([`material`]),
+    /// two bytes not worked out.
     pub table: Vec<u32>,
+    /// The material where the map has none, packed the same way: the material grid's
+    /// `DefaultMaterial` (0x80, material 0).
+    pub default: u32,
+}
+
+/// The material of a packed `MaterialDecl`: its index into the material grid's
+/// `MaterialIndexMap`, which gives its row of properties.
+pub fn material(packed: u32) -> u8 {
+    (packed >> 8) as u8
 }
 
 /// One square's surface values, kept as stored: each row run-length coded.
@@ -625,6 +636,7 @@ fn read_surfaces(block: &[u8]) -> Result<Surfaces> {
         nodes: 0,
         maps: HashMap::new(),
         table: Vec::new(),
+        default: 0,
     };
     fn node(
         r: &mut Reader,
@@ -681,7 +693,7 @@ fn read_surfaces(block: &[u8]) -> Result<Surfaces> {
         bail!("a table of {kinds} values");
     }
     surfaces.table = (0..kinds).map(|_| r.u32_le()).collect::<Result<_>>()?;
-    let _unknown = r.u32_le()?;
+    surfaces.default = r.u32_le()?;
     if r.pos() != block.len() {
         bail!("{} bytes after the table", block.len() - r.pos());
     }
@@ -1659,6 +1671,7 @@ mod tests {
         let s = read_surfaces(&surface_block(&rows)).unwrap();
         assert_eq!((s.side, s.nodes, s.maps.len()), (4, 5, 1));
         assert_eq!(s.table, [0x0510_8780, 0x00A0_0280]);
+        assert_eq!((s.default, material(s.table[0])), (0x80, 0x87));
         let map = &s.maps[&square([0.0, 0.0], 4.0)];
         assert_eq!((map.min, map.size), ([0.0, 0.0], 4.0));
         assert_eq!(
@@ -2556,5 +2569,104 @@ mod tests {
             }
         }
         assert_eq!((equal, near, holes), (2_365, 37, 2));
+    }
+
+    /// Reads the surface map's table and checks it against Palm City's material grid
+    /// (the `MaterialGridData` ebx): each entry packs a material of the grid's
+    /// `MaterialIndexMap`, each a distinct row with race physics, the trailing value is
+    /// the grid's `DefaultMaterial`, and value 14, which lies only on the burnt forest
+    /// floor (layer 6), is the burnt forest floor's material.
+    #[test]
+    fn the_surface_table_names_the_material_grids_materials() {
+        use crate::ebx::{Partition, Ref, Value};
+        use crate::level::{elements, field};
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let store = Store::open(Path::new(&dir)).unwrap();
+        let tree = Tree::read(&store).unwrap();
+        let s = tree.surfaces.as_ref().unwrap();
+        let data = store
+            .entries()
+            .unwrap()
+            .read(
+                store
+                    .ebx("levels/mainlevel/mainlevel/materialgrid_win32")
+                    .unwrap()
+                    .location,
+            )
+            .unwrap();
+        let p = Partition::parse(&data).unwrap();
+        let instance = |r: &Value| match r {
+            Value::Class(Ref::Internal(i)) => p.object(&p.instances[*i]),
+            other => panic!("{other:?}"),
+        };
+        let grid = p
+            .instances
+            .iter()
+            .map(|i| p.object(i))
+            .find(|o| p.type_name(o.type_index) == "MaterialGridData")
+            .unwrap();
+        let packed = |o| match field(&p, o, "Packed").unwrap() {
+            Some(Value::UInt(v)) => v as u32,
+            other => panic!("{other:?}"),
+        };
+        let Some(Value::Struct(default)) = field(&p, grid, "DefaultMaterial").unwrap() else {
+            panic!("no DefaultMaterial");
+        };
+        assert_eq!((s.default, packed(default)), (0x80, 0x80));
+        let map: Vec<usize> = elements(&p, grid, "MaterialIndexMap")
+            .unwrap()
+            .iter()
+            .map(|v| match v {
+                Value::UInt(v) => *v as usize,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        let rows = elements(&p, grid, "MaterialProperties").unwrap();
+        assert_eq!((map.len(), rows.len()), (140, 123));
+        let row_of = |packed: u32| {
+            let Value::Struct(row) = rows[map[usize::from(material(packed))]] else {
+                panic!("a row is not a struct");
+            };
+            row
+        };
+        let types = |row, name: &str| -> Vec<String> {
+            elements(&p, row, name)
+                .unwrap()
+                .iter()
+                .map(|r| p.type_name(instance(r).type_index))
+                .collect()
+        };
+        let mut seen = std::collections::HashSet::new();
+        for &e in &s.table {
+            let row = map[usize::from(material(e))];
+            assert!(
+                e & 0xFF == 0x80 && row != 0 && seen.insert(row),
+                "{e:#010x}"
+            );
+            let physics = types(row_of(e), "PhysicsPropertyProperties");
+            assert!(
+                physics
+                    .iter()
+                    .any(|t| t == "RaceMaterialPropertyPhysicsData")
+            );
+        }
+        // Value 14's sounds are the burnt forest floor's.
+        let row = row_of(s.table[14]);
+        let sound = ["PhysicsPropertyProperties", "PhysicsMaterialProperties"]
+            .iter()
+            .flat_map(|name| elements(&p, row, name).unwrap())
+            .map(|r| instance(&r))
+            .find(|&o| p.type_name(o.type_index) == "MaterialPropertySoundData")
+            .unwrap();
+        let settings = instance(&field(&p, sound, "LicenseeSoundData").unwrap().unwrap());
+        let Some(Value::Class(Ref::Import(debris))) = field(&p, settings, "DebrisSound").unwrap()
+        else {
+            panic!("no DebrisSound");
+        };
+        let name = store.partition_name(&p.imports[debris].partition).unwrap();
+        assert!(name.ends_with("debris_forestfloor_burned_config"), "{name}");
     }
 }
