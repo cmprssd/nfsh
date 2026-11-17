@@ -803,10 +803,56 @@ density over a layer's weight, and the seed) is not worked out. Looked for on
 2026-11-17: no ebx in the store uses a scattering settings type (the only ebx types
 named like it are the layers' `TerrainMeshScatteringType` and particle ones), so the
 header's values have no ebx source to match, and the tile chunks hold nothing besides
-what is above. The terrain's decals (`TerrainEntityData`'s `DecalsResource`, not read)
-use `…_scattermask` textures (tyre tracks, ploughed and crop fields, rivers, cracks),
-likely where decals keep the scattering off; placement itself is likely made at run
-time from the layers' weights.
+what is above. 557 of the terrain's decals (below) name a scatter mask shader, likely
+where they keep the scattering off; placement itself is likely made at run time from the
+layers' weights.
+
+### Terrain decals
+
+The terrain's decals (worked out on 2026-11-18; `frostbite::decals` reads them and a
+store test checks them) are meshes laid on the ground: tyre tracks (1,771 of the 2,678),
+dirt roads, rivers, ploughed and crop fields, sea weed, golf bunker edges, parking lots
+and their lines, and on the roads cracks, gutters, manholes, skid marks and patches.
+The `TerrainEntityData` in `levels/mainlevel/default` names them by id as its
+`DecalsResource`: the res
+`levels/mainlevel/mainlevel_terrain_2048/mainlevel_terrain_2048_levels/mainlevel/mainlevel/decals`
+(type `0x15E1F32E`, 9,059,141 bytes, in `Win32/levels/mainlevel/mainlevel`). Packed,
+little-endian.
+
+- A header: an f32 (120), a u32 (0), a u32 (1) and a byte (0), not worked out, then the
+  decal count (u32, 2,678).
+- Each **decal**: five shader names (NUL-ended, empty for none), each a `ShaderGraph`
+  ebx: the colour (`…_2D`, on all), nothing, the scatter mask (`…_ScatterMask`, 557),
+  the displacement (`…_Displacement` or `…_Disp`, 1,650), nothing. Then its first
+  index and its triangle count (u32 each), its vertices' bounds (six f32: least x, y,
+  z, then greatest), a square of the same six floats, an f32, where its vertices start
+  and their length in bytes (u32 each), and three bytes: 1 when its vertices carry a
+  normal and a tangent (on all but the 84 parking lot decals), then 1 and 1.
+  - The bounds' y range is **the ground's under the vertices**: on every 20th decal
+    with normals, the heights of the ground at its vertices span it within 5 cm (on 300
+    drawn at random, a median of 2 mm). On the 84 without normals it is empty, 1e20 to
+    −1e20.
+  - The square holds the bounds, with their y range, on a grid: 128 m on 2,637 decals,
+    256 or 512 m on the rest; on 2,635 it is the smallest aligned square of 128 m or
+    more holding them.
+  - The f32 is 1/(n + 1): n is 100 on 2,223 decals, 10 to 500 on the others, the same
+    for most decals of a kind (road cracks 125, manholes 130, the river 140, the gutters
+    120); likely a draw order or priority, not worked out.
+- The **geometry**: the vertices' length and the indices' length (u32 each, in bytes),
+  the vertices (6,713,768 bytes), the indices (u32, 460,041 of them: 153,347 triangles,
+  counting from each decal's first vertex), then 8 zero bytes. Each decal's vertices and
+  indices follow the last one's.
+- A **vertex** is 40 bytes with a normal and a tangent: x and z (f32; it has no y, the
+  ground's height there is its height), the normal (four halves, the fourth 0), the
+  tangent (likewise), u and v (f32), and four halves. Without them, 24 bytes: x, z, u,
+  v and the four halves. The normal is the ground's: on 300 decals drawn at random, a
+  median of 1° from the normal of the heights under the vertex (90% within 3.1°). The
+  tangent is perpendicular to it (99% within 0.1°) and points along decreasing u. u
+  runs across a track (0 to 1 or 2), v along it. The four halves are equal on 2,601
+  decals (0 to 1, lower at a track's ends): likely its opacity.
+
+nfsh does not draw them yet; each shader's textures are in the level's shader database
+("Shader programs", below), not looked up for them yet.
 
 ### Terrain layers
 
