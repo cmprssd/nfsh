@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-11-16 (74 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-11-17 (81 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -136,16 +136,16 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-75 commits, 74 merged PRs from 2026-10-30 to 2026-11-16, on 15 working days: 46 feat, 14
-docs, 6 fix, 5 perf, 2 ci, 1 The. About 42,249 lines added and 2,913 removed; 90 tracked
+82 commits, 81 merged PRs from 2026-10-30 to 2026-11-17, on 16 working days: 47 feat, 17
+docs, 8 fix, 6 perf, 2 ci, 1 The. About 43,096 lines added and 2,986 removed; 86 tracked
 files.
 
 ```mermaid
 xychart-beta
     title "PRs merged per working day"
-    x-axis ["Oct 30", "Oct 31", "Nov 1", "Nov 2", "Nov 3", "Nov 6", "Nov 7", "Nov 9", "Nov 10", "Nov 11", "Nov 12", "Nov 13", "Nov 14", "Nov 15", "Nov 16"]
+    x-axis ["Oct 30", "Oct 31", "Nov 1", "Nov 2", "Nov 3", "Nov 6", "Nov 7", "Nov 9", "Nov 10", "Nov 11", "Nov 12", "Nov 13", "Nov 14", "Nov 15", "Nov 16", "Nov 17"]
     y-axis "PRs" 0 --> 17
-    bar [1, 13, 15, 6, 3, 3, 3, 1, 3, 2, 5, 3, 2, 12, 2]
+    bar [1, 13, 15, 6, 3, 3, 3, 1, 3, 2, 5, 3, 2, 12, 7, 2]
 ```
 <!-- /progress -->
 
