@@ -504,9 +504,8 @@ chunks of `mainlevel`. A tile's first chunk is one of two kinds, told by its siz
 size, likely a layer's weight each, not read yet):
 
 - `42,231 + 18,496·k` bytes (7,618 tiles): a **heightfield**, 137 × 137 u16 first
-  (37,538 bytes), then 2,381 bytes (on the speedway tile they read as 17 × 17
-  min/max pairs of heights, u16, then a 35 × 35 grid of bytes 0 to 9 and 0xFF, not
-  worked out), then the pages and the colour below.
+  (37,538 bytes), then 2,381 bytes ("After the heights", below), then the pages and
+  the colour below.
   Height is the u16 ÷ 32 m
   (the sea floor's 5 is the root's minimum, 0.156 m; the maximum 30,292 is 946.6 m);
   0 is a **hole** (the ground is left out: 64 tiles cut holes their parents don't
@@ -528,9 +527,7 @@ the ground's colour already blended from its layers: grass, earth, sand, the old
 beds and the sea floor's tint. Laid side by side, the leaves around the speedway meet
 with no seams. A store test reads every tile's colour (2026-11-01).
 
-The further chunk, when there is one, is another `2,312 + 18,496·k` chunk or, on 300
-of the 128 m leaves, 168,924 = 4 × 42,231 bytes: likely four 64 m heightfields.
-Neither is read yet.
+The further chunk, when there is one, is the tile's **finer chunk** (below).
 
 **The pages** (18,496 = 136 × 136 bytes each) are one layer's weight each, 0 to 255,
 just before the colour, in rows along z and columns along x with a 4-texel border:
@@ -540,6 +537,54 @@ colour; the heights' sample points would put them half a texel over, not
 checked). On the speedway tile their means are 211, 88, 92, 9 and 118, so they
 don't sum to 255 per texel; nfsh takes a layer's weight as its share of the sum
 (2026-11-01, `terrain::Pages`). Which layer each is for: the layer tree, above.
+
+**After the heights** (worked out on 2026-11-17; `terrain::height_bounds` reads the
+first part, a store test checks it):
+
+- 85 **height bounds**, a least and a greatest height (u16 each, 340 bytes): the
+  tile's, then its 4, 16 and 64 blocks', each level row by row (rows along z), a block
+  of 128/n cells a side (n blocks to a side) taking its samples from the first to the
+  last inclusive, its edges shared with its neighbours, holes left out. They bound
+  every height at the tile or below it, its finer tiles' and its finer chunk's too: 5,489 of the 7,618 heightfields' bounds are
+  exactly their own samples', all hold them, and on 297 of 300 tiles drawn at random
+  they are exactly the bounds of every height at or below the tile (the other three,
+  128 m leaves near holes, are up to 22 units wider). The root and the four 8,192 m
+  nodes of the node tree carry a pyramid of the same shape.
+- 119 u16 not worked out (some 0 or 1, others heights).
+- 17 × 17 u16, likely a **coarse heightfield**: rows along z, a sample every 8 of
+  the tile's from its border's inner edge (samples 4 to 132), within about 72 units
+  (2.3 m, median RMS of 228 hilly tiles) of the heights there; not the samples
+  themselves (some lie outside the tile's range), likely fitted to them.
+- 35 × 35 bytes, rows of 35 (a point every 4 samples from the first): 31 common
+  values close to n²/4 for n from 0 to 32 (0, 1, 2, 4, 6, 9, 12, 16, 21, …, 251)
+  and 0xFF, which covers the holes and more. They correlate with the ground's
+  roughness (0.49) but are not worked out.
+
+**The finer chunk** (worked out on 2026-11-17; `terrain::Finer` reads it and a store
+test checks it on every tile) holds the tile's four quadrants at twice its detail:
+6,133 tiles have one, from 64 to 512 m. In order:
+
+- four **heightfields**, when it has them (601 tiles, 256 and 512 m): each one as a
+  heightfield chunk starts, 137 × 137 u16 then the 2,381 bytes above (39,919 bytes),
+  for a tile at the quadrant's square. Their even samples are the tile's at that
+  quadrant: of the 2,404 quadrants, 2,365 agree on every sample, 37 within 2 units,
+  and 2 differ only at holes.
+- each quadrant's **pages** (18,496 bytes each), for the paged layers at the
+  quadrant's square in the layer tree, ascending: on all 6,133 tiles the count is
+  that sum, and on 12,510 pages compared each is the tile's own page for the layer,
+  at that quadrant, at twice the detail (texels every half as far, the same 4-texel
+  border; against the tile's page upsampled, a median RMS of 7 in 0 to 255 units,
+  at most 30).
+- four **colours**, when it has them (5,942 tiles): 68 × 68 BC1 each (2,312
+  bytes), laid out as a tile's colour, for the quadrant's square; on 400 tiles drawn
+  at random each matches the tile's colour at that quadrant (a median RMS of 3;
+  a handful of quadrants differ far more, up to 107, not looked into).
+
+The quadrants are stored in the reverse of the tiles' child order: (0, 1), (1, 1),
+(1, 0), (0, 0). The chunk's size alone says which parts it has (`finer_layout`):
+the four combinations of heightfields (4 × 39,919) and colours (4 × 2,312) leave
+different remainders of 18,496 (0, 9,248, 11,708 and 2,460), and the rest is pages.
+nfsh does not draw them yet.
 
 **How it was checked**: a child's even samples are its parent's, at the child's
 quadrant. Of the 7,602 parent and child pairs that both have heights, 7,477 agree on

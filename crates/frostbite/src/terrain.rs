@@ -1,6 +1,6 @@
-//! Palm City's terrain: the streaming tree's quadtree of tiles, a tile's heightfield
-//! and colour, and a mesh of the ground under an area (see docs/FORMATS.md,
-//! "Terrain").
+//! Palm City's terrain: the streaming tree's quadtree of tiles, a tile's heightfield,
+//! height bounds, pages and colour, its finer chunk, and a mesh of the ground under an
+//! area (see docs/FORMATS.md, "Terrain").
 //! Little-endian, packed with no alignment.
 
 use std::collections::HashMap;
@@ -40,6 +40,16 @@ pub const CELLS: usize = 128;
 /// `COLOUR_BYTES + PAGES·k`.
 const HEIGHTFIELD: u32 = 42_231;
 const PAGES: u32 = 18_496;
+/// What follows the heights in a heightfield chunk: [`BOUNDS`] min/max pairs of u16,
+/// then 2,041 bytes not worked out (see docs/FORMATS.md).
+const AFTER_HEIGHTS: usize = 2_381;
+/// The height bounds: the tile, then its 4, 16 and 64 blocks, each row by row.
+pub const BOUNDS: usize = 1 + 4 + 16 + 64;
+/// A heightfield in a finer chunk: the heights and what follows them, no colour.
+const FINER_HEIGHTS: usize = 2 * SAMPLES * SAMPLES + AFTER_HEIGHTS;
+/// The order a finer chunk stores its quadrants in, as indices into [`QUADRANTS`]:
+/// the reverse of theirs.
+const FINER_ORDER: [usize; 4] = [3, 2, 1, 0];
 /// A tile's colour: the last bytes of its chunk, BC1 blocks of `COLOUR_SIDE` ×
 /// `COLOUR_SIDE` texels with a `COLOUR_BORDER` beyond the tile on each side.
 pub const COLOUR_SIDE: usize = 68;
@@ -65,6 +75,9 @@ pub struct Tile {
     /// Its first chunk's id in the order a bundle's chunk list stores it, and size;
     /// `None` for the root and the first 8,192 m quadrant, which have none.
     pub chunk: Option<([u8; 16], u32)>,
+    /// Its finer chunk's id (in the same order) and size, when it has one: its four
+    /// quadrants at twice its detail ([`Finer`]).
+    pub finer: Option<([u8; 16], u32)>,
     /// Its children's indices, in [`QUADRANTS`] order.
     pub children: Option<[u32; 4]>,
 }
@@ -193,6 +206,25 @@ impl Tree {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The layers of the pages in `tile`'s finer chunk, for each of its quadrants in
+    /// [`QUADRANTS`] order: the paged layers at the quadrant's square, ascending.
+    pub fn finer_pages(&self, tile: &Tile) -> [Vec<u16>; 4] {
+        let half = tile.size / 2.0;
+        QUADRANTS.map(|[qx, qz]| {
+            let min = [
+                tile.min[0] + qx as f32 * half,
+                tile.min[1] + qz as f32 * half,
+            ];
+            self.pages(&Tile {
+                min,
+                size: half,
+                chunk: None,
+                finer: None,
+                children: None,
+            })
+        })
     }
 
     /// Reads Palm City's tree from `store`.
@@ -352,10 +384,15 @@ fn read_tile(
     let index = tiles.len() as u32;
     let chunk_size = r.u32_le()?;
     let id = r.array::<16>()?;
-    let extra = r.u8()?;
-    // Further chunks (block-compressed data, or a leaf's finer heightfields): size
-    // and id each; not read yet.
-    r.bytes(20 * usize::from(extra))?;
+    // Further chunks, size and id each: Palm City's tiles have none or one, their
+    // finer chunk; any after the first are skipped.
+    let further = r.u8()?;
+    let mut finer = None;
+    for _ in 0..further {
+        let size = r.u32_le()?;
+        let id = r.array::<16>()?;
+        finer = finer.or(Some((guid_order(id), size)));
+    }
     let _unknown = r.u8()?;
     let has_children = r.u8()?;
     let chunk = (chunk_size != 0 || id != [0; 16]).then_some((guid_order(id), chunk_size));
@@ -363,6 +400,7 @@ fn read_tile(
         min,
         size,
         chunk,
+        finer,
         children: None,
     });
     match has_children {
@@ -549,6 +587,109 @@ impl Pages {
         }
         out
     }
+}
+
+/// The height bounds after a heightfield chunk's heights, [`BOUNDS`] least and
+/// greatest heights (in the heights' units, holes left out): the tile's, then its 4,
+/// 16 and 64 blocks', each level row by row (rows along z). They bound every height
+/// at the tile or below it, its finer tiles' too.
+pub fn height_bounds(chunk: &[u8]) -> Result<Vec<[u16; 2]>> {
+    let mut r = Reader::at(chunk, 2 * SAMPLES * SAMPLES)?;
+    (0..BOUNDS)
+        .map(|_| Ok([r.u16_le()?, r.u16_le()?]))
+        .collect()
+}
+
+/// What a finer chunk of `size` bytes holds: whether it has four heightfields, how
+/// many pages, and whether it has four colours; `None` for a size no such chunk has.
+/// The four combinations leave different remainders of a page's size, so the size
+/// alone tells them apart.
+pub fn finer_layout(size: u32) -> Option<(bool, usize, bool)> {
+    let size = size as usize;
+    let page = PAGES as usize;
+    [(false, false), (false, true), (true, false), (true, true)]
+        .into_iter()
+        .find_map(|(heights, colours)| {
+            let fixed =
+                usize::from(heights) * 4 * FINER_HEIGHTS + usize::from(colours) * 4 * COLOUR_BYTES;
+            let rest = size.checked_sub(fixed)?;
+            rest.is_multiple_of(page)
+                .then_some((heights, rest / page, colours))
+        })
+}
+
+/// A tile's finer chunk: its four quadrants, in [`QUADRANTS`] order, at twice its
+/// detail: a heightfield each (a tile at the quadrant's square has the same layout),
+/// pages for the paged layers at each quadrant's square, and a colour each. The chunk
+/// stores them in [`FINER_ORDER`]: the heightfields, then each quadrant's pages,
+/// then the colours.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Finer {
+    pub heights: Option<[Heightfield; 4]>,
+    pub pages: [Pages; 4],
+    pub colours: Option<[Colour; 4]>,
+}
+
+impl Finer {
+    /// Reads a finer chunk, for `layers` (each quadrant's, as [`Tree::finer_pages`]
+    /// gives them); an error when its size does not hold them.
+    pub fn parse(chunk: &[u8], layers: [Vec<u16>; 4]) -> Result<Self> {
+        let Some((has_heights, count, has_colours)) =
+            u32::try_from(chunk.len()).ok().and_then(finer_layout)
+        else {
+            bail!("{} bytes: not a finer chunk's size", chunk.len());
+        };
+        let listed: usize = layers.iter().map(Vec::len).sum();
+        if count != listed {
+            bail!("{count} pages, the layer tree lists {listed}");
+        }
+        let page_bytes = PAGE_SIDE * PAGE_SIDE;
+        let mut at = 0;
+        let heights = if has_heights {
+            let mut stored = Vec::with_capacity(4);
+            for _ in FINER_ORDER {
+                stored.push(Heightfield::parse(&chunk[at..at + FINER_HEIGHTS])?);
+                at += FINER_HEIGHTS;
+            }
+            Some(in_quadrant_order(stored))
+        } else {
+            None
+        };
+        let mut pages: [Option<Pages>; 4] = Default::default();
+        for q in FINER_ORDER {
+            let len = layers[q].len() * page_bytes;
+            pages[q] = Some(Pages {
+                layers: layers[q].clone(),
+                masks: chunk[at..at + len].to_vec(),
+            });
+            at += len;
+        }
+        let colours = if has_colours {
+            let mut stored = Vec::with_capacity(4);
+            for _ in FINER_ORDER {
+                stored.push(Colour::parse(&chunk[at..at + COLOUR_BYTES])?);
+                at += COLOUR_BYTES;
+            }
+            Some(in_quadrant_order(stored))
+        } else {
+            None
+        };
+        Ok(Self {
+            heights,
+            pages: pages.map(|p| p.expect("every quadrant's pages")),
+            colours,
+        })
+    }
+}
+
+/// Four quadrants' values, as a finer chunk stores them ([`FINER_ORDER`]), in
+/// [`QUADRANTS`] order.
+fn in_quadrant_order<T>(stored: Vec<T>) -> [T; 4] {
+    let mut out: [Option<T>; 4] = [None, None, None, None];
+    for (value, q) in stored.into_iter().zip(FINER_ORDER) {
+        out[q] = Some(value);
+    }
+    out.map(|v| v.expect("four quadrants"))
 }
 
 /// The ground under an area, in world space.
@@ -1092,6 +1233,123 @@ mod tests {
     }
 
     #[test]
+    fn a_tile_keeps_its_finer_chunk_and_its_quadrants_layers() {
+        let tree = Tree::parse(&sample()).unwrap();
+        let finer: Vec<_> = tree.tiles.iter().map(|t| t.finer).collect();
+        let id = guid_order([0x11; 16]);
+        assert_eq!(finer, [None, None, None, None, Some((id, 0x1111_1111))]);
+        // The root's quadrants are the four 128 m squares of the layer tree.
+        let layers = tree.finer_pages(&tree.tiles[0]);
+        assert_eq!(layers, [vec![2, 5], vec![], vec![2], vec![]]);
+    }
+
+    #[test]
+    fn a_finer_chunks_size_tells_what_it_holds() {
+        // Sizes Palm City's finer chunks have: colours alone, pages and colours,
+        // heightfields and colours, heightfields alone, and pages alone.
+        let layouts: Vec<_> = [9_248, 83_232, 168_924, 159_676, 187_420, 36_992, 1_000]
+            .into_iter()
+            .map(finer_layout)
+            .collect();
+        assert_eq!(
+            layouts,
+            [
+                Some((false, 0, true)),
+                Some((false, 4, true)),
+                Some((true, 0, true)),
+                Some((true, 0, false)),
+                Some((true, 1, true)),
+                Some((false, 2, false)),
+                None
+            ]
+        );
+    }
+
+    /// A finer chunk with heightfields, `layers`' pages and colours: each stored
+    /// heightfield's samples, page's bytes and colour's blocks are its place in the
+    /// chunk's order (1, 2, …).
+    fn finer_chunk(layers: &[Vec<u16>; 4]) -> Vec<u8> {
+        let mut d = Vec::new();
+        for k in 1..=4u16 {
+            for _ in 0..SAMPLES * SAMPLES {
+                d.extend_from_slice(&k.to_le_bytes());
+            }
+            d.extend_from_slice(&[0; AFTER_HEIGHTS]);
+        }
+        let mut n = 0;
+        for q in FINER_ORDER {
+            for _ in &layers[q] {
+                n += 1;
+                d.extend(std::iter::repeat_n(n, PAGE_SIDE * PAGE_SIDE));
+            }
+        }
+        for k in 1..=4u16 {
+            d = coloured(d, block(k, k, 0), block(k, k, 0));
+        }
+        d
+    }
+
+    #[test]
+    fn a_finer_chunk_stores_its_quadrants_in_reverse() {
+        let layers = [vec![2, 5], vec![], vec![2], vec![]];
+        let finer = Finer::parse(&finer_chunk(&layers), layers.clone()).unwrap();
+        // Stored (0, 1), (1, 1), (1, 0), (0, 0): the last is the first quadrant's.
+        let heights = finer.heights.unwrap();
+        let first: Vec<_> = heights.iter().map(|h| h.at(0, 0).unwrap() * 32.0).collect();
+        assert_eq!(first, [4.0, 3.0, 2.0, 1.0]);
+        // Quadrant (1, 1)'s one page comes first, then (0, 0)'s two.
+        let pages: Vec<_> = finer
+            .pages
+            .iter()
+            .map(|p| {
+                (
+                    p.layers.clone(),
+                    p.masks
+                        .chunks(PAGE_SIDE * PAGE_SIDE)
+                        .map(|m| m[0])
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            pages,
+            [
+                (vec![2, 5], vec![2, 3]),
+                (vec![], vec![]),
+                (vec![2], vec![1]),
+                (vec![], vec![])
+            ]
+        );
+        let colours = finer.colours.unwrap();
+        for (q, k) in [(0, 4u16), (1, 3), (2, 2), (3, 1)] {
+            let own = coloured(Vec::new(), block(k, k, 0), block(k, k, 0));
+            assert_eq!(colours[q], Colour::parse(&own).unwrap(), "quadrant {q}");
+        }
+    }
+
+    #[test]
+    fn a_finer_chunk_that_does_not_hold_its_layers_is_an_error() {
+        let layers = [vec![2, 5], vec![], vec![2], vec![]];
+        let d = finer_chunk(&layers);
+        assert!(Finer::parse(&d, [vec![2], vec![], vec![2], vec![]]).is_err());
+        assert!(Finer::parse(&d[..d.len() - 1], layers.clone()).is_err());
+        assert!(Finer::parse(&[], [vec![], vec![], vec![], vec![]]).is_ok());
+    }
+
+    #[test]
+    fn the_height_bounds_follow_the_heights() {
+        let mut d = rows();
+        for k in 0..BOUNDS as u16 {
+            d.extend_from_slice(&k.to_le_bytes());
+            d.extend_from_slice(&(k + 100).to_le_bytes());
+        }
+        let bounds = height_bounds(&d).unwrap();
+        assert_eq!(bounds.len(), BOUNDS);
+        assert_eq!((bounds[0], bounds[84]), ([0, 100], [84, 184]));
+        assert!(height_bounds(&d[..d.len() - 1]).is_err());
+    }
+
+    #[test]
     fn a_damaged_tree_is_an_error() {
         let d = sample();
         for cut in [10, HEADER + 20, d.len() - 1] {
@@ -1469,13 +1727,18 @@ mod tests {
             .find(|t| (t.min, t.size) == ([3_712.0, 2_944.0], 128.0))
             .unwrap();
         assert_eq!(tree.pages(speedway), [2, 8, 9, 24, 25]);
+        let mut bounds = HashMap::new();
         let heights: Vec<Option<Heightfield>> = tree
             .tiles
             .iter()
-            .map(|t| {
+            .enumerate()
+            .map(|(i, t)| {
                 let (id, _) = t.chunk?;
                 let chunk = chunks.read(&id).unwrap();
                 Colour::parse(&chunk).unwrap();
+                if t.has_heights() {
+                    bounds.insert(i, height_bounds(&chunk).unwrap());
+                }
                 t.has_heights().then(|| Heightfield::parse(&chunk).unwrap())
             })
             .collect();
@@ -1556,5 +1819,86 @@ mod tests {
             }
         }
         assert_eq!((pairs, agree), (14_852, 14_852));
+        // Each heightfield's bounds hold its own samples, holes aside, block by block
+        // (they bound its finer tiles' too, so they may be wider).
+        let mut exact = 0;
+        for (i, b) in &bounds {
+            let h = heights[*i].as_ref().unwrap();
+            let mut same = true;
+            let mut k = 0;
+            for level in 0..4 {
+                let (n, side) = (1 << level, CELLS >> level);
+                for row in 0..n {
+                    for column in 0..n {
+                        let (mut lo, mut hi) = (u16::MAX, 0);
+                        for r in BORDER + row * side..=BORDER + (row + 1) * side {
+                            for c in BORDER + column * side..=BORDER + (column + 1) * side {
+                                let s = h.samples[r * SAMPLES + c];
+                                if s != 0 {
+                                    (lo, hi) = (lo.min(s), hi.max(s));
+                                }
+                            }
+                        }
+                        let [min, max] = b[k];
+                        assert!(
+                            hi == 0 || (min <= lo && hi <= max),
+                            "tile {i}, block {k}: samples {lo} to {hi}, bounds {min} to {max}"
+                        );
+                        same &= hi == 0 || [lo, hi] == b[k];
+                        k += 1;
+                    }
+                }
+            }
+            exact += usize::from(same);
+        }
+        // Most are exactly their own samples' (the others have finer tiles).
+        assert_eq!((exact, bounds.len()), (5_489, 7_618));
+        // Every finer chunk's size holds the paged layers at its quadrants' squares.
+        let finer: Vec<(usize, ([u8; 16], u32))> = tree
+            .tiles
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| Some((i, t.finer?)))
+            .collect();
+        let mut kinds = (0, 0);
+        for &(i, (_, size)) in &finer {
+            let listed: usize = tree.finer_pages(&tree.tiles[i]).iter().map(Vec::len).sum();
+            let (with_heights, count, with_colours) = finer_layout(size).unwrap();
+            assert_eq!(count, listed, "tile {i}'s finer chunk");
+            kinds.0 += usize::from(with_heights);
+            kinds.1 += usize::from(with_colours);
+        }
+        assert_eq!((finer.len(), kinds.0, kinds.1), (6_133, 601, 5_942));
+        // The finer heightfields: each quadrant's even samples are its tile's there.
+        let (mut equal, mut near, mut holes) = (0, 0, 0);
+        for &(i, (id, size)) in &finer {
+            if !finer_layout(size).unwrap().0 {
+                continue;
+            }
+            let t = &tree.tiles[i];
+            let chunk = chunks.read(&id).unwrap();
+            let f = Finer::parse(&chunk, tree.finer_pages(t)).unwrap();
+            let parent = heights[i].as_ref().unwrap();
+            for (child, [qx, qz]) in f.heights.unwrap().iter().zip(QUADRANTS) {
+                let (mut differ, mut far, mut hole) = (false, false, false);
+                for a in 0..=CELLS / 2 {
+                    for b in 0..=CELLS / 2 {
+                        let c = child.samples[(BORDER + 2 * a) * SAMPLES + BORDER + 2 * b];
+                        let (r, k) = (BORDER + a + qz as usize * 64, BORDER + b + qx as usize * 64);
+                        let p = parent.samples[r * SAMPLES + k];
+                        differ |= c != p;
+                        hole |= c != p && (c == 0 || p == 0);
+                        far |= c != 0 && p != 0 && c.abs_diff(p) > 2;
+                    }
+                }
+                assert!(!far, "tile {i}'s finer quadrant differs by over 2 units");
+                match (differ, hole) {
+                    (false, _) => equal += 1,
+                    (true, false) => near += 1,
+                    (true, true) => holes += 1,
+                }
+            }
+        }
+        assert_eq!((equal, near, holes), (2_365, 37, 2));
     }
 }
