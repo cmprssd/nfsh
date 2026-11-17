@@ -26,6 +26,17 @@ Claude, pending review").
   something tested on real low-end hardware.
 - It must not crash: robustness is a coding priority even without a dedicated check.
 
+## Measuring
+
+- Timings go on `nightq` (`nightq add --timing`), which runs only while the PC is idle;
+  never wait for a result, park the task in the night handoff. Heavy jobs run under
+  `machine-guard run`.
+- `bench/baseline.sh` builds nfsh for Windows and flies a camera path (headless by default;
+  `MODE=window` refuses unless the PC has had no input for `NFSH_IDLE_SECONDS`, 120 by
+  default). `RINGS=0` keeps numbers comparable across releases. Warm loads need the PC
+  idle and about 4 GB free; cold ones come after reading something big enough to push the
+  store out of the file cache. Results go in `docs/BASELINE.md` and `bench/results.tsv`.
+
 ## Rules
 
 - **The repo is public.** Never commit game data, decompiled or disassembled EA code, or
