@@ -17,6 +17,7 @@ pub mod oodle;
 pub mod plan;
 pub mod reader;
 pub mod sb;
+pub mod scatter;
 pub mod shaderdb;
 pub mod staging;
 pub mod store;

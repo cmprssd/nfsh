@@ -6,6 +6,24 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-11-17
+
+### Added
+
+- The terrain's scattering is read (docs/FORMATS.md, "Scattering";
+  `scatter::Scattering`): the 69 meshes Palm City's 31 terrain layers scatter over the
+  ground (grass, bushes, flowers, rocks, twigs, lily pads), each with its mesh set,
+  density per quality level, scale range, wind and dissolve settings, and four
+  distances. A store test checks every type against the terrain's ebx and its mesh.
+  nfsh does not draw them yet.
+
+### Fixed
+
+- docs/FORMATS.md: a terrain layer's index is its bit in the shader names (and its
+  place in the scattering), not its place in the `TerrainData`'s `TerrainLayers`, as
+  the scattering showed. Also what was found about the 35 × 35 grid after a
+  heightfield's coarse heights (it follows the ground's curvature; not decoded).
+
 ## [0.51.0] - 2026-11-17
 
 ### Added

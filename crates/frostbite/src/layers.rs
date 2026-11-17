@@ -35,7 +35,8 @@ const SHADER: usize = 0x28;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shader {
     pub name: String,
-    /// Its layers, indices into the `TerrainData`'s `TerrainLayers`.
+    /// Its layers, by the layer index (its bit in the shader names; not its place in
+    /// the `TerrainData`'s `TerrainLayers`).
     pub layers: Vec<u16>,
 }
 

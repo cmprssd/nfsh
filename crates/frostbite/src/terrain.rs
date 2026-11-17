@@ -154,7 +154,8 @@ impl Tile {
 /// A layer's record at one square of the layer tree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayerRecord {
-    /// An index into the `TerrainData`'s `TerrainLayers`.
+    /// The layer index, as in the shader names and the scattering (not a place in the
+    /// `TerrainData`'s `TerrainLayers`; see docs/FORMATS.md, "Scattering").
     pub layer: u16,
     /// Whether a tile at this square has a page (a weight mask) for the layer.
     pub paged: bool,
