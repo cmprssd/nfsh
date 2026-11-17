@@ -17,7 +17,7 @@ use crate::frames::Layout;
 use crate::install::Superbundle;
 use crate::mesh::MeshSet;
 use crate::sb::{bundle_chunk_size, res_type_hash};
-use crate::store::{guid_order, toc_chunk_id};
+use crate::store::{guid_order, tail_sha1s as tail_sha1s_of, toc_chunk_id};
 use crate::texture::{self, Texture};
 
 /// The part every install needs, whatever its languages.
@@ -207,6 +207,10 @@ pub struct Entry {
     pub chunks: Vec<u32>,
     /// For a tail, the bytes of the chunk it holds: their start and length.
     pub tail: Option<(u32, u32)>,
+    /// The SHA-1s listed for its stored bytes, each once ([`crate::cas::check_sha1`]):
+    /// a bundle's for its entry, and for a whole chunk those of the bundles' copies of
+    /// its end ([`crate::store::tail_sha1s`]); none for a copy of a chunk's end.
+    pub sha1s: Vec<[u8; 20]>,
     /// For an ebx, the part it belongs to if it turns out to be a localized wave.
     pub wave: u8,
     /// For an ebx, whether its name is a cinematic's, every language in one asset; for a
@@ -233,11 +237,13 @@ pub struct Listing {
     pub tails: HashMap<u32, Vec<(u32, u32)>>,
 }
 
-/// The entry at `location`, listed as `kind`, added if this is its first listing.
+/// The entry at `location`, listed as `kind` with `sha1` (none from a `.toc`), added if
+/// this is its first listing.
 fn listed(
     entries: &mut BTreeMap<Location, Entry>,
     location: Location,
     kind: Kind,
+    sha1: Option<[u8; 20]>,
     wave: u8,
 ) -> &mut Entry {
     let e = entries.entry(location).or_insert(Entry {
@@ -245,6 +251,7 @@ fn listed(
         kind,
         chunks: Vec::new(),
         tail: None,
+        sha1s: Vec::new(),
         wave,
         cinematic: false,
         twin: None,
@@ -252,6 +259,9 @@ fn listed(
     // A location listed as a whole chunk by anyone is one.
     if e.kind == Kind::Tail && kind == Kind::Whole {
         e.kind = kind;
+    }
+    if let Some(sha1) = sha1.filter(|s| !e.sha1s.contains(s)) {
+        e.sha1s.push(sha1);
     }
     e
 }
@@ -273,8 +283,14 @@ impl Listing {
                     .map(|a| (a.name.as_str(), a.location))
                     .collect();
                 for a in &b.bundle.ebx {
-                    listed(&mut entries, a.location, Kind::Ebx, wave_part(&a.name)).cinematic |=
-                        language(&a.name) == CINEMATIC;
+                    listed(
+                        &mut entries,
+                        a.location,
+                        Kind::Ebx,
+                        Some(a.sha1),
+                        wave_part(&a.name),
+                    )
+                    .cinematic |= language(&a.name) == CINEMATIC;
                 }
                 let cinematic: HashSet<&str> = b
                     .bundle
@@ -285,7 +301,8 @@ impl Listing {
                     .collect();
                 for r in &b.bundle.res {
                     let twin = twins.get(r.asset.name.as_str()).copied();
-                    let e = listed(&mut entries, r.asset.location, Kind::Res(r.res_type), BASE);
+                    let (l, sha1) = (r.asset.location, Some(r.asset.sha1));
+                    let e = listed(&mut entries, l, Kind::Res(r.res_type), sha1, BASE);
                     e.twin = twin;
                     e.cinematic |= cinematic.contains(r.asset.name.as_str());
                 }
@@ -299,7 +316,8 @@ impl Listing {
                     } else {
                         Kind::Tail
                     };
-                    let e = listed(&mut entries, c.location, kind, BASE);
+                    let sha1 = (kind == Kind::Whole).then_some(c.sha1);
+                    let e = listed(&mut entries, c.location, kind, sha1, BASE);
                     e.chunks.push(id);
                     if kind == Kind::Tail {
                         let len = bundle_chunk_size(c.logical_offset, c.logical_size) as u32;
@@ -317,15 +335,29 @@ impl Listing {
                 if let Some(part) = loc_part(&sb.name) {
                     loc[id as usize] = part;
                 }
-                listed(&mut entries, c.chunk.location, Kind::Whole, BASE)
+                listed(&mut entries, c.chunk.location, Kind::Whole, None, BASE)
                     .chunks
                     .push(id);
             }
         }
         let mut entries: Vec<Entry> = entries.into_values().collect();
+        let mut tail_sha1s: HashMap<u32, Vec<[u8; 20]>> = HashMap::new();
+        for (id, sha1s) in tail_sha1s_of(superbundles) {
+            if let Some(&n) = ids.get(&id) {
+                tail_sha1s.insert(n, sha1s);
+            }
+        }
         for e in &mut entries {
             e.chunks.sort_unstable();
             e.chunks.dedup();
+            if e.kind != Kind::Whole {
+                continue;
+            }
+            for sha1 in e.chunks.iter().filter_map(|n| tail_sha1s.get(n)).flatten() {
+                if !e.sha1s.contains(sha1) {
+                    e.sha1s.push(*sha1);
+                }
+            }
         }
         for ranges in tails.values_mut() {
             ranges.sort_unstable();
@@ -824,6 +856,25 @@ mod tests {
 
     fn chunk_index(l: &Listing, n: u8) -> u32 {
         l.ids[&id(n)]
+    }
+
+    #[test]
+    fn a_chunk_ends_sha1_is_checked_against_the_whole_chunk() {
+        // Chunk 1 is whole in a `.toc` at 100 and its end in a bundle at 200; chunk 2 is
+        // whole in a bundle at 300 and in no bundle in part.
+        let sha1 = |c: Chunk, s: u8| Chunk { sha1: [s; 20], ..c };
+        let chunks = vec![
+            sha1(chunk(1, 0x1_0010, 8, at(200)), 7),
+            sha1(chunk(2, 0, 8, at(300)), 9),
+        ];
+        let l = Listing::new(&[superbundle(&[], chunks, vec![toc(1, at(100))])]);
+        let sha1s = |offset| {
+            let e = l.entries.iter().find(|e| e.location == at(offset)).unwrap();
+            e.sha1s.clone()
+        };
+        assert_eq!(sha1s(100), vec![[7; 20]]);
+        assert_eq!(sha1s(200), Vec::<[u8; 20]>::new());
+        assert_eq!(sha1s(300), vec![[9; 20]]);
     }
 
     #[test]

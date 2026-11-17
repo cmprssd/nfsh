@@ -2,7 +2,10 @@
 //! tables point at, or every entry of an nfsh store, and checks each against the
 //! sizes the tables give.
 //!
-//! An ebx or res entry must decompress to exactly its listed size. A chunk listed in a
+//! In an install, every entry must first match the SHA-1s listed for its stored bytes:
+//! a bundle lists one for each entry, but a bundle's copy of a chunk's end lists the
+//! whole chunk's (the copy a `.toc` lists), so it is checked there; a whole chunk no
+//! bundle names in part has none. A store's frames carry their own checksums instead. An ebx or res entry must decompress to exactly its listed size. A chunk listed in a
 //! bundle stores the chunk's blocks that cover its logical range (see
 //! [`bundle_chunk_size`]); a chunk only in a `.toc` has no size in the tables and must
 //! just decompress. Entries shared by several bundles are read once, in archive
@@ -16,7 +19,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use frostbite::cas::Archives;
+use frostbite::cas::{self, Archives};
 use frostbite::install::{Install, Superbundle};
 use frostbite::oodle::Oodle;
 use frostbite::sb::bundle_chunk_size;
@@ -66,6 +69,8 @@ struct Entry {
     name: String,
     /// `None` once two bundles disagree about the size.
     expect: Option<Expect>,
+    /// The SHA-1s bundles list for its stored bytes, each once.
+    sha1s: Vec<[u8; 20]>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -73,6 +78,8 @@ pub struct Counts {
     pub entries: u64,
     pub stored: u64,
     pub decompressed: u64,
+    /// The entries whose stored bytes matched their listed SHA-1s.
+    pub hashed: u64,
     /// In an install, the entries it leaves out some or all of: what it keeps of them
     /// is decompressed but can't be held to the listed size.
     pub cut: u64,
@@ -102,14 +109,14 @@ impl Report {
 
     pub fn markdown(&self) -> String {
         let mut out = String::from(
-            "| entries | count | stored | decompressed | left out | failed |\n\
-             |---------|------:|-------:|-------------:|---------:|-------:|\n",
+            "| entries | count | stored | decompressed | SHA-1 checked | left out | failed |\n\
+             |---------|------:|-------:|-------------:|--------------:|---------:|-------:|\n",
         );
         for (kind, c) in &self.kinds {
             let _ = writeln!(
                 out,
-                "| {kind:?} | {} | {} | {} | {} | {} |",
-                c.entries, c.stored, c.decompressed, c.cut, c.failed
+                "| {kind:?} | {} | {} | {} | {} | {} | {} |",
+                c.entries, c.stored, c.decompressed, c.hashed, c.cut, c.failed
             );
         }
         if !self.failures.is_empty() {
@@ -126,28 +133,44 @@ impl Report {
     }
 }
 
-fn add(entries: &mut BTreeMap<Location, Entry>, l: Location, kind: Kind, name: &str, e: Expect) {
+/// Lists the entry at `l`, with SHA-1s listed for its stored bytes.
+fn add(
+    entries: &mut BTreeMap<Location, Entry>,
+    l: Location,
+    kind: Kind,
+    name: &str,
+    e: Expect,
+    sha1s: &[[u8; 20]],
+) {
     let entry = entries.entry(l).or_insert_with(|| Entry {
         kind,
         name: name.to_owned(),
         expect: Some(e),
+        sha1s: Vec::new(),
     });
     entry.expect = entry.expect.and_then(|x| x.merge(e));
+    for sha1 in sha1s {
+        if !entry.sha1s.contains(sha1) {
+            entry.sha1s.push(*sha1);
+        }
+    }
 }
 
 /// Every distinct stored entry the superbundles list, with what it must decompress to.
 fn entries(superbundles: &[Superbundle], store: bool) -> BTreeMap<Location, Entry> {
+    let tails = store::tail_sha1s(superbundles);
+    let of_whole = |id: &[u8; 16]| tails.get(id).map_or(&[][..], Vec::as_slice);
     let mut out = BTreeMap::new();
     for sb in superbundles {
         for b in sb.bundles.iter().map(|b| &b.bundle) {
             for a in &b.ebx {
                 let e = Expect::Exactly(a.original_size.into());
-                add(&mut out, a.location, Kind::Ebx, &a.name, e);
+                add(&mut out, a.location, Kind::Ebx, &a.name, e, &[a.sha1]);
             }
             for r in &b.res {
                 let a = &r.asset;
                 let e = Expect::Exactly(a.original_size.into());
-                add(&mut out, a.location, Kind::Res, &a.name, e);
+                add(&mut out, a.location, Kind::Res, &a.name, e, &[a.sha1]);
             }
             for c in &b.chunks {
                 let size = bundle_chunk_size(c.logical_offset, c.logical_size);
@@ -155,7 +178,11 @@ fn entries(superbundles: &[Superbundle], store: bool) -> BTreeMap<Location, Entr
                     true => Expect::AtLeast(size),
                     false => Expect::Exactly(size),
                 };
-                add(&mut out, c.location, Kind::Chunk, &hex(&c.id), e);
+                let sha1s = match c.logical_offset {
+                    0 => [&[c.sha1][..], of_whole(&c.id)].concat(),
+                    _ => Vec::new(),
+                };
+                add(&mut out, c.location, Kind::Chunk, &hex(&c.id), e, &sha1s);
             }
         }
         for c in &sb.chunks {
@@ -166,6 +193,7 @@ fn entries(superbundles: &[Superbundle], store: bool) -> BTreeMap<Location, Entr
                 Kind::Chunk,
                 &id,
                 Expect::AtLeast(0),
+                of_whole(&store::toc_chunk_id(c.chunk.id)),
             );
         }
     }
@@ -176,12 +204,13 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Checks the superbundles' entries, decompressed by `read` with whether an install
-/// left out any of them, in archive order.
+/// Checks the superbundles' entries in archive order. `read` decompresses one, given
+/// its listed SHA-1s, and says whether an install left out any of it and whether it
+/// checked them.
 fn check(
     superbundles: &[Superbundle],
     store: bool,
-    mut read: impl FnMut(Location) -> Result<(Vec<u8>, bool)>,
+    mut read: impl FnMut(Location, &[[u8; 20]]) -> Result<Read>,
 ) -> Report {
     let mut report = Report::default();
     for (location, entry) in entries(superbundles, store) {
@@ -193,10 +222,11 @@ fn check(
             report.fail(entry.kind, message);
             continue;
         };
-        let result = read(location).map_err(|e| e.0);
-        let result = result.and_then(|(data, cut)| {
+        let result = read(location, &entry.sha1s).map_err(|e| e.0);
+        let result = result.and_then(|Read { data, cut, hashed }| {
             let c = report.kinds.entry(entry.kind).or_default();
             c.decompressed += data.len() as u64;
+            c.hashed += u64::from(hashed);
             c.cut += u64::from(cut);
             match cut {
                 true => Ok(()),
@@ -210,12 +240,46 @@ fn check(
     report
 }
 
+/// One entry as [`check`]'s reader gives it.
+struct Read {
+    data: Vec<u8>,
+    /// An install left out some or all of it.
+    cut: bool,
+    /// Its stored bytes matched its listed SHA-1s.
+    hashed: bool,
+}
+
+/// An install's entry at `l`, checked against its listed `sha1s` and decompressed.
+fn read_install(
+    archives: &mut Archives,
+    oodle: &Oodle,
+    l: Location,
+    sha1s: &[[u8; 20]],
+) -> Result<Read> {
+    let stored = archives.stored(l)?;
+    cas::check_sha1(&stored, sha1s)?;
+    let data = cas::decompress(&stored, oodle)?;
+    let hashed = !sha1s.is_empty();
+    Ok(Read {
+        data,
+        cut: false,
+        hashed,
+    })
+}
+
 /// Verifies the store in `path` if it holds one, otherwise the install there.
 pub fn run(path: &Path) -> Result<Report> {
     if path.join(store::INDEX).is_file() {
         let store = Store::open(path)?;
         let mut entries = store.entries()?;
-        let mut report = check(&store.superbundles, true, |l| entries.read_end(l));
+        let mut report = check(&store.superbundles, true, |l, _| {
+            let (data, cut) = entries.read_end(l)?;
+            Ok(Read {
+                data,
+                cut,
+                hashed: false,
+            })
+        });
         report.parts = Some(store::check_parts(&store)?);
         return Ok(report);
     }
@@ -226,8 +290,8 @@ pub fn run(path: &Path) -> Result<Report> {
         superbundles.extend(install.superbundle(name)?);
     }
     let mut archives = Archives::new(&install);
-    Ok(check(&superbundles, false, |l| {
-        archives.read(l, &oodle).map(|data| (data, false))
+    Ok(check(&superbundles, false, |l, sha1s| {
+        read_install(&mut archives, &oodle, l, sha1s)
     }))
 }
 

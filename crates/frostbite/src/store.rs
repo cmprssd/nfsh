@@ -126,6 +126,24 @@ pub fn toc_chunk_id(mut id: [u8; 16]) -> [u8; 16] {
     guid_order(id)
 }
 
+/// The SHA-1s bundles list for their copies of a chunk's end, by chunk id: they are the
+/// whole chunk's, of the stored bytes of the copy a `.toc` lists (docs/FORMATS.md,
+/// "Bundles"), so they are checked against the whole chunk.
+pub fn tail_sha1s(superbundles: &[Superbundle]) -> HashMap<[u8; 16], Vec<[u8; 20]>> {
+    let mut out: HashMap<[u8; 16], Vec<[u8; 20]>> = HashMap::new();
+    let chunks = superbundles
+        .iter()
+        .flat_map(|sb| &sb.bundles)
+        .flat_map(|b| &b.bundle.chunks);
+    for c in chunks.filter(|c| c.logical_offset > 0) {
+        let sha1s = out.entry(c.id).or_default();
+        if !sha1s.contains(&c.sha1) {
+            sha1s.push(c.sha1);
+        }
+    }
+    out
+}
+
 /// Every ebx of `superbundles` with where it is listed, in index order.
 fn each_ebx(superbundles: &[Superbundle]) -> impl Iterator<Item = (EbxRef, &Asset)> {
     superbundles.iter().zip(0..).flat_map(|(sb, s)| {
@@ -753,6 +771,23 @@ fn train_dictionary(
     Ok(frames::train(&samples))
 }
 
+/// An install entry, checked against the SHA-1s its bundles list and decompressed,
+/// with its location in any error: a damaged install is refused, not copied.
+fn read_checked(
+    archives: &mut Archives,
+    entry: &plan::Entry,
+    decoder: &dyn Decoder,
+) -> Result<Vec<u8>> {
+    let l = entry.location;
+    archives
+        .stored(l)
+        .and_then(|stored| {
+            crate::cas::check_sha1(&stored, &entry.sha1s)?;
+            crate::cas::decompress(&stored, decoder)
+        })
+        .map_err(|e| crate::Error(format!("{l:?}: {e}")))
+}
+
 /// An install entry, decompressed, with its location in any error.
 fn read(archives: &mut Archives, l: Location, decoder: &dyn Decoder) -> Result<Vec<u8>> {
     archives
@@ -778,8 +813,8 @@ pub struct Imported {
 }
 
 /// Copies the superbundles `names` of `install` into a store in `dir`. Every distinct
-/// entry they point at is read once with `decoder` (the install's Oodle) to decide what
-/// to keep ([`plan`]); what is kept is written as its frames, on every core. Then it
+/// entry they point at is read once, checked against its listed SHA-1s and decompressed
+/// with `decoder` (the install's Oodle) to decide what to keep ([`plan`]); what is kept is written as its frames, on every core. Then it
 /// reopens the store and checks that it lists the same superbundles, less the chunks
 /// left out, and that every other entry reads back as the install's, byte for byte.
 /// `dir` may be missing, empty, or an earlier store, which is replaced; anything else
@@ -804,7 +839,7 @@ pub fn import(
         &listing.entries,
         || Ok(Archives::new(install)),
         |archives, entry| {
-            let data = read(archives, entry.location, decoder)?;
+            let data = read_checked(archives, entry, decoder)?;
             Ok(plan::scan(entry, &data, &listing, &finder))
         },
     )?;
