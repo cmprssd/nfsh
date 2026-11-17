@@ -6,6 +6,17 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-11-17
+
+### Added
+
+- The terrain readers read the streaming tree's last three blocks (docs/FORMATS.md,
+  "Terrain"). Kind 3 is a surface map: 4-bit values every 2 m over the land, likely the
+  ground's surface kinds, indexing a 16-entry table, in run-length coded rows
+  (`terrain::Surfaces`). Kinds 2 and 4 are quadtrees with no data of their own
+  (`terrain::Outline`); what they are for is not known. A store test checks all three
+  and decodes every row of the surface map. nfsh does not use them yet.
+
 ## [0.50.0] - 2026-11-17
 
 ### Added
