@@ -49,6 +49,7 @@ Every reader is bounds-checked and returns `Error`; none panics. Formats are des
 - `terrain.rs`: terrain quadtree tiles, layer records and their cells, outlines, surface map, heightfields, height bounds, coarse heights, colour, finer chunks,
   ground mesh.
 - `layers.rs`: terrain layer tree, per-layer textures and shader bindings.
+- `scatter.rs`: terrain scattering (VisualResource), each layer's meshes and their settings.
 - `shaderdb.rs`: level shader database, parameter blocks, permutations.
 - `dxbc.rs`: DXBC (SM5) bytecode, read only for terrain texture sample scales.
 - `lighting.rs`: time-of-day sun, sky and exposure; sky panorama and gradient.

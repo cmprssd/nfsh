@@ -441,7 +441,7 @@ Palm City's terrain is `levels/mainlevel/mainlevel_terrain_2048/mainlevel_terrai
 | res (type hash) | size | what |
 |-----------------|-----:|------|
 | `TerrainStreamingTreeResource`, `…streamingtree_win32` (`0x22FE8AC8`) | 5,957,625 | the quadtree and the chunk of every tile (below) |
-| `VisualResource`, `mainlevel_terrain_2048` (`0x1CA38E06`) | 19,833 | the scattering: mesh names (`sct_grass_…_mesh`) and their settings |
+| `VisualResource`, `mainlevel_terrain_2048` (`0x1CA38E06`) | 19,833 | the scattering: each layer's meshes (`sct_grass_…_mesh`) and their settings ("Scattering", below) |
 | `TerrainLayerCombinationsResource`, `…layercombinations_win32` (`0xA23E75DB`) | 1,680,272 | each combination of layers and its shaders' names ("Terrain layers", below) |
 
 **The streaming tree** is packed little-endian with no alignment; `frostbite::terrain`
@@ -511,8 +511,9 @@ byte, its record count (u16), how many of them have a page (u16) and a zero u16 
 bytes); with no records it is empty and ends there (2,740 of them). Otherwise its
 records follow, then a zero byte and a byte that is 1 when four children follow.
 
-A **record** is 31 bytes: the layer (u16, an index into the `TerrainData`'s
-`TerrainLayers`), the node's square (four f32: minimum x, z, then maximum), a byte
+A **record** is 31 bytes: the layer (u16; the layer's index, its bit in the
+shaders' names and its place in the scattering, not its place in the `TerrainData`'s
+`TerrainLayers`, which lists 39: "Scattering", below), the node's square (four f32: minimum x, z, then maximum), a byte
 that is 1 when no node below lists the layer, a byte that is 1 when the layer has
 **no page** at this square, and an 85-bit pyramid (11 bytes) of the cells of the
 square the layer touches. A node's records are in ascending layer order. The root's
@@ -638,10 +639,30 @@ don't sum to 255 per texel; nfsh takes a layer's weight as its share of the sum
 
   Likely a conservative, simplified ground (for culling or a far level of detail), not
   confirmed.
-- 35 × 35 bytes, rows of 35 (a point every 4 samples from the first): 31 common
-  values close to n²/4 for n from 0 to 32 (0, 1, 2, 4, 6, 9, 12, 16, 21, …, 251)
-  and 0xFF, which covers the holes and more. They correlate with the ground's
-  roughness (0.49) but are not worked out.
+- 35 × 35 bytes, rows of 35 along z (a point every 4 samples from the first, so
+  point (r, c) is sample (4r, 4c)): 31 common values, ((k + 1)/2)² rounded for k from
+  0 to 7 and up to 5% above it after (0, 1, 2, 4, 6, 9, 12, 16, 21, 26, 31, 37, …,
+  235, 251, for k up to 30), a few others (59, 3, 128, 13, …: 0.3% of points) and
+  0xFF. Not worked out; what was checked
+  (2026-11-17, on 200 to 800 tiles drawn at random):
+  - they follow the ground's **curvature**: against the largest |Laplacian| of the
+    heights within 3 samples of the point, a rank correlation of 0.84 on 128 m
+    tiles (0.69 at 1 sample, 0.78 at 2); laid out transposed it drops to 0.50, and
+    shifting the points by 1 to 3 samples gains at most 0.001. Against a 4-sample cell's
+    worst error from its corners' bilinear surface, 0.78; against the coarse
+    heights' distance from the ground, at most 0.53;
+  - but they are **not the heights' alone**: of points whose 9 × 9 samples are all
+    one plane (on 300 128 m tiles), 73% hold 0, 11% 0xFF and the rest 1 to 16. 0xFF covers every
+    hole, the cliff at the world's edge, and whole flat tiles (a strip of 17 at
+    x 6,016 m, z −2,048 to 128 m, all at 52 units, and tiles of open sea): 3,170 of
+    the 7,554 heightfields without holes have some;
+  - neither the surface map nor the layers explain them: the tile's heaviest layer
+    at the point cuts their uncertainty only from 3.27 to 3.11 bits;
+  - at the points a tile shares with its parent, the parent's value is the same
+    63% of the time, greater 32%, smaller 5%.
+
+  Likely a per-patch level-of-detail or tessellation measure (roughness, with 0xFF
+  meaning "always full detail" or "never"), not confirmed.
 
 **The finer chunk** (worked out on 2026-11-17; `terrain::Finer` reads it and a store
 test checks it on every tile) holds the tile's four quadrants at twice its detail:
@@ -674,6 +695,47 @@ quadrant. Of the 7,602 parent and child pairs that both have heights, 7,477 agre
 every sample, 61 differ by at most 2 units (1/16 m) on a few dozen samples, and 64
 differ only where one of them has a hole. The heights of every leaf also span exactly
 its node's y range in the node tree. A store test checks the first rule on every pair.
+
+### Scattering
+
+The `VisualResource` (worked out on 2026-11-17; `frostbite::scatter` reads it and a
+store test checks it against the ebx) lists the meshes each terrain layer scatters
+over the ground: grass, bushes, flowers, rocks, twigs, lily pads. Packed, little-endian.
+
+- A 0xC2-byte header, not worked out (it starts 1.0, 1.14, 1.24, 1.24, 0.7, then 128,
+  2,560,000 and 716,800 as u32; later 64, 128, 60, 120 and eight u32 of 16 among
+  others), then the layer count (u32, 31).
+- Each **layer**: a count (u32) of scatter types, the types, then two bytes (0, 0;
+  0, 1 after the last). Palm City's 31 layers hold 69 types; 11 hold none.
+- A **scatter type**: the mesh asset's name (NUL-ended, e.g.
+  `worldassets_roboto/vegetation/grass_robotograss/sct_grass_robotograss_01_mesh`),
+  that asset's `MeshSetResource` id (u64), a u32 (nonzero on 22 types) and a zero
+  u32, a byte that is 1 when three f32 follow (1, 1, 1 on 32 types, 1, 1, 0 on 12,
+  not worked out), a zero byte, the identifier (u32, the type's place in the res
+  from 0), then 173 bytes. Of those, at these offsets, f32 each: the density at the
+  four quality levels Low to Ultra (0), five f32 (16; the first always 1), a byte
+  (36), `MinScale` x and y (37), `MaxScale` x and y (45), two f32 (53),
+  `ScaleRandomness` (61), `WindScale` (65), `Stiffness` (69), `Damping` (73), `Mass`
+  (77), `WindWiggle` (81), `DissolveRangeRatio` (85), a byte (1 or 255, 89), 24 zero
+  bytes (90; six f32, likely the six `Lod…DissolveDistanceFactor`s, all 0 in the ebx),
+  then four of each for four levels: bytes (114), u32 (118, 1 or 2), bytes (134) and
+  increasing f32 (138; 15, 20, 25, 30 most often, likely distances), then two u32 of 1
+  (154), three bytes (162), an f32 (165, always 0.9) and four bytes (169).
+
+**It is the ebx compiled.** The `TerrainData` ebx's `TerrainLayers` point at 39
+`SingleTerrainLayerData`, each listing `MeshScatteringTypes`: 69
+`TerrainMeshScatteringType` instances with field names. On all 69, the type with an
+identifier carries exactly the ebx instance's values for each field named above. Each
+non-empty layer's identifiers are one `TerrainLayers` entry's, in order, but at
+another index: layers 1 to 16 are entries 2 to 17, 17 to 24 are 20 to 27, and 27 is
+31. **The layers are indexed as the layer tree and the shaders index them**, not as
+`TerrainLayers`: there are 31, as many as the layer tree uses (0 to 30), and they fit
+each layer's textures (from the shaders): the road surfaces (layers 8 and 9) scatter
+nothing, the forest floor (7) ferns and clover, the burnt forest floor (6) twigs, the
+gravels (5, 13) rocks; read as `TerrainLayers` indices, layer 8 (a road) would grow
+ferns. Every mesh is a `RigidMeshAsset` in the store whose `MeshSetResource` is the
+type's id. nfsh does not draw them yet; where the scattering puts each mesh (the
+density over a layer's weight, and the seed) is not worked out.
 
 ### Terrain layers
 
