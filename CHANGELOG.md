@@ -6,6 +6,17 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-11-17
+
+### Added
+
+- The terrain readers read two more of Palm City's terrain parts (docs/FORMATS.md,
+  "Terrain"): each heightfield's height bounds, the least and greatest heights over the
+  tile and its 4, 16 and 64 blocks (`terrain::height_bounds`), and a tile's finer
+  chunk, its four quadrants' heights, pages and colour at twice its detail
+  (`terrain::Finer`, `Tile::finer`, `Tree::finer_pages`). A store test checks them on
+  every tile. nfsh does not draw the finer chunks yet.
+
 ## [0.47.0] - 2026-11-17
 
 ### Added
