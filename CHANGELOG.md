@@ -6,6 +6,16 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-11-17
+
+### Added
+
+- The terrain's surface map is named (docs/FORMATS.md, "Terrain"; `Surfaces::table`,
+  `terrain::material`): its 16 values are the ground's physics materials, each entry a
+  material of the level's material grid (race physics, tyre and debris sounds: dirt,
+  grass, forest floor, sugarcane, asphalt...), and the trailing value its default. A
+  store test checks the table against the `MaterialGridData` ebx.
+
 ## [0.52.0] - 2026-11-17
 
 ### Added

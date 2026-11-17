@@ -490,8 +490,33 @@ store test checks them:
   size S covers from (x0 + c·S/256, z0 + r·S/256), with no border. Maps are on leaves
   only: 414 of 512 m (a value every 2 m) and 107 of 1,024 m (every 4 m); 163 hold a
   single value. After the tree, a table: a count (16) and that many u32, then a u32
-  (128). The values are likely the ground's surface kinds (physics materials), the
-  table naming them, not confirmed. What was checked:
+  (128). **The values are the ground's physics materials**, and the table names them
+  (worked out on 2026-11-17; `Surfaces::table`, a store test checks it): each entry
+  is a material packed as the level's material grid packs one (`MaterialDecl`'s
+  `Packed`), 0x80 in the low byte, the material in the next (`terrain::material`), an
+  index into the `MaterialGridData` ebx's (`levels/mainlevel/mainlevel/materialgrid_win32`)
+  `MaterialIndexMap` (140), which gives its row of `MaterialProperties` (123): race
+  physics (`SurfaceType`, from `VstFast` to `VstFairlySlow`), tyre, debris and rim
+  sounds. The trailing 128 is the grid's `DefaultMaterial` (material 0). The two high
+  bytes are not worked out (0x10, 0x20 or 0xA0; 5, 6 or 0; 0xA0 and 0 on the plain
+  grass and dirt alone). Palm City's 16, by the debris sound each names:
+
+  | value | material | sounds | | value | material | sounds |
+  |---:|---:|---|---|---:|---:|---|
+  | 0 | 0x87 | dirt, beach | | 8 | 0x86 | sugarcane field |
+  | 1 | 0x7D | grass, high | | 9 | 0x0E | asphalt |
+  | 2 | 0x88 | dirt, swamp | | 10 | 0x7C | forest floor, bushes and ferns |
+  | 3 | 0x55 | dirt, mud | | 11 | 0x7B | forest floor, sparse |
+  | 4 | 0x80 | dirt, quarry | | 12 | 0x54 | dirt, sand |
+  | 5 | 0x45 | dirt with stones | | 13 | 0x02 | grass |
+  | 6 | 0x56 | forest floor, sparse | | 14 | 0x7A | forest floor, burnt |
+  | 7 | 0x57 | damaged asphalt | | 15 | 0x04 | dirt |
+
+  They fit the layers under them: at the texels of 600 128 m tiles, the heaviest
+  layer is the burnt forest floor (6) under 99% of value 14, the forest floor (7)
+  under 93% of 11 and 54% of 10, the mangrove sand (15) under 85% of 2 (the swamp),
+  the grass (4) under 56% of 13, a road (8) the most often under 7. What was checked
+  before the table was read:
   - every one of the 133,376 rows decodes to exactly 128 bytes; all 16 values occur,
     1 the most (19,289,697 of 34,144,256);
   - neighbouring values agree as often across a map's edge as inside it (95% between
