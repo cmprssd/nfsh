@@ -538,8 +538,8 @@ checked). On the speedway tile their means are 211, 88, 92, 9 and 118, so they
 don't sum to 255 per texel; nfsh takes a layer's weight as its share of the sum
 (2026-11-01, `terrain::Pages`). Which layer each is for: the layer tree, above.
 
-**After the heights** (worked out on 2026-11-17; `terrain::height_bounds` reads the
-first part, a store test checks it):
+**After the heights** (worked out on 2026-11-17; `terrain::height_bounds` and
+`terrain::coarse_heights` read the first two parts, a store test checks them):
 
 - 85 **height bounds**, a least and a greatest height (u16 each, 340 bytes): the
   tile's, then its 4, 16 and 64 blocks', each level row by row (rows along z), a block
@@ -550,11 +550,30 @@ first part, a store test checks it):
   they are exactly the bounds of every height at or below the tile (the other three,
   128 m leaves near holes, are up to 22 units wider). The root and the four 8,192 m
   nodes of the node tree carry a pyramid of the same shape.
-- 119 u16 not worked out (some 0 or 1, others heights).
-- 17 × 17 u16, likely a **coarse heightfield**: rows along z, a sample every 8 of
-  the tile's from its border's inner edge (samples 4 to 132), within about 72 units
-  (2.3 m, median RMS of 228 hilly tiles) of the heights there; not the samples
-  themselves (some lie outside the tile's range), likely fitted to them.
+- **Coarse heights** (worked out on 2026-11-17; `terrain::coarse_heights` reads them,
+  a store test checks them): 408 u16, five grids of 2 × 2, 3 × 3, 5 × 5, 9 × 9 and
+  17 × 17 points, coarsest first, each row by row (rows along z), in the heights' units.
+  A grid of n a side has a point every 128/(n − 1) samples from the border's inner edge
+  (samples 4 to 132), the last one every 8 (the grid offset is the likeliest one, not
+  proven: a search over offsets and spans fits about as well at 3 to 135). Each level
+  is closer to the heights at its points than the last (on 300 tiles of 128 and 256 m,
+  a median RMS of 686, 289, 109, 43 and 21 units). They are not the samples, and
+  neither least-squares fits nor box or triangle filters of them: they **lean below**
+  the ground.
+  - a coarser level's value is at or below the next level's at the points they share:
+    all but 11 of the 906,542 such points over every heightfield;
+  - 87 values on 52 tiles are above the tile's greatest height, and 325,688 are below
+    its least;
+  - the finest level's distance from the heights grows with the tile's size (on tiles
+    without holes, a median of 11 units on 128 m tiles, 36 at 256 m, 123 at 512 m, 337
+    at 1,024 m, 1,215 at 4,096 m), with 88% to 100% of its points at or below them;
+  - each level's bilinear surface lies under the next one's, to within 2 units, on 93
+    to 94% of heightfields (the 9 × 9 one touches the 17 × 17 one: a median least gap
+    of 0); on the rest, mostly tiles of 256 m and more, it rises above it, by up to
+    about 290 units.
+
+  Likely a conservative, simplified ground (for culling or a far level of detail), not
+  confirmed.
 - 35 × 35 bytes, rows of 35 (a point every 4 samples from the first): 31 common
   values close to n²/4 for n from 0 to 32 (0, 1, 2, 4, 6, 9, 12, 16, 21, …, 251)
   and 0xFF, which covers the holes and more. They correlate with the ground's

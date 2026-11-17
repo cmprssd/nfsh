@@ -6,6 +6,16 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-11-17
+
+### Added
+
+- The terrain readers read each heightfield's coarse heights (docs/FORMATS.md, "After
+  the heights"): five grids from 2 × 2 to 17 × 17 points over the tile, each closer to
+  the heights than the last and leaning below them (`terrain::coarse_heights`). A store
+  test checks them on every heightfield. What Heat uses them for is not known yet, and
+  nfsh does not use them.
+
 ## [0.48.0] - 2026-11-17
 
 ### Added
