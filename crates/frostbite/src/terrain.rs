@@ -964,6 +964,106 @@ pub fn coarse_heights(chunk: &[u8]) -> Result<[Vec<u16>; 5]> {
     ])
 }
 
+/// The ebx holding Palm City's ground height grid (its `GroundHeightEntityData`).
+pub const GROUND_HEIGHTS: &str = "levels/mainlevel/default";
+
+/// Palm City's ground height grid (`GroundHeightData`): the least height of the
+/// terrain in each square of a grid over the world, rows along z and columns along x,
+/// as u16 over a span (65535 is the span's top). It stands apart from the streaming
+/// tree, in the level's ebx, and agrees with the tiles' height bounds (see
+/// docs/FORMATS.md); what reads it in Heat is not known.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroundHeights {
+    /// Squares to a side.
+    pub side: usize,
+    /// The world's side in metres (`WorldSize`), centred on the origin.
+    pub world: f32,
+    /// The heights 0 and 65535 stand for, in metres (`HeightSpan`).
+    pub span: [f32; 2],
+    /// `side` × `side` values, row by row.
+    pub values: Vec<u16>,
+}
+
+impl GroundHeights {
+    /// Checks the values make a square grid.
+    pub fn new(world: f32, span: [f32; 2], values: Vec<u16>) -> Result<Self> {
+        let side = values.len().isqrt();
+        if side == 0 || side * side != values.len() {
+            bail!("ground heights: {} values are not a square", values.len());
+        }
+        if !(world > 0.0 && span[1] >= span[0]) {
+            bail!("ground heights: world {world} or span {span:?} out of range");
+        }
+        Ok(Self {
+            side,
+            world,
+            span,
+            values,
+        })
+    }
+
+    /// One square's side in metres.
+    pub fn cell(&self) -> f32 {
+        self.world / self.side as f32
+    }
+
+    /// The least height in metres of the square at `row` (along z) and `column`
+    /// (along x), which covers from (−world/2 + column·cell, −world/2 + row·cell).
+    pub fn at(&self, row: usize, column: usize) -> Option<f32> {
+        if row >= self.side || column >= self.side {
+            return None;
+        }
+        let v = f32::from(self.values[row * self.side + column]) / f32::from(u16::MAX);
+        Some(self.span[0] + v * (self.span[1] - self.span[0]))
+    }
+
+    /// Reads the grid from the `GroundHeightEntityData` of a partition.
+    pub fn from_partition(p: &crate::ebx::Partition) -> Result<Self> {
+        use crate::ebx::Value;
+        use crate::level::{elements, field};
+        let entity = p
+            .instances
+            .iter()
+            .map(|i| p.object(i))
+            .find(|o| p.type_name(o.type_index) == "GroundHeightEntityData")
+            .ok_or_else(|| Error(format!("{}: no GroundHeightEntityData", p.name)))?;
+        let Some(Value::Struct(data)) = field(p, entity, "Data")? else {
+            bail!("{}: GroundHeightEntityData has no Data", p.name);
+        };
+        let float = |o, name: &str| match field(p, o, name)? {
+            Some(Value::Float32(v)) => Ok(v),
+            Some(Value::UInt(v)) => Ok(v as f32),
+            Some(Value::Int(v)) => Ok(v as f32),
+            other => bail!("{}: {name} is {other:?}", p.name),
+        };
+        let Some(Value::Struct(span)) = field(p, data, "HeightSpan")? else {
+            bail!("{}: GroundHeightData has no HeightSpan", p.name);
+        };
+        let values = elements(p, data, "Data")?
+            .iter()
+            .map(|v| match v {
+                Value::UInt(v) => u16::try_from(*v).map_err(|_| Error(format!("{v}"))),
+                other => Err(Error(format!("{}: a height is {other:?}", p.name))),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Self::new(
+            float(data, "WorldSize")?,
+            [float(span, "x")?, float(span, "y")?],
+            values,
+        )
+    }
+
+    /// Reads Palm City's grid from `store`.
+    pub fn read(store: &Store) -> Result<Self> {
+        let asset = store
+            .ebx(GROUND_HEIGHTS)
+            .ok_or_else(|| Error(format!("{GROUND_HEIGHTS}: not in the store")))?;
+        let data = store.entries()?.read(asset.location)?;
+        let p = crate::ebx::Partition::parse(&data)?;
+        Self::from_partition(&p).map_err(|e| Error(format!("{GROUND_HEIGHTS}: {e}")))
+    }
+}
+
 /// What a finer chunk of `size` bytes holds: whether it has four heightfields, how
 /// many pages, and whether it has four colours; `None` for a size no such chunk has.
 /// The four combinations leave different remainders of a page's size, so the size
@@ -1825,6 +1925,19 @@ mod tests {
     }
 
     #[test]
+    fn the_ground_heights_are_a_square_grid_over_the_span() {
+        let g = GroundHeights::new(512.0, [10.0, 20.0], vec![0, u16::MAX, 32_768, 1]).unwrap();
+        assert_eq!((g.side, g.cell()), (2, 256.0));
+        assert_eq!(g.at(0, 0), Some(10.0));
+        assert_eq!(g.at(0, 1), Some(20.0));
+        assert!((g.at(1, 0).unwrap() - 15.0).abs() < 1e-3);
+        assert_eq!(g.at(2, 0), None);
+        assert!(GroundHeights::new(512.0, [0.0, 1.0], vec![0; 3]).is_err());
+        assert!(GroundHeights::new(512.0, [0.0, 1.0], vec![]).is_err());
+        assert!(GroundHeights::new(0.0, [0.0, 1.0], vec![0]).is_err());
+    }
+
+    #[test]
     fn the_coarse_heights_follow_the_bounds() {
         let mut d = rows();
         d.extend(std::iter::repeat_n(0xAB, 4 * BOUNDS));
@@ -2533,6 +2646,51 @@ mod tests {
             over += levels.iter().flatten().filter(|&&v| v > greatest).count();
         }
         assert_eq!((above, over, coarse.len()), (11, 87, 7_618));
+        // The level's ground height grid is the least height of each of its squares:
+        // against the bounds of the smallest heightfield (of 256 to 2,048 m) with a
+        // block at the square, every square of sea floor (5 units, the root's least)
+        // reads under 0.1 m, and next to every square of land is within 0.1 m of its
+        // least (counting those that are); the
+        // greatest is the span's top, and the squares under no such block are counted.
+        let g = GroundHeights::read(&store).unwrap();
+        assert_eq!((g.side, g.world, g.span[0]), (64, 16_384.0, 0.0));
+        let cell = g.cell();
+        let mut least: HashMap<(usize, usize), (f32, u16)> = HashMap::new();
+        for (i, b) in &bounds {
+            let t = &tree.tiles[*i];
+            let n = (t.size / cell) as usize;
+            if !(1..=8).contains(&n) {
+                continue;
+            }
+            for r in 0..n {
+                for c in 0..n {
+                    let lo = b[(n * n - 1) / 3 + r * n + c][0];
+                    let row = ((t.min[1] + g.world / 2.0) / cell) as usize + r;
+                    let column = ((t.min[0] + g.world / 2.0) / cell) as usize + c;
+                    let e = least.entry((row, column)).or_insert((f32::MAX, 0));
+                    if t.size < e.0 {
+                        *e = (t.size, lo);
+                    }
+                }
+            }
+        }
+        let (mut sea, mut land, mut near, mut top) = (0, 0, 0, 0.0f32);
+        let floor = least.values().filter(|e| e.1 == 5).count();
+        for (&(row, column), &(_, lo)) in &least {
+            let v = g.at(row, column).unwrap();
+            if lo == 5 {
+                sea += usize::from(v < 0.1);
+            } else {
+                land += 1;
+                near += usize::from((v - f32::from(lo) / 32.0).abs() < 0.1);
+                top = top.max(f32::from(lo) / 32.0);
+            }
+        }
+        assert!((top - g.span[1]).abs() < 0.05, "{top} against {:?}", g.span);
+        assert_eq!(
+            (floor, sea, land, near, 64 * 64 - least.len()),
+            (407, 407, 3_305, 3_292, 384)
+        );
         // Every finer chunk's size holds the paged layers at its quadrants' squares.
         let finer: Vec<(usize, ([u8; 16], u32))> = tree
             .tiles

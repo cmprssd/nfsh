@@ -6,6 +6,16 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-11-17
+
+### Added
+
+- The level's ground height grid is read (docs/FORMATS.md, "Terrain";
+  `terrain::GroundHeights`): the `GroundHeightData` in `levels/mainlevel/default`
+  holds the least height of the ground in each of 64 × 64 squares of 256 m, scaled to
+  its `HeightSpan`. A store test checks it against the tiles' height bounds: all of
+  the sea floor and 3,292 of 3,305 squares of land are within 0.1 m.
+
 ## [0.54.0] - 2026-11-17
 
 ### Added
