@@ -2,9 +2,10 @@
 //! tables point at, or every entry of an nfsh store, and checks each against the
 //! sizes the tables give.
 //!
-//! In an install, every entry a bundle lists must first match the SHA-1 it lists for
-//! its stored bytes (a chunk only in a `.toc` has none); a store's frames carry their
-//! own checksums instead. An ebx or res entry must decompress to exactly its listed size. A chunk listed in a
+//! In an install, every entry must first match the SHA-1s listed for its stored bytes:
+//! a bundle lists one for each entry, but a bundle's copy of a chunk's end lists the
+//! whole chunk's (the copy a `.toc` lists), so it is checked there; a whole chunk no
+//! bundle names in part has none. A store's frames carry their own checksums instead. An ebx or res entry must decompress to exactly its listed size. A chunk listed in a
 //! bundle stores the chunk's blocks that cover its logical range (see
 //! [`bundle_chunk_size`]); a chunk only in a `.toc` has no size in the tables and must
 //! just decompress. Entries shared by several bundles are read once, in archive
@@ -132,14 +133,14 @@ impl Report {
     }
 }
 
-/// Lists the entry at `l`, with the SHA-1 a bundle gives it (none from a `.toc`).
+/// Lists the entry at `l`, with SHA-1s listed for its stored bytes.
 fn add(
     entries: &mut BTreeMap<Location, Entry>,
     l: Location,
     kind: Kind,
     name: &str,
     e: Expect,
-    sha1: Option<[u8; 20]>,
+    sha1s: &[[u8; 20]],
 ) {
     let entry = entries.entry(l).or_insert_with(|| Entry {
         kind,
@@ -148,24 +149,28 @@ fn add(
         sha1s: Vec::new(),
     });
     entry.expect = entry.expect.and_then(|x| x.merge(e));
-    if let Some(sha1) = sha1.filter(|s| !entry.sha1s.contains(s)) {
-        entry.sha1s.push(sha1);
+    for sha1 in sha1s {
+        if !entry.sha1s.contains(sha1) {
+            entry.sha1s.push(*sha1);
+        }
     }
 }
 
 /// Every distinct stored entry the superbundles list, with what it must decompress to.
 fn entries(superbundles: &[Superbundle], store: bool) -> BTreeMap<Location, Entry> {
+    let tails = store::tail_sha1s(superbundles);
+    let of_whole = |id: &[u8; 16]| tails.get(id).map_or(&[][..], Vec::as_slice);
     let mut out = BTreeMap::new();
     for sb in superbundles {
         for b in sb.bundles.iter().map(|b| &b.bundle) {
             for a in &b.ebx {
                 let e = Expect::Exactly(a.original_size.into());
-                add(&mut out, a.location, Kind::Ebx, &a.name, e, Some(a.sha1));
+                add(&mut out, a.location, Kind::Ebx, &a.name, e, &[a.sha1]);
             }
             for r in &b.res {
                 let a = &r.asset;
                 let e = Expect::Exactly(a.original_size.into());
-                add(&mut out, a.location, Kind::Res, &a.name, e, Some(a.sha1));
+                add(&mut out, a.location, Kind::Res, &a.name, e, &[a.sha1]);
             }
             for c in &b.chunks {
                 let size = bundle_chunk_size(c.logical_offset, c.logical_size);
@@ -173,14 +178,11 @@ fn entries(superbundles: &[Superbundle], store: bool) -> BTreeMap<Location, Entr
                     true => Expect::AtLeast(size),
                     false => Expect::Exactly(size),
                 };
-                add(
-                    &mut out,
-                    c.location,
-                    Kind::Chunk,
-                    &hex(&c.id),
-                    e,
-                    Some(c.sha1),
-                );
+                let sha1s = match c.logical_offset {
+                    0 => [&[c.sha1][..], of_whole(&c.id)].concat(),
+                    _ => Vec::new(),
+                };
+                add(&mut out, c.location, Kind::Chunk, &hex(&c.id), e, &sha1s);
             }
         }
         for c in &sb.chunks {
@@ -191,7 +193,7 @@ fn entries(superbundles: &[Superbundle], store: bool) -> BTreeMap<Location, Entr
                 Kind::Chunk,
                 &id,
                 Expect::AtLeast(0),
-                None,
+                of_whole(&store::toc_chunk_id(c.chunk.id)),
             );
         }
     }

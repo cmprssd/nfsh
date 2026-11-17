@@ -126,6 +126,24 @@ pub fn toc_chunk_id(mut id: [u8; 16]) -> [u8; 16] {
     guid_order(id)
 }
 
+/// The SHA-1s bundles list for their copies of a chunk's end, by chunk id: they are the
+/// whole chunk's, of the stored bytes of the copy a `.toc` lists (docs/FORMATS.md,
+/// "Bundles"), so they are checked against the whole chunk.
+pub fn tail_sha1s(superbundles: &[Superbundle]) -> HashMap<[u8; 16], Vec<[u8; 20]>> {
+    let mut out: HashMap<[u8; 16], Vec<[u8; 20]>> = HashMap::new();
+    let chunks = superbundles
+        .iter()
+        .flat_map(|sb| &sb.bundles)
+        .flat_map(|b| &b.bundle.chunks);
+    for c in chunks.filter(|c| c.logical_offset > 0) {
+        let sha1s = out.entry(c.id).or_default();
+        if !sha1s.contains(&c.sha1) {
+            sha1s.push(c.sha1);
+        }
+    }
+    out
+}
+
 /// Every ebx of `superbundles` with where it is listed, in index order.
 fn each_ebx(superbundles: &[Superbundle]) -> impl Iterator<Item = (EbxRef, &Asset)> {
     superbundles.iter().zip(0..).flat_map(|(sb, s)| {

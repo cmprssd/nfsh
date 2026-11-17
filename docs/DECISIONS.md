@@ -1595,7 +1595,11 @@ The art zones' streamer (`ZoneStreamerEntityData` in `levels/mainlevel/worldart`
 
 - **Heat's SHA-1s are of an entry's stored bytes, as its archive holds them**, not of what
   they decompress to: 45 of 45 decompressed entries didn't match, 30 of 30 stored ones did
-  (ebx, res and chunks, both layers). A chunk only a `.toc` lists has none.
+  (ebx, res and chunks, both layers). **A bundle's copy of a chunk's end lists the whole
+  chunk's SHA-1**, of the stored bytes of the copy a `.toc` lists (206 of 206 sampled;
+  a first full verify that held tails to their own bytes failed 62,000 of them), so it is
+  checked against the whole chunk; a whole chunk no bundle names in part has none to
+  check.
 - **`nfsh verify` checks them for an install, and `nfsh import` on its first read of each
   entry, failing on a mismatch** (decided by Claude, pending review). Why: the import's
   byte-for-byte check only proves the copy matches the install; a damaged install would be

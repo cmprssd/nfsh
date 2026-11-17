@@ -113,7 +113,7 @@ The binary bundle is a size word, then (offsets from after the size word):
 | magic | `9D798ED6` |
 | total, ebx, res, chunk counts | total = ebx + res + chunks |
 | string table offset, metadata offset, metadata size | |
-| SHA-1 × total | entry order: ebx, res, chunks; each of the entry's stored (still compressed) bytes in its archive |
+| SHA-1 × total | entry order: ebx, res, chunks; each of the entry's stored (still compressed) bytes in its archive, but for a chunk with a logical offset, of the whole chunk's (the copy its `.toc` lists) |
 | ebx × ebx count | name offset, decompressed size |
 | res × res count | name offset, decompressed size |
 | res type × res count | hash of the type name (below) |
