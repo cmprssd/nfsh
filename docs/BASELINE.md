@@ -636,7 +636,8 @@ old store, different ones each time):
   threads leave behind; accepted (docs/DECISIONS.md).
 - **The same 1,280 reads (63.5 MiB) and `--shot` byte for byte 0.41.0's.**
 - **What is left warm:** the index's read and the names' strings (one allocation per
-  asset; fewer would mean a shared name table, a change to `Asset` everywhere), the
+  asset; sharing a text per bundle was tried and measured no faster, "The assets' names
+  shared per bundle"), the
   textures' decoding (zstd's assembly decoder) and the vertex buffers' staging.
 
 ### zstd built by clang, and the vertex buffers written in place (tried, not released)
@@ -786,6 +787,49 @@ Smaller rings, each against main in its own run (2026-11-17, the same method; th
   +75, +106 and +192 MiB. 64 MiB's four loads overlap main's (3 of 4 faster; the machine
   was noisier in that run); 128 MiB's all beat their pair, and 256 MiB's extra 86 MiB
   buys no more time, so **128 MiB is kept**.
+
+### The ground walked as its chunks come (0.60.0)
+
+In 0.41.0 the ground's walk (0.2 to 0.3 s cold) waited for the last of its tiles' reads
+(1.2 to 1.3 s after the meshes' reads). 0.60.0 reads the tiles' chunks on one thread in
+the packs' order and decompresses and walks them on another, each leaf drawn once its
+own chunk and its ancestors' have come, into a piece joined in the tree's order at the
+end; the read stage now prints how long the walk ran on after the last read (`ground
+tiles read … s, walked … s after`). Zone 494, loads alternating with 0.44.2 (nightq job
+2026-11-16-007, 2026-11-18, the PC idle; the first three warm pairs discarded; cold
+after reading 12 packs of the old store, different ones each time):
+
+| Zone 494 | Waiting for the ground, warm | Load, warm | Waiting for the ground, cold | Walked after the reads, cold | Load, cold | Peak working set |
+|---|---|---|---|---|---|---|
+| 0.44.2 | 0.0 s | 3.72, 3.62, 3.65, 3.72 s (median 3.69) | 1.0, 0.9 s | 0.2, 0.3 s | 21.71, 21.40 s | 2,021 to 2,025 MiB |
+| 0.60.0's change | 0.0 to 0.1 s | 3.72, 3.57, 3.79, 3.60 s (median 3.66) | 0.7, 0.7 s | 0.0 s | 21.19, 21.10 s | 2,012 to 2,027 MiB |
+
+- **Cold, 0.25 s less waiting for the ground** and both cold loads faster (0.4 s on
+  average): the walk now ends as the last chunk comes. What is left of the wait is the
+  tiles' reads themselves, behind the meshes' on the same disk.
+- **Warm, the same**: the walk ran 0.4 s after the (0.1 s) reads, as it did after them
+  before, and the read stage didn't wait on it either way.
+- **The same peak working set**, and the ground the same whatever order the chunks
+  come in (the leaves' squares and texels don't overlap).
+
+### The assets' names shared per bundle (PR #81, tried, not released)
+
+Opening the store made one `String` per asset's name (985,613, 85.6 MB). The branch
+kept each bundle's names in one shared text, each name a range of it (about three
+allocations per bundle instead of one per asset). Zone 494, loads alternating with
+0.44.2 (nightq job 2026-11-16-008, 2026-11-18, the PC idle; the first three warm pairs
+discarded; cold as above):
+
+| Zone 494 | Store opened, warm | Load, warm | Store opened, cold | Load, cold | Peak working set |
+|---|---|---|---|---|---|
+| 0.44.2 | 0.67, 0.62, 0.68, 0.71 s | 4.22, 4.19, 4.23, 4.30 s (median 4.23) | 1.95, 1.94 s | 21.49, 21.69 s | 2,022 to 2,023 MiB |
+| shared names | 0.66, 0.67, 0.65, 0.68 s | 4.58, 4.30, 4.60, 4.88 s (median 4.59) | 1.94, 1.97 s | 21.56, 21.53 s | 1,997 to 1,998 MiB |
+
+- **Opening the store is no faster**, warm or cold: the strings' allocations were not
+  what it waits on; reading the 0.16 GiB index is.
+- **Warm loads were slower**, every one of the seven against its pair (0.36 s on the
+  median), likely reading names through a range of a shared text in the hot lookups.
+- **25 MiB less at the peak** (1.2%), not worth a slower load. Closed with these numbers.
 
 ## The original's half
 

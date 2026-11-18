@@ -520,18 +520,34 @@ fn batch_len(locations: &[Location], limit: u64) -> usize {
 /// into one read ([`crate::cas::spans`]); those whose read failed are left out.
 fn read_spans(archives: &mut Archives, locations: impl IntoIterator<Item = Location>) -> Frames {
     let mut frames = Vec::new();
+    each_frame(archives, locations, |l, frame| {
+        frames.push((l, frame.to_vec()));
+        true
+    });
+    frames
+}
+
+/// Calls `f` on each stored frame at `locations` as its read ends, read as
+/// [`read_spans`] reads them; those whose read failed are left out. Stops when `f`
+/// returns false.
+fn each_frame(
+    archives: &mut Archives,
+    locations: impl IntoIterator<Item = Location>,
+    mut f: impl FnMut(Location, &[u8]) -> bool,
+) {
     for (span, members) in crate::cas::spans(locations, crate::cas::SPAN_GAP) {
         let Ok(bytes) = archives.span(span) else {
             continue;
         };
         for l in members {
             let from = (l.offset - span.offset) as usize;
-            if let Some(frame) = bytes.get(from..from + l.size as usize) {
-                frames.push((l, frame.to_vec()));
+            if let Some(frame) = bytes.get(from..from + l.size as usize)
+                && !f(l, frame)
+            {
+                return;
             }
         }
     }
-    frames
 }
 
 /// A store's entries, read and decompressed; one per thread.
@@ -560,6 +576,21 @@ impl Entries<'_> {
             .collect();
         let frames = read_spans(&mut self.archives, wanted);
         self.ahead.extend(frames);
+    }
+
+    /// Reads the entries at `locations` as [`Entries::prefetch`] does, but hands each
+    /// one's stored frames to `f` as its read ends, for [`Entries::read_stored`] on
+    /// another thread, rather than keeping them; stops when `f` returns false. A read
+    /// that fails leaves its entries out; an install reads nothing here.
+    pub fn stream(
+        &mut self,
+        locations: impl IntoIterator<Item = Location>,
+        f: impl FnMut(Location, &[u8]) -> bool,
+    ) {
+        if self.placed.is_some() {
+            return;
+        }
+        each_frame(&mut self.archives, locations, f);
     }
 
     /// Whether the entry at `location` has been read ahead and not forgotten.
@@ -2197,6 +2228,34 @@ mod tests {
                 assert_eq!(ring.held(), 0);
             }
         }
+
+        // Streamed, each entry's stored frames are handed over once, in the pack's
+        // order, and decode on another reader; one that can't be read is left out,
+        // and returning false stops the reads.
+        let mut streamed = Vec::new();
+        store.entries().unwrap().stream(
+            [at(0, e, c), at(1, 0, 4), at(0, 0, e), at(0, e, c)],
+            |l, frame| {
+                streamed.push((l, frame.to_vec()));
+                true
+            },
+        );
+        assert_eq!(
+            streamed.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+            [at(0, 0, e), at(0, e, c)]
+        );
+        let mut other = store.entries().unwrap();
+        let (l, frame) = &streamed[1];
+        assert_eq!(other.read_stored(*l, Some(frame)).unwrap(), [7; 5000]);
+        let mut first = 0;
+        store
+            .entries()
+            .unwrap()
+            .stream([at(0, e, c), at(0, 0, e)], |_, _| {
+                first += 1;
+                false
+            });
+        assert_eq!(first, 1);
 
         // Read ahead, the entries come from memory: the pack can be emptied. What
         // wasn't read ahead, or couldn't be, is read as asked, and fails.

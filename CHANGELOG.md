@@ -6,6 +6,16 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-11-18
+
+### Changed
+
+- The ground's tiles are walked as their chunks come off the disk, each leaf drawn once
+  its own chunk and its ancestors' have come, instead of after the last read: cold,
+  waiting for the ground falls from 0.95 to 0.7 s and zone 494 loads in 21.1 s instead
+  of 21.6 s; warm is the same, and the picture byte for byte the same
+  (docs/BASELINE.md, "The ground walked as its chunks come").
+
 ## [0.59.0] - 2026-11-18
 
 ### Added
