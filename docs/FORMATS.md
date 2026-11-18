@@ -914,7 +914,8 @@ square root, like the colour; no constant names it. In the programs that fetch t
 heightfield it comes from the ground's slope and a height map (a normal map's blue):
 the tyre tracks write √(1 − min(50 (1 − n_y), 1) · h), h the larger of their two
 normal maps' blues, n the ground's normal; the road cracks √(½ × their normal map's
-alpha). Likely an occlusion term, not confirmed. So the decals are drawn into the
+alpha). Likely an occlusion term, not confirmed; the layer shaders make it the same way
+("Shader programs", below). So the decals are drawn into the
 ground's own layer targets, its virtual texture pages (which the meshes read back
 through the `virtualTexture…` constants), not over the finished frame.
 
@@ -1030,8 +1031,9 @@ is `t_mega_grass_01_d`, 2 `t_field_base_03_d`, 4 shares 1's, 8 `drv_set3_clean_d
 `drv_set4_damage_d`, 9 `drv_set4_damage_d` and `drv_set1_full_damage_d`, 25
 `t_gravel_test_01_d`; some layers have two diffuse maps (3: sand footprints and sand
 waves; 13: forest slope and gravel). The road sets' `drv_…_d` maps are not plain
-colour (`drv_set3_clean_d` averages a purple, 105, 57, 139): their channels hold
-something else, not worked out. Layers 16, 17, 21 to 24, 27 and 31 to 38 have no
+colour (`drv_set3_clean_d` averages a purple, 105, 57, 139): their red goes into the
+colour and their green is the smoothness (`drv_set3_clean_d`'s red both), and no shader
+reads their blue ("Shader programs", below). Layers 16, 17, 21 to 24, 27 and 31 to 38 have no
 `__2d` shader (likely masks with nothing to draw); 30 has one but owns only the
 shared detail normal.
 
@@ -1044,8 +1046,10 @@ under Textures), red and green are the normal (their means within 0.06 of a half
 red along u and green along v *decreasing*: on all 17 BC1 maps the slopes' curl is
 1.05 to 1.96 times smaller that way. Besides them most layers own a far detail
 normal at a twentieth or less of their scale (`t_vrg_wheelerdam_rock_02_n`,
-`t_terrain_mid_distance_details_n`, BC1 4096²), and SMD maps (BC1 or BC7). How the
-far detail is laid over a layer's maps is under "Shader programs" below.
+`t_terrain_mid_distance_details_n`, BC1 4096²), and SMD maps (BC1 or BC7, 512² to
+2048²; 17 of them, in 29 layer and map pairs), whose red is the smoothness and green
+scales the global colour. How the far detail is laid over a layer's maps, and what each
+channel goes into, is under "Shader programs" below.
 
 **Tiling is not a constant**: no `__2d` block has a `Tiling` (other shaders do); a
 layer's tiling, tint and how the layers blend are compiled into the shaders'
@@ -1108,8 +1112,8 @@ whole. On the normal map, its red and green go over the normal map's red and gre
 on the diffuse, one of its channels goes over all three of the colour's: green, but
 blue for mega grass in layer 1 (in layers 2 and 6 blue is a mask hiding the turned
 copy's repeats). The channel is the resource's swizzle (a sample written to `.zw` from
-`t6.zwyx` reads green and red). The same overlay lays the far detail over the SMD maps
-and a macro colour, which nfsh does not draw. `frostbite::dxbc` finds every such
+`t6.zwyx` reads green and red). The same overlay lays the far detail over the global
+colour where an SMD map's green has scaled it (below), never over the smoothness. `frostbite::dxbc` finds every such
 overlay (the base's textures, the blend's texture, scale and channel, the strength),
 and `frostbite::layers` keeps, for each of a layer's textures, the far detail every
 shader with the layer overlays on it: across the 282 shaders there is one, at one
@@ -1131,6 +1135,40 @@ layers it is gentle; among all layers:
 store test in `layers` pins some of them.) Layer 11 has none; 5, 10, 26, 28 and 29
 overlay theirs on the normal map only; the road sets' normal maps take another road
 set's at 0.02 (not drawn: nfsh draws no road-set layer).
+
+**What each channel goes into** (worked out on 2026-11-18 from all 282 `__2d` programs;
+`layers::Texture::channels` reads it with `dxbc::output_sources`, which follows both
+arms of a program's `if`s, and a store test checks it). A program's layers are each
+drawn in an `if` on the layer's weight (zeros when it is under 0.01), adding the
+weighted normal, colour, smoothness and target 1's value; the targets are packed as the
+decals' are ("Terrain decals", above). Across the programs:
+
+- **An SMD map**: red is the **smoothness** (target 2's y), raw on `46M_46V`'s layers 1
+  and 2, halved on its layer 6; green **scales the global colour** before it is mixed into
+  the layer's colour: on layer 1 (mega grass, read `t6.zwyx`) the global colour (t7,
+  squared) times green, overlaid with the far detail's blue (rock at 0.02, whole),
+  mixed 40% into the overlaid grass; on layers 2 and 6 the global colour times
+  ½ + ½ × green, mixed 30% and 40%. **Blue and alpha are read by no program** (on all
+  29 layer and map pairs). Where a layer samples two copies (turned and direct, or two
+  maps), their SMD reds and greens are mixed by the far detail's blue, as the colours
+  are, and the far detail is never overlaid on the smoothness.
+- **Target 1's value**: 1 where the ground is steep, and on level ground (a smooth step
+  of 20 or 100 × (1 − n_y), n the heightfield's normal) a height: the layer's normal
+  map's blue (layers 2 and 6: 1 − f (1 − b), f the level-ground step), a sharpened mix
+  of the far detail's blue and the normal map's (layer 1: a smooth step of
+  5 (sat(2 × far − 0.6)(0.6 + 0.4 b) − 0.35)), or on layers 12, 14, 15, 19 and 20 half
+  the SMD map's green, laid over the far detail's blue at 0.3 (`4001002M_4001002V`'s
+  layer 12: ½g (0.7 + 0.6 × far)). It is stored as its square root, like the colour.
+  Likely the ground's occlusion (low ground and cavities darker); not confirmed.
+- **A normal map**: red and green the normal; blue a height, which mostly weights the
+  layers against each other (it reaches every target, `Use::Weight`) and on mega grass
+  and the field bases gives target 1's value.
+- **A diffuse map**: red, green and blue the colour; a road set's red the colour and
+  green the smoothness. The golf green's overlay's red and green go into the normal,
+  its blue into the smoothness.
+
+nfsh draws the colour and the normal; it does not draw the smoothness or target 1's
+value yet.
 
 ## Meshes
 

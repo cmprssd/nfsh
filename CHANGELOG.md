@@ -6,6 +6,18 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-11-18
+
+### Added
+
+- What each channel of the terrain layers' textures goes into, read from all 282
+  layer programs: an SMD map's red is the smoothness and its green scales the global
+  colour (and in five layers gives target 1's value); no program reads its blue or
+  alpha. A normal map's blue is a height that weights the layers or gives target 1's
+  value, and a road set's diffuse green is its smoothness. Tracing an output now
+  follows both arms of a program's branches, so each program's first layer counts
+  (docs/FORMATS.md, "Shader programs"). A store test checks them.
+
 ## [0.62.0] - 2026-11-18
 
 ### Added

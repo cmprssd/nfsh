@@ -21,6 +21,9 @@ const ADD: u32 = 0x00;
 const DP2: u32 = 0x0F;
 const DP3: u32 = 0x10;
 const DP4: u32 = 0x11;
+const ELSE: u32 = 0x12;
+const ENDIF: u32 = 0x15;
+const IF: u32 = 0x1F;
 const LD: u32 = 0x2D;
 const LT: u32 = 0x31;
 const MAD: u32 = 0x32;
@@ -468,7 +471,7 @@ fn slots(code: &[Instruction], at: usize, register: u32, c: u8) -> BTreeSet<u32>
     let Some(d) = definition(code, at, register, c) else {
         return BTreeSet::new();
     };
-    trace(code, d, c, sampled_slot)
+    trace(code, d, c, sampled_slot, false)
         .into_iter()
         .filter_map(|s| match s {
             Source::Texture { slot, .. } => Some(slot),
@@ -488,13 +491,14 @@ pub enum Source {
 
 /// The textures' channels and the inputs component `c` (x = 0 … w = 3) of output
 /// `o<register>` is computed from, as the program leaves it: through every
-/// instruction before its last write (ignoring branches), not through a texture
+/// instruction before its last write, both arms of an `if` (a layer's work is
+/// skipped where its weight is small, zeros written instead), not through a texture
 /// read's coordinates. Constants and literals are left out; empty when the program
 /// never writes it.
 pub fn output_sources(code: &[Instruction], register: u32, c: u8) -> BTreeSet<Source> {
     code.iter()
         .rposition(|i| i.writes_as(Kind::Output, register, c))
-        .map(|d| trace(code, d, c, read_slot))
+        .map(|d| trace(code, d, c, read_slot, true))
         .unwrap_or_default()
 }
 
@@ -597,12 +601,14 @@ fn read_slot(i: &Instruction) -> Option<u32> {
 }
 
 /// What component `c` of the value the instruction at `at` writes is computed from,
-/// a texture read being one `reads` names a slot for.
+/// a texture read being one `reads` names a slot for; through every write that can
+/// reach a read when `arms`, else only the last one before it.
 fn trace(
     code: &[Instruction],
     at: usize,
     c: u8,
     reads: fn(&Instruction) -> Option<u32>,
+    arms: bool,
 ) -> BTreeSet<Source> {
     let mut out = BTreeSet::new();
     let mut seen = std::collections::HashSet::new();
@@ -628,6 +634,11 @@ fn trace(
             for &k in read {
                 let k = o.components[k as usize];
                 match o.kind {
+                    Kind::Temp if arms => todo.extend(
+                        definitions(code, d, o.register, k)
+                            .into_iter()
+                            .map(|e| (e, k)),
+                    ),
                     Kind::Temp => todo.extend(definition(code, d, o.register, k).map(|e| (e, k))),
                     Kind::Input => {
                         out.insert(Source::Input {
@@ -646,6 +657,33 @@ fn trace(
 /// The last instruction before `at` writing component `c` of temporary `register`.
 fn definition(code: &[Instruction], at: usize, register: u32, c: u8) -> Option<usize> {
     code[..at].iter().rposition(|i| i.writes(register, c))
+}
+
+/// Every instruction before `at` whose write of component `c` of temporary
+/// `register` can reach it: the last one on each way through the `if`/`else`/`endif`
+/// blocks before it (loops are stepped over, as if run once).
+fn definitions(code: &[Instruction], at: usize, register: u32, c: u8) -> BTreeSet<usize> {
+    let mut reaching = BTreeSet::new();
+    // For each open `if`: what reached it, and what reached the end of its first arm.
+    let mut open: Vec<(BTreeSet<usize>, Option<BTreeSet<usize>>)> = Vec::new();
+    for (k, i) in code[..at].iter().enumerate() {
+        match i.opcode {
+            IF => open.push((reaching.clone(), None)),
+            ELSE => {
+                if let Some((before, first)) = open.last_mut() {
+                    *first = Some(std::mem::replace(&mut reaching, before.clone()));
+                }
+            }
+            ENDIF => {
+                if let Some((before, first)) = open.pop() {
+                    reaching.extend(first.unwrap_or(before));
+                }
+            }
+            _ if i.writes(register, c) => reaching = BTreeSet::from([k]),
+            _ => {}
+        }
+    }
+    reaching
 }
 
 /// Whether component `c` of `register` at `at` is the world position: written from
@@ -978,6 +1016,51 @@ pub(crate) mod tests {
 
     /// An output's sources follow its value back through temporaries to the texture
     /// channels and inputs it is made from, not to a read's coordinates.
+    #[test]
+    fn traces_an_output_through_both_arms_of_a_branch() {
+        let sample = |r, slot| {
+            ins(
+                0x45,
+                &[
+                    op::dest(r, 1),
+                    op::input(1, [0, 1, 0, 0]),
+                    op::texture(slot),
+                    op::sampler(0),
+                ],
+            )
+        };
+        let zero = ins(0x36, &[op::dest(1, 1), op::literal([0.0; 4])]);
+        let code = parse(&res(&[
+            // r1.x = t9.r, overwritten on both ways below: not a source
+            sample(1, 9),
+            // if v1.x: r1.x = t3.r, else r1.x = 0 (a layer skipped)
+            ins(IF, &[op::input(1, [0, 0, 0, 0])]),
+            sample(1, 3),
+            ins(ELSE, &[]),
+            zero,
+            ins(ENDIF, &[]),
+            // if v1.y: r1.x += t4.r, no else: the sum or what came before
+            ins(IF, &[op::input(1, [1, 1, 1, 1])]),
+            sample(2, 4),
+            ins(
+                ADD,
+                &[
+                    op::dest(1, 1),
+                    op::temp(1, [0, 0, 0, 0]),
+                    op::temp(2, [0, 0, 0, 0]),
+                ],
+            ),
+            ins(ENDIF, &[]),
+            ins(0x36, &[op::output(2, 2), op::temp(1, [0, 0, 0, 0])]),
+        ]))
+        .unwrap();
+        let texture = |slot| Source::Texture { slot, channel: 0 };
+        assert_eq!(
+            output_sources(&code, 2, 1),
+            BTreeSet::from([texture(3), texture(4)])
+        );
+    }
+
     #[test]
     fn traces_an_output_to_texture_channels_and_inputs() {
         let code = parse(&res(&[
