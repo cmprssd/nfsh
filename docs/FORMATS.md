@@ -387,8 +387,9 @@ texture is t3 and:
   the blue and alpha are masks (zero on 64% and 60% of texels); in
   `drv_l_roadlines_01_d` the red is near white (214) and the alpha the stripes (45%
   on). The skid marks' material sets `diffuseRGBAOpacity` and `VertexColorOpacity`
-  true. nfsh still weighs all four channels by the selector (red for cracks, green for
-  lines), so its decals cover more than the game's.
+  true. nfsh draws the coverage so (without the vertex and dirt terms); on the
+  speedway (zone 495) 77 of 130 decals turn `diffuseRGBAOpacity` on, 67 of them
+  weighing the blue alone.
 - **t7**, which no block binds, holds a dirt amount (red) and a puddle height scale
   (green). Programs 433 and 442, the last two read, are one program but for it: 433
   samples it at a fixed point, (0, 0), 442 at the mesh's first coordinates, with the

@@ -397,6 +397,8 @@ pub struct Material {
     pub textures: Vec<TextureParameter>,
     /// Each vector parameter's name and value (a scalar is in `x`, a colour in `xyz`).
     pub vectors: Vec<(String, [f32; 4])>,
+    /// Each boolean parameter's name and value.
+    pub bools: Vec<(String, bool)>,
 }
 
 impl Material {
@@ -408,6 +410,12 @@ impl Material {
     /// The value of the vector parameter `name`, if the material sets it.
     pub fn vector(&self, name: &str) -> Option<[f32; 4]> {
         Some(self.vectors.iter().find(|v| v.0 == name)?.1)
+    }
+
+    /// Whether the boolean parameter `name` is set and true (shaders default them to
+    /// false).
+    pub fn bool(&self, name: &str) -> bool {
+        self.bools.iter().any(|b| b.0 == name && b.1)
     }
 }
 
@@ -466,6 +474,17 @@ pub fn materials(p: &Partition) -> Result<Vec<Material>> {
                 material
                     .vectors
                     .push((parameter_name(p, v)?, [x?, y?, z?, w?]));
+            }
+        }
+        if field(p, shader, "BoolParameters")?.is_some() {
+            for b in elements(p, shader, "BoolParameters")? {
+                let Value::Struct(b) = b else {
+                    bail!("{}: a bool parameter is {b:?}", p.name);
+                };
+                let Some(Value::Bool(value)) = field(p, b, "Value")? else {
+                    bail!("{}: a bool parameter has no Bool Value", p.name);
+                };
+                material.bools.push((parameter_name(p, b)?, value));
             }
         }
         materials.push(material);
@@ -980,6 +999,7 @@ mod tests {
                     shader: None,
                     textures: vec![param("Mask", None)],
                     vectors: vec![],
+                    bools: vec![],
                 },
                 Material {
                     shader: Some(shader),
@@ -988,6 +1008,7 @@ mod tests {
                         param("Normal", Some(normal))
                     ],
                     vectors: vec![("Tint".to_owned(), [0.2, 0.3, 0.4, 1.0])],
+                    bools: vec![],
                 },
             ]
         );

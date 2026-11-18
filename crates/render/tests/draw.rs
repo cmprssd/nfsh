@@ -334,13 +334,13 @@ fn asphalt_shows_its_damaged_layer_where_the_mask_is_dark() {
 #[test]
 fn decals_blend_over_what_is_under_them() {
     let blue_paint = |opacity| Shading::Decal {
-        select: [1.0, 0.0, 0.0, 0.0],
+        select: [0.0, 1.0],
         opacity,
         colour: Some([0.0, 0.0, 1.0]),
     };
     let (plain, _) = middle_of(|g| vec![grey(g)], |_| unreachable!());
     // Listed before the road it lies on, a decal is still drawn over it: half blue
-    // paint (the texture's red, weighted by select, times the opacity) over grey,
+    // paint (the texture's alpha, weighted by select, times the opacity) over grey,
     // blended in linear light (half of 213 in sRGB is 156).
     let (m, missing) = middle_of(
         |g| vec![textured(1, blue_paint(0.5))(g), grey(g)],
@@ -357,7 +357,7 @@ fn decals_blend_over_what_is_under_them() {
         |_| Ok(bc1(0x37, RED)),
     );
     assert!(m[0] < 5 && m[2] > 100, "middle {m:?}");
-    // Where the selected channel is 0, nothing shows.
+    // Where the selected alpha is 0, nothing shows.
     let (m, _) = middle_of(
         |g| vec![grey(g), textured(1, blue_paint(1.0))(g)],
         |_| Ok(bc1(0x39, CLEAR)),

@@ -24,7 +24,8 @@ var<immediate> push: Push;
 struct Look {
     // Multiplies the colour; w = 1: the texture's red as grey.
     tint: vec4<f32>,
-    // A decal's opacity: the texture's channels weighted by this, times opacity.x.
+    // A decal's opacity: the texture's blue and alpha weighted by select.xy,
+    // times opacity.x.
     select: vec4<f32>,
     opacity: vec4<f32>,
     // What a decal's texture's red is multiplied by: this when w = 1, else the vertex
@@ -211,7 +212,7 @@ fn fs_cutout(in: Out) -> @location(0) vec4<f32> {
 @fragment
 fn fs_decal(in: Out) -> @location(0) vec4<f32> {
     let c = textureSample(colour, filtered, in.uv);
-    let alpha = saturate(dot(c, look.select)) * look.opacity.x * in.vertex_colour.r;
+    let alpha = saturate(dot(c.ba, look.select.xy)) * look.opacity.x * in.vertex_colour.r;
     let paint = c.r * select(in.vertex_colour.rgb, look.colour.rgb, look.colour.w > 0.5);
     return shade(in.world, mapped(in), paint, alpha);
 }

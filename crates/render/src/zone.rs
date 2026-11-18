@@ -80,7 +80,7 @@ impl Pass {
 struct Look {
     /// Multiplies the colour; `w` is 1 when the colour is the texture's red as grey.
     tint: [f32; 4],
-    /// A decal's opacity: the texture's channels weighted by this…
+    /// A decal's opacity: the texture's blue and alpha weighted by this's `x` and `y`…
     select: [f32; 4],
     /// …times `opacity[0]`.
     opacity: [f32; 4],
@@ -162,7 +162,7 @@ impl Look {
                 opacity,
                 colour,
             } => {
-                look.select = select;
+                look.select = [select[0], select[1], 0.0, 0.0];
                 look.opacity[0] = opacity;
                 if let Some(c) = colour {
                     look.colour = [c[0], c[1], c[2], 1.0];
