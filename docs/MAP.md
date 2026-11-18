@@ -46,7 +46,7 @@ Every reader is bounds-checked and returns `Error`; none panics. Formats are des
 - `ebx.rs`: ebx partitions, types, instances, fields, arrays, references.
 - `mesh.rs`: RigidMesh/CompositeMesh assets, MeshSetResource, LOD chunks.
 - `texture.rs`: texture res header, block-compressed mips and layers, material references.
-- `terrain.rs`: terrain quadtree tiles, layer records and their cells, outlines, surface map and its physics materials, heightfields, height bounds, coarse heights, colour, finer chunks,
+- `terrain.rs`: terrain quadtree tiles, layer records and their cells, outlines, surface map and its physics materials, heightfields and their edges, height bounds, coarse heights, colour, finer chunks,
   ground mesh, the level's ground height grid.
 - `layers.rs`: terrain layer tree, per-layer textures and shader bindings.
 - `scatter.rs`: terrain scattering (VisualResource), each layer's meshes and their settings.

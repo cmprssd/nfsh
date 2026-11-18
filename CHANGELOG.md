@@ -6,6 +6,17 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-11-18
+
+### Added
+
+- How the terrain's tiles join where detail changes is read (docs/FORMATS.md,
+  "Terrain", "Where detail changes"; `Heightfield::edge`, `terrain::edge_gap`): with
+  each leaf at its finest (its finer chunk's heights when it has them), a tile's edge
+  next to a larger tile lies on the larger edge's straight lines, within 2 units
+  (1/16 m) on 252 of 278 edges and within 5 on all but 2, so a crack there is at most
+  a few centimetres. A store test checks every edge.
+
 ## [0.58.0] - 2026-11-18
 
 ### Added

@@ -736,6 +736,31 @@ every sample, 61 differ by at most 2 units (1/16 m) on a few dozen samples, and 
 differ only where one of them has a hole. The heights of every leaf also span exactly
 its node's y range in the node tree. A store test checks the first rule on every pair.
 
+**Where detail changes** (worked out on 2026-11-18; `Heightfield::edge` and
+`terrain::edge_gap` read it, a store test checks it): a tile next to a larger one
+shares its edge with only part of the larger tile's edge, at twice (or four times)
+its detail. The tiles are made so the **finer edge lies on the coarser edge's straight
+lines** when each leaf is taken at its finest, its finer chunk's quadrants when it
+has heights there: taken that way, Palm City's leaf heightfields are 7,469 squares
+of 64 to 4,096 m, and across their edges
+- the 14,554 between squares of one size agree sample for sample (within 2 units);
+- of the 278 between squares of two sizes (128 against 256 m, 256 against 512 m, a few
+  128 against 512 m), every finer sample is within 2 units of the line between the
+  coarser edge's samples either side (the shared ones of the samples) on 252, within
+  5 units (0.16 m) on 24, and further on 2 (14.5 and 42 units, each at a single
+  sample);
+- 33 edges have a hole on one side and were left out.
+
+So a crack where detail changes is at most a few units wide, and moving the finer
+side's in-between vertices onto the coarser edge's lines closes it without changing
+the shape. Taken at their own heights alone (the finer chunks left out), the 317
+edges between sizes still agree at every shared sample (within 2 units), but on 125 the in-between
+samples leave the line, by up to 94 units (2.9 m): on 95 of those the coarser tile
+has a finer chunk whose heights match the edge sample for sample, and the 30 others
+are off by 1 to 5 units, one by 42. What Heat itself does at those edges (moves the
+vertices, draws a skirt, or only draws the finest detail there) is not known; the
+data only shows that drawing every leaf at its finest needs nothing more.
+
 **The ground height grid** (worked out on 2026-11-17; `terrain::GroundHeights` reads
 it, a store test checks it) lies outside the streaming tree, in the level's ebx
 `levels/mainlevel/default`: a `GroundHeightEntityData` whose `Data`
