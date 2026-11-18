@@ -1656,3 +1656,16 @@ the coarser side's left the coarser side's straight lines, by up to 2.9 m (docs/
 - **The finer chunks' heights are not drawn**: drawing every leaf at its finest would
   also close the cracks (the data are made for it), but is new drawn data; that is the
   owner's call.
+
+## 2026-11-18: what the layer textures' channels go into (decided by Claude, pending review)
+
+- **Read from the programs, not the pixels**: a channel's use is the layer targets its
+  value reaches (`dxbc::output_sources`), across every shader with the layer. Why: the
+  programs say what a channel *is for*; the pixels of BC1 and BC7 maps say only what
+  it holds, and the blue and alpha no program reads don't matter for drawing.
+- **Both arms of a branch**, for `output_sources` only: each layer is drawn in an `if`
+  on its weight, with zeros in the `else`, so the last write alone missed every
+  program's first layer. The scale and overlay finders keep the last write, so the
+  scales and far details already pinned do not move.
+- **A channel reaching the coverage is a weight, and only that**: it reaches every
+  target, so its other uses can't be told apart.

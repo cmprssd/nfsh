@@ -1135,6 +1135,7 @@ mod tests {
             name: format!("textures/{name}"),
             scale,
             far: None,
+            channels: Default::default(),
         };
         let textures = BTreeMap::from([
             (1, vec![d("grass_d", Some(0.2)), d("grass_n", Some(0.2))]),

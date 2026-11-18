@@ -151,6 +151,42 @@ pub struct Texture {
     pub scale: Option<f32>,
     /// The far detail overlaid on it, the same in every shader with the layer.
     pub far: Option<Far>,
+    /// What the shaders with the layer make of each of its channels (red to alpha),
+    /// across all of them; empty for a channel none reads. On an SMD map red is the
+    /// smoothness and green goes into the colour (and in a few layers the value).
+    pub channels: [BTreeSet<Use>; 4],
+}
+
+/// What a layer shader makes of a texture's channel: which of the ground's layer
+/// targets it goes into (see docs/FORMATS.md, "Terrain decals", for their packing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Use {
+    /// The normal (target 0's x, target 1's x and z).
+    Normal,
+    /// The colour (target 0's y and z, target 2's x and z).
+    Colour,
+    /// Target 1's value (its y), likely an occlusion term.
+    Value,
+    /// The smoothness (target 2's y).
+    Smoothness,
+    /// The coverage every target is multiplied by (their alpha): a layer's weight or
+    /// mask, which hides the channel's other uses.
+    Weight,
+}
+
+impl Use {
+    /// What component `c` of the layer target `o<register>` holds; none past the
+    /// third target (the fourth holds zeros and the coverage).
+    fn of_target(register: u32, c: u8) -> Option<Use> {
+        Some(match (register, c) {
+            (0..=2, 3) => Use::Weight,
+            (0, 0) | (1, 0) | (1, 2) => Use::Normal,
+            (0, _) | (2, 0) | (2, 2) => Use::Colour,
+            (1, 1) => Use::Value,
+            (2, 1) => Use::Smoothness,
+            _ => return None,
+        })
+    }
 }
 
 /// A texture's sample overlaid on a layer's map ([`dxbc::Overlay`]): a far detail.
@@ -219,6 +255,22 @@ pub fn textures(store: &Store) -> Result<BTreeMap<u16, Vec<Texture>>> {
                                 strength: f32::from_bits(strength),
                             })
                         }),
+                        channels: with().filter_map(|by| by.uses.get(t)).fold(
+                            Default::default(),
+                            |mut all: [BTreeSet<Use>; 4], uses| {
+                                for (a, u) in all.iter_mut().zip(uses) {
+                                    a.extend(u);
+                                }
+                                // A weight reaches every target: its other uses can't
+                                // be told apart.
+                                for a in &mut all {
+                                    if a.contains(&Use::Weight) {
+                                        *a = BTreeSet::from([Use::Weight]);
+                                    }
+                                }
+                                all
+                            },
+                        ),
                     }
                 })
                 .collect();
@@ -247,9 +299,11 @@ fn common_far<'a>(mut shaders: impl Iterator<Item = &'a [Candidate]>) -> Option<
 struct Sampled {
     /// The scales they sample it at…
     scales: HashMap<u32, Vec<Scale>>,
-    /// …and the far details they overlay on it: another texture's sample at a direct
-    /// scale.
+    /// …the far details they overlay on it: another texture's sample at a direct
+    /// scale…
     overlays: HashMap<u32, Vec<Candidate>>,
+    /// …and what they make of each of its channels.
+    uses: HashMap<u32, [BTreeSet<Use>; 4]>,
 }
 
 /// For each of `shaders`, what its programs do with its textures.
@@ -293,6 +347,22 @@ fn sampled(store: &Store, shaders: &[Shader], db: &ShaderDb) -> Result<Vec<Sampl
                     .entry(b.texture)
                     .or_default()
                     .extend(dxbc::sample_scales(program, b.slot));
+            }
+            for register in 0..3 {
+                for c in 0..4 {
+                    let Some(u) = Use::of_target(register, c) else {
+                        continue;
+                    };
+                    for source in dxbc::output_sources(program, register, c) {
+                        let dxbc::Source::Texture { slot, channel } = source else {
+                            continue;
+                        };
+                        for b in block.iter().filter(|b| b.slot == slot) {
+                            let uses = by.uses.entry(b.texture).or_default();
+                            uses[channel as usize & 3].insert(u);
+                        }
+                    }
+                }
             }
             for o in dxbc::overlays(program) {
                 let (Some(blend), Some(Scale::Direct(scale))) =
@@ -558,5 +628,56 @@ mod tests {
             }
         }
         assert_eq!(both, 22);
+        // What the shaders make of each channel (counted on the owner's store,
+        // 2026-11-18): an SMD map's red is the smoothness, its green goes into the
+        // colour (and in three layers target 1's value), and no shader reads its blue
+        // or alpha.
+        use Use::{Colour, Normal, Smoothness, Value, Weight};
+        let channels = |layer: u16, name: &str| {
+            diffuse[&layer]
+                .iter()
+                .find(|d| d.name.ends_with(name))
+                .unwrap()
+                .channels
+                .clone()
+                .map(|c| c.into_iter().collect::<Vec<_>>())
+        };
+        assert_eq!(
+            channels(1, "t_mega_grass_01_smd"),
+            [vec![Smoothness], vec![Colour], vec![], vec![]]
+        );
+        assert_eq!(
+            channels(12, "t_everglades_pinerocklands_01_smd"),
+            [vec![Smoothness], vec![Colour, Value], vec![], vec![]]
+        );
+        let mut smd = 0;
+        for d in diffuse.values().flatten().filter(|d| d.name.ends_with("_smd")) {
+            let [r, g, b, a] = &d.channels;
+            assert!(r.iter().all(|u| *u == Smoothness), "{}", d.name);
+            assert!(g.iter().all(|u| [Colour, Value].contains(u)), "{}", d.name);
+            assert!(b.is_empty() && a.is_empty(), "{}", d.name);
+            smd += 1;
+        }
+        assert_eq!(smd, 29);
+        // A normal map's red and green are the normal; its blue a height, which
+        // weights the layers or gives target 1's value.
+        assert_eq!(
+            channels(2, "t_field_base_03_n"),
+            [vec![Normal], vec![Normal], vec![Value], vec![]]
+        );
+        assert_eq!(
+            channels(6, "t_burnforestground_01_n"),
+            [vec![Normal], vec![Normal], vec![Weight], vec![]]
+        );
+        // A diffuse map's red, green and blue are the colour; but a road set's green
+        // is its smoothness.
+        assert_eq!(
+            channels(2, "t_field_base_03_d"),
+            [vec![Colour], vec![Colour], vec![Colour], vec![]]
+        );
+        assert_eq!(
+            channels(8, "drv_set4_damage_d"),
+            [vec![Colour], vec![Smoothness], vec![], vec![]]
+        );
     }
 }
