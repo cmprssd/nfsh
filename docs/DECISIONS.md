@@ -1712,3 +1712,33 @@ Follows "The road textures' greys are linear" (2026-11-06), which left the near 
   and tyre tint move the speedway's road little (0.159 after the layers, 0.162 after
   all). LOD 1's program (`rd_drv_basesurface_lod1`) writes its bake's colour as it
   stands when dry, as nfsh draws it.
+
+## 2026-11-18: No lighter line where a road gives way to the ground (decided by Claude, pending review)
+
+Follows "The near road and its bake agree" above. A faint lighter line had been noted
+where a road mesh ends over the ground in zone 495; the plan was to tell which side it
+sits on (the road's share fading to the ground's colour, the ground mesh under it, or
+the shoulder atlas's sampling) with a throwaway build writing one term to a channel.
+
+- **No change: main draws no such line**, so there is no term to tell apart. Measured
+  on headless shots from main (0.66.0's build), midday:
+  - `road-edge` (3739,82.5,2978,20,-60): luminance averaged across the edge along all
+    720 rows (each row aligned on its first green pixel) is 0.58 on the asphalt up to
+    the edge (within 1.5%), falls to the grass's 0.48 within 2 to 4 pixels, and stays
+    there out to 20 pixels; no lighter step on either side. 0.59.0's history render of
+    the view measures the same.
+  - `pipe` (3815,90,3030,40,-20), the right edge: the grass is 0.44 from the first
+    pixel out to 80 pixels (140 rows averaged); no band.
+  - A fine high-pass (Gaussian 0.8 less 4 pixels) of both edges in `pipe` and a coarse
+    one of `road-edge` show no line in the grass, where the road mesh's outer triangles
+    end: there the road draws `ground_under` with the ground map's normal, and it
+    matches the ground mesh beside it. The light band a coarse high-pass shows on the
+    asphalt side is the filter's own overshoot at a step, absent in the plain profile.
+  - The lighter strip beyond the painted edge line in `pipe` and `track-low` is the
+    asphalt's own shoulder, inside the road's share (the shoulder atlas's blue), not
+    where the mesh ends.
+- **What would bring it back**: the road blends into nfsh's own ground (its map's colour
+  and normal), where the game blends into its terrain virtual texture, squared (FORMATS
+  "Asphalt", step 5). If the ground's drawing changes and the map does not follow, the
+  road mesh's outer band would differ from the ground beside it; the `road-edge` profile
+  above is the check.

@@ -8,7 +8,7 @@ checked against the original game's files, and how the work itself is run.
 charts, are on the [progress page](#progress-page).
 
 <!-- progress:asof -->
-Numbers in the generated parts below are as of 2026-11-18 (103 merged PRs), counted by
+Numbers in the generated parts below are as of 2026-11-18 (104 merged PRs), counted by
 `scripts/progress.py`.
 <!-- /progress -->
 The hand-written parts give their own dates.
@@ -118,7 +118,7 @@ Rules that shape it:
   result, with a recommendation. Choices that come up mid-build are made by Claude,
   marked *decided by Claude, pending review* in DECISIONS.md, and listed in the PR.
   <!-- progress:process -->
-  So far: 69 decision entries, 11 chosen by the owner, 34 made by Claude for review.
+  So far: 70 decision entries, 11 chosen by the owner, 35 made by Claude for review.
   <!-- /progress -->
 - **$0 development.** No GitHub Actions: `.local-ci` runs on this machine (format, shell
   and Python syntax, this overview's numbers, a build of exactly the committed tree, then
@@ -136,8 +136,8 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-104 commits, 103 merged PRs from 2026-10-30 to 2026-11-18, on 17 working days: 64 feat,
-19 docs, 10 fix, 7 perf, 2 ci, 1 The. About 49,290 lines added and 3,548 removed; 88
+105 commits, 104 merged PRs from 2026-10-30 to 2026-11-18, on 17 working days: 64 feat,
+20 docs, 10 fix, 7 perf, 2 ci, 1 The. About 49,320 lines added and 3,548 removed; 88
 tracked files.
 
 ```mermaid
@@ -145,7 +145,7 @@ xychart-beta
     title "PRs merged per working day"
     x-axis ["Oct 30", "Oct 31", "Nov 1", "Nov 2", "Nov 3", "Nov 6", "Nov 7", "Nov 9", "Nov 10", "Nov 11", "Nov 12", "Nov 13", "Nov 14", "Nov 15", "Nov 16", "Nov 17", "Nov 18"]
     y-axis "PRs" 0 --> 17
-    bar [1, 13, 15, 6, 3, 3, 3, 1, 3, 2, 5, 3, 2, 12, 7, 11, 13]
+    bar [1, 13, 15, 6, 3, 3, 3, 1, 3, 2, 5, 3, 2, 12, 7, 11, 14]
 ```
 <!-- /progress -->
 
