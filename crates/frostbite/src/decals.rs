@@ -3,8 +3,12 @@
 //! entity's `DecalsResource` names (see docs/FORMATS.md, "Terrain decals").
 //! Little-endian, packed with no alignment.
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use crate::ebx::name_hash;
 use crate::mesh::half;
 use crate::reader::Reader;
+use crate::shaderdb::{self, ShaderDb};
 use crate::store::Store;
 use crate::{Error, Result, bail};
 
@@ -59,6 +63,14 @@ pub struct Decal {
     pub indices: Vec<u32>,
 }
 
+/// A texture a decal's shader binds: its slot (the `t` register its program samples
+/// it from) and its ebx name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Bound {
+    pub slot: u32,
+    pub name: String,
+}
+
 /// A decal vertex.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vertex {
@@ -103,6 +115,59 @@ impl Decals {
             })
             .collect::<Result<_>>()?;
         Ok(Self { decals })
+    }
+
+    /// Every shader the decals name, in name order, with the textures the shader
+    /// database binds for it in slot order, each once. A shader the database lacks
+    /// is left out, and so is a texture `names` cannot name.
+    pub fn bindings(
+        &self,
+        db: &ShaderDb,
+        names: &HashMap<u32, String>,
+    ) -> BTreeMap<String, Vec<Bound>> {
+        self.shaders()
+            .into_iter()
+            .filter(|s| {
+                db.permutations_of(name_hash(&s.to_lowercase()))
+                    .next()
+                    .is_some()
+            })
+            .map(|s| {
+                let bound: BTreeSet<Bound> = db
+                    .textures(name_hash(&s.to_lowercase()))
+                    .filter_map(|b| {
+                        Some(Bound {
+                            slot: b.slot,
+                            name: names.get(&b.texture)?.clone(),
+                        })
+                    })
+                    .collect();
+                (s.to_string(), bound.into_iter().collect())
+            })
+            .collect()
+    }
+
+    /// [`Decals::bindings`] from Palm City's shader database, the textures named
+    /// by the store's ebx.
+    pub fn textures(&self, store: &Store) -> Result<BTreeMap<String, Vec<Bound>>> {
+        let db = ShaderDb::read(store)?;
+        let wanted: BTreeSet<u32> = self
+            .shaders()
+            .iter()
+            .flat_map(|s| db.textures(name_hash(&s.to_lowercase())))
+            .map(|b| b.texture)
+            .collect();
+        Ok(self.bindings(&db, &shaderdb::texture_names(store, &wanted)))
+    }
+
+    /// The shaders the decals name, each once.
+    fn shaders(&self) -> BTreeSet<&str> {
+        self.decals
+            .iter()
+            .flat_map(|d| &d.textures)
+            .filter(|s| !s.is_empty())
+            .map(String::as_str)
+            .collect()
     }
 
     /// Reads Palm City's decals from `store`.
@@ -382,6 +447,50 @@ mod tests {
         assert!(Decals::parse(&many).is_err());
     }
 
+    #[test]
+    fn each_shader_binds_its_blocks_textures_in_slot_order_once() {
+        use crate::shaderdb::{Binding, Permutation};
+        let s = Decals::parse(&sample()).unwrap();
+        let bind = |name: &str, slot| Binding {
+            texture: name_hash(name),
+            slot,
+        };
+        let permutation = |shader: &str, block| Permutation {
+            shader: name_hash(shader),
+            block,
+            program: 0,
+        };
+        // "a_2D" in two permutations binding the same pair; "a_ScatterMask" binds a
+        // texture no ebx names; "b_2D" is not in the database.
+        let db = ShaderDb {
+            blocks: vec![
+                vec![bind("t_n", 2), bind("t_d", 1)],
+                vec![bind("t_d", 1), bind("t_n", 2)],
+                vec![bind("nameless", 1)],
+            ],
+            programs: vec![[0; 16]],
+            permutations: vec![
+                permutation("a_2d", 0),
+                permutation("a_scattermask", 2),
+                permutation("a_2d", 1),
+            ],
+        };
+        let names: HashMap<u32, String> = ["T_D", "T_N"]
+            .map(|n| (name_hash(&n.to_lowercase()), n.to_string()))
+            .into();
+        let bound = |slot, name: &str| Bound {
+            slot,
+            name: name.to_string(),
+        };
+        assert_eq!(
+            s.bindings(&db, &names).into_iter().collect::<Vec<_>>(),
+            [
+                ("a_2D".to_string(), vec![bound(1, "T_D"), bound(2, "T_N")]),
+                ("a_ScatterMask".to_string(), vec![]),
+            ]
+        );
+    }
+
     /// Bilinear ground height at `xz` from the smallest tile with heights holding it.
     fn ground(
         tree: &crate::terrain::Tree,
@@ -424,6 +533,66 @@ mod tests {
                 + h.at(r0 + 1, c0)? * (1.0 - fc) * fr
                 + h.at(r0 + 1, c0 + 1)? * fc * fr,
         )
+    }
+
+    /// Every shader Palm City's decals name is in its shader database, with its
+    /// textures in slots from 1 on, every one an ebx the store names.
+    #[test]
+    fn the_decals_shaders_bind_named_textures() {
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let store = Store::open(Path::new(&dir)).unwrap();
+        let s = Decals::read(&store).unwrap();
+        let t = s.textures(&store).unwrap();
+        assert_eq!(t.len(), s.shaders().len());
+        assert_eq!(t.len(), 49);
+        let bare: Vec<&str> = t
+            .iter()
+            .filter(|(_, b)| b.is_empty())
+            .map(|(s, _)| s.as_str())
+            .collect();
+        assert_eq!(bare.len(), 1);
+        assert!(bare[0].ends_with("TS_Decal_Lawnmower_TireTracks_ScatterMask_01_2D"));
+        for (shader, bound) in &t {
+            let slots: Vec<u32> = bound.iter().map(|b| b.slot).collect();
+            assert_eq!(
+                slots,
+                (1..=bound.len() as u32).collect::<Vec<_>>(),
+                "{shader}"
+            );
+        }
+        let distinct: BTreeSet<&str> = t.values().flatten().map(|b| b.name.as_str()).collect();
+        assert_eq!(distinct.len(), 65);
+        let short = |shader: &str| -> Vec<String> {
+            let (_, b) = t.iter().find(|(s, _)| s.ends_with(shader)).unwrap();
+            b.iter()
+                .map(|b| b.name.rsplit('/').next().unwrap().to_lowercase())
+                .collect()
+        };
+        assert_eq!(
+            short("/TS_Decal_TireTracks_01_2D"),
+            [
+                "t_tiretracks_01_nha",
+                "t_terrain_desert_medium_gravel_02_n",
+                "t_terrain_desert_medium_gravel_02_d",
+                "t_tiretracks_01_a"
+            ]
+        );
+        assert_eq!(
+            short("/TS_Decal_TireTracks_01_Displacement"),
+            ["t_tiretracks_01_nha"]
+        );
+        assert_eq!(short("/TS_Decal_Plot_ParkingLots"), ["parkinglots"]);
+        assert_eq!(
+            short("/TS_Road_Cracks_01_2D"),
+            [
+                "drv_cracks_decal_01_d",
+                "drv_cracks_decal_01_n",
+                "ut_naturalnoises_d"
+            ]
+        );
     }
 
     /// Reads Palm City's decals from the store `NFSH_STORE` points at and checks them:
