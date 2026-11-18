@@ -1418,7 +1418,9 @@ names a lod group that reads, and every group's distances only grow.
 A road's far LODs have materials of their own: LOD 1 `rd_drv_basesurface_lod1` with a
 `vista_texture`, LOD 2 `drivablesurfaces_vistashader` with `_DS`, both the same
 `vst_…_ds` texture (BC7, sRGB): the colour of the whole road, baked, over the LOD's
-texture coordinates 0 to 1.
+texture coordinates 0 to 1. LOD 1's program writes the bake's colour as it stands where
+dry (`WaterCycle` darkens it), and on the speedway it matches the near asphalt drawn on
+the same pixels within 2% (2026-11-18).
 
 ## Textures
 

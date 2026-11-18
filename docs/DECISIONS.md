@@ -1686,3 +1686,29 @@ the coarser side's left the coarser side's straight lines, by up to 2.9 m (docs/
   where cracks lie keep their luminance (median 153 before and after in `track-low`),
   so their paleness is the asphalt's, not decal coverage.
 
+
+## 2026-11-18: The near road and its bake agree (decided by Claude, pending review)
+
+Follows "The road textures' greys are linear" (2026-11-06), which left the near road
+10 to 15% under the far road's bake.
+
+- **No change to the asphalt**: there is no gap left to close. Measured on the same
+  pixels drawn both ways (a throwaway build forcing every placement to its LOD 1, not
+  kept), in the views `track-low`, `speedway` and `asphalt`, on road pixels only (told
+  by which program drew them): the albedo before light is 0.197 near against 0.202
+  baked, 0.172 against 0.172, 0.186 against 0.188; lit and tonemapped, 0.302 against
+  0.305, 0.289 against 0.288, 0.301 against 0.299 (mean linear luminance). Within 2%
+  everywhere.
+- **Why the earlier numbers differed**: they compared the near oval with the far
+  infield circuit, other roads with other tints (`Tarmac_Tint_FG` 0.27 to 0.68 across
+  the speedway's 88 asphalt sections); in the `speedway` view these are 0.162 and
+  0.212 before light. The dark band ahead in `track-low` is likewise a darker road
+  piece drawn near, not a LOD seam.
+- **Checked against the programs**, a `rd_drv_blendwithterrain` program with a colour
+  output, step by step: the layers' greys times their tints blended by the damaged
+  height times the mask's red, the five overlays, the occlusion factor (1 at the
+  defaults), the tyre tint, the blend into the terrain's colour, the clamp to 0.04 to
+  0.5, then the wet darkening; nfsh does each as the program does. The detail colours
+  and tyre tint move the speedway's road little (0.159 after the layers, 0.162 after
+  all). LOD 1's program (`rd_drv_basesurface_lod1`) writes its bake's colour as it
+  stands when dry, as nfsh draws it.
