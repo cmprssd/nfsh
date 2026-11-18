@@ -6,6 +6,19 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-11-18
+
+### Added
+
+- What the textures the engine supplies to the terrain decals hold: the shader
+  database's parameter blocks name their constants, and the transform a texture's
+  coordinates go through tells it apart. The one fetched at 16 texels is the terrain's
+  heightfield (9 decal programs build the ground's normal from it, as the layers do),
+  the one sampled once its global colour (17 programs); the layer shaders are
+  supplied the same two and their masks. Target 2's second value is the smoothness;
+  target 1's stays unnamed (docs/FORMATS.md, "Terrain decals"). Store tests check
+  them.
+
 ## [0.61.0] - 2026-11-18
 
 ### Fixed

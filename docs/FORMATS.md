@@ -902,9 +902,21 @@ blue (twice) and a value, every target's alpha the coverage, and everything mult
 by it (premultiplied). The normal is in the world's frame (x, up, z), stored as
 ½n + ½; the colour is stored as its square root. Programs writing a fourth target
 (the layer shaders, the tyre tracks and the dirt roads) give it zeros and the
-coverage. The two values, likely smoothness and a specular or occlusion term, are not
-worked out. So the decals are drawn into the ground's own layer targets, likely its
-virtual texture pages, not over the finished frame.
+coverage. Target 2's value is **the smoothness** (worked out on 2026-11-18): the
+layer shaders write each layer's SMD map's red there, weighted by the layer; the
+decals with an SMD map write its red (manholes, crop fields, wet sand, erosion, the
+river); the road cracks pull theirs toward 0.8 by their block's `wetSmoothness`
+constant (with `wetSmoothnessBoost` added first), the only constants any of their
+values is made from; and a mesh shader blending into the ground (one naming
+`AOReducer_new` and the `virtualTexture…` constants) mixes its own smoothness toward
+the value it reads back from the ground's pages. Target 1's value is stored as its
+square root, like the colour; no constant names it. In the programs that fetch the
+heightfield it comes from the ground's slope and a height map (a normal map's blue):
+the tyre tracks write √(1 − min(50 (1 − n_y), 1) · h), h the larger of their two
+normal maps' blues, n the ground's normal; the road cracks √(½ × their normal map's
+alpha). Likely an occlusion term, not confirmed. So the decals are drawn into the
+ground's own layer targets, its virtual texture pages (which the meshes read back
+through the `virtualTexture…` constants), not over the finished frame.
 
 - **The coverage** (the alpha) is one channel of one of the shader's own textures
   (two on the sea weed and on the roads' asphalt, with the roadside mask's red), times
@@ -919,13 +931,30 @@ virtual texture pages, not over the finished frame.
   register, which `output_sources` does not follow) and paint a constant light grey;
   the lawnmower tracks' scatter mask writes a constant 0.6 and the crop fields' writes
   one minus the crop mask with a coverage of 0.
-- **Textures no block binds**: 20 programs read one or two slots just past their
-  bound ones, which the engine supplies: one fetched (`ld`) at 16 texels around the
-  point (the tyre tracks, plough, sea weed, golf bunker, field edge, dirt road 02),
-  one sampled once at the position mapped by constants (the road decals, crop fields,
-  erosion, lawnmower tracks, tyre tracks). The road cracks square that sample's colour
-  and mix 29.5% of it into their grey. Likely the ground's heights (for its normal, as
-  the layer shaders build theirs from the heightfield) and its colour; not confirmed.
+- **Textures no block binds** (worked out on 2026-11-18; `Coverage::supplied` tells
+  them, a store test checks them): 20 programs read one or two slots just past their
+  bound ones, which the engine supplies. Each is told by **the constant its
+  coordinates are mapped by**, which the parameter block names ("Terrain layers",
+  below): the one fetched (`ld`) at 16 texels around the point is **the terrain's
+  heightfield** (`worldToHeightfieldUvTransform`; 9 programs: the tyre tracks, the
+  lawnmower tracks, plough, sea weed, golf bunker, field edge, dirt road 02), the one
+  sampled once **its global colour** (`worldToGlobalColorUvTransform`; 17 programs:
+  the road decals, crop fields, erosion, both dirt roads, the golf bunker, the
+  lawnmower and tyre tracks). The tyre tracks' program, with its block's constants in
+  order as `cb1[0]` on: the vertex's second input (in clip space, by the constant's name) goes
+  through `clipToWorldSpaceXzTransform` (`cb1[1]`) to the world's x and z, then
+  through `worldToHeightfieldUvTransform` (`cb1[2]`) to heightfield texels; four
+  bilinear fetches (four texels each, by hand) one `heightfieldPixelSizeAndAspect`
+  (`cb1[0].xy`) either side along each axis give the height differences, scaled by
+  its `zw`, and the normal is (dx, 2, dz) made unit length, as the layer shaders build
+  theirs. The colour is sampled through `worldToGlobalColorUvTransform` (`cb1[4]`)
+  and squared, as `GlobalColorSurfaceShader` draws it (sample, square, write);
+  likely the tiles' colour ("Terrain"), not checked against it. The tyre tracks mix
+  40% of their tinted gravel colour into 0.8 times it; the road cracks square that sample's
+  colour and mix 29.5% of it into their grey. The layer shaders are supplied the
+  same two and their masks (`46M_46V__2d`: t1 the heightfield, t2 the masks through
+  `worldToMask0`…`2UvTransform`, t7 the global colour, squared, 40% of it mixed
+  into its first layer's colour).
 - **The road cracks**, as an example: the `_d` map's red is a grey (times 0.527), its
   blue the coverage, its green a value; the `_n` map's red and green are the normal,
   turned by the vertex's frame, and its blue a depth that, overlaid with the noise
@@ -963,7 +992,13 @@ and every shader by the hash of its lowercase name:
   0x3662EC, each a u64 size then six u64 offsets from the block's start. Between the second and third offsets
   are its textures, 16 bytes each: the texture's name hash, a slot (u32), 8 zero
   bytes. Between the third and fourth, its constants, 60 bytes each: the name (32
-  bytes), its hash, a slot word, a count, and a default `Vec4`.
+  bytes), its hash, a slot word, a count, and a default `Vec4`. A constant's register
+  in its program's constant buffer 1 is its place in the list (2026-11-18): on the
+  decals' and layers' blocks the slot words run from 0x10001, but blocks whose words
+  start at 0x10026 have programs reading `cb1[0]` on all the same. The terrain's
+  blocks name the transforms the engine sets (`clipToWorldSpaceXzTransform`,
+  `worldToHeightfieldUvTransform`, `worldToMask<n>UvTransform`,
+  `worldToGlobalColorUvTransform`, `heightfieldPixelSizeAndAspect`, `isOpaque`).
 - At 0x367854, a count (4,154) and as many 48-byte records, then at 0x398338 the
   **programs**: a count (4,787) and as many 48-byte records from 0x39833C. A
   record is 16 bytes not worked out, then a GUID (the in-memory order, its first
@@ -1022,7 +1057,9 @@ Worked out on 2026-11-01; `frostbite::dxbc` reads a program as far as finding th
 scales a terrain shader samples a texture at, and `frostbite::layers` each layer
 diffuse's primary scale, which a store test checks. `dxbc::output_sources` follows an
 output back through the temporaries to the textures' channels (by the resource's
-swizzle) and the inputs it is made from (2026-11-18, for the decals' coverage).
+swizzle) and the inputs it is made from (2026-11-18, for the decals' coverage), and
+`dxbc::read_constants` and `output_constants` the constants (`cb<n>[i]`) a read's
+coordinates or an output are made from.
 
 **A bytecode res** is a 32-byte header (u32s 1 and 1, the container's size, its
 offset, 0x20, then zeros) and a Direct3D shader container (`DXBC`): its chunk count
