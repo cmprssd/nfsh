@@ -634,9 +634,11 @@ fn trace(
             for &k in read {
                 let k = o.components[k as usize];
                 match o.kind {
-                    Kind::Temp if arms => {
-                        todo.extend(definitions(code, d, o.register, k).into_iter().map(|e| (e, k)))
-                    }
+                    Kind::Temp if arms => todo.extend(
+                        definitions(code, d, o.register, k)
+                            .into_iter()
+                            .map(|e| (e, k)),
+                    ),
                     Kind::Temp => todo.extend(definition(code, d, o.register, k).map(|e| (e, k))),
                     Kind::Input => {
                         out.insert(Source::Input {

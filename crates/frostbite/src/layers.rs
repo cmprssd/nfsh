@@ -651,7 +651,11 @@ mod tests {
             [vec![Smoothness], vec![Colour, Value], vec![], vec![]]
         );
         let mut smd = 0;
-        for d in diffuse.values().flatten().filter(|d| d.name.ends_with("_smd")) {
+        for d in diffuse
+            .values()
+            .flatten()
+            .filter(|d| d.name.ends_with("_smd"))
+        {
             let [r, g, b, a] = &d.channels;
             assert!(r.iter().all(|u| *u == Smoothness), "{}", d.name);
             assert!(g.iter().all(|u| [Colour, Value].contains(u)), "{}", d.name);
