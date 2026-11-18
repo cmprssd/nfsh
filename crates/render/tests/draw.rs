@@ -659,8 +659,15 @@ fn a_ground_layers_far_detail_is_overlaid_on_its_colour_and_normal() {
 /// layer at full height, the shoulder's texture `shoulder` (its blue says where the
 /// road shows) and the mask `mask` (its green times the height, under the dirt's
 /// offset, lets the ground through); the map's normal `normal` (alpha 0 for none).
-fn asphalt_over_ground(shoulder: [u8; 8], mask: [u8; 8], normal: [u8; 4]) -> [u8; 4] {
+/// The layers' normal maps are flat; with `framed` the square has a frame facing the
+/// camera, so normal maps bend it.
+fn asphalt_over_ground(shoulder: [u8; 8], mask: [u8; 8], normal: [u8; 4], framed: bool) -> [u8; 4] {
     const WHITE: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+    let frame = Frame {
+        normal: [0.0, 0.0, -1.0],
+        tangent: [1.0, 0.0, 0.0],
+        sign: 1.0,
+    };
     let gpu = Gpu::new_headless().unwrap();
     let (zone, square) = square_zone(&[5.0]);
     let asphalt = Shading::Asphalt(Asphalt {
@@ -683,6 +690,7 @@ fn asphalt_over_ground(shoulder: [u8; 8], mask: [u8; 8], normal: [u8; 4]) -> [u8
             uvs3: square.uvs.clone(),
             // The road pieces' red is 0: a red of 1 keeps the road over the ground.
             colours: Some(vec![[0, 255, 255, 255]; 4]),
+            frames: framed.then(|| vec![frame; 4]),
             ..square.clone()
         },
         texture: Some([1; 16]),
@@ -711,7 +719,9 @@ fn asphalt_over_ground(shoulder: [u8; 8], mask: [u8; 8], normal: [u8; 4]) -> [u8
         Ok(bc1(
             0x36,
             match guid[0] {
-                1 | 3 | 6 => WHITE,
+                1 => WHITE,
+                // Flat, at full height.
+                3 | 6 => solid(16, 32, 31),
                 4 => mask,
                 7 => shoulder,
                 _ => [0; 8],
@@ -743,15 +753,29 @@ fn asphalt_gives_way_to_the_ground_where_its_shoulder_and_mask_say() {
     const WHITE: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
     const BLACK: [u8; 8] = [0; 8];
     // The shoulder's blue and the mask's green white: the road, grey.
-    let road = asphalt_over_ground(WHITE, WHITE, NONE);
+    let road = asphalt_over_ground(WHITE, WHITE, NONE, false);
     assert!(road[0] > 180 && road[0] == road[1], "road {road:?}");
     // The shoulder black: the ground's green.
-    let off = asphalt_over_ground(BLACK, WHITE, NONE);
+    let off = asphalt_over_ground(BLACK, WHITE, NONE, false);
     assert!(off[1] > 150 && off[0] < 60, "off the shoulder {off:?}");
     // The mask's green black (dirt): the ground's green too.
-    let dirt = asphalt_over_ground(WHITE, BLACK, NONE);
+    let dirt = asphalt_over_ground(WHITE, BLACK, NONE, false);
     assert!(dirt[1] > 150 && dirt[0] < 60, "dirt {dirt:?}");
 }
+
+#[test]
+fn the_shoulders_red_and_green_bend_the_road_with_its_layers() {
+    // The shoulder's blue white (the road shows), its red and green a half: about
+    // flat, lit as the sun faces it. Red full tilts it about 32 degrees along the
+    // tangent, away from the sun: 9 levels darker (60 degrees takes 29).
+    let flat = asphalt_over_ground(solid(16, 32, 31), WHITE_MASK, NONE, true);
+    let tilted = asphalt_over_ground(solid(31, 32, 31), WHITE_MASK, NONE, true);
+    assert!(flat[0] > 180 && flat[0] == flat[1], "flat {flat:?}");
+    assert!(tilted[0] + 5 < flat[0], "tilted {tilted:?}, flat {flat:?}");
+}
+
+/// The mask white: the road, not dirt.
+const WHITE_MASK: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
 
 /// No normal in the ground's map.
 const NONE: [u8; 4] = [0; 4];
@@ -763,16 +787,16 @@ fn where_the_ground_shows_through_it_takes_the_grounds_own_normal() {
     // The sun faces the square: the ground's normal straight up turns it away, so
     // the ground showing off the shoulder darkens; without one it keeps the road's.
     const UP: [u8; 4] = [128, 255, 128, 255];
-    let lit = asphalt_over_ground(BLACK, WHITE, NONE);
-    let up = asphalt_over_ground(BLACK, WHITE, UP);
+    let lit = asphalt_over_ground(BLACK, WHITE, NONE, false);
+    let up = asphalt_over_ground(BLACK, WHITE, UP, false);
     assert!(
         u16::from(up[1]) + 50 < u16::from(lit[1]),
         "up {up:?}, not {lit:?}"
     );
     // Where the road shows, the ground's normal is not used.
     assert_eq!(
-        asphalt_over_ground(WHITE, WHITE, UP),
-        asphalt_over_ground(WHITE, WHITE, NONE)
+        asphalt_over_ground(WHITE, WHITE, UP, false),
+        asphalt_over_ground(WHITE, WHITE, NONE, false)
     );
 }
 
