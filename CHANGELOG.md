@@ -6,6 +6,17 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-11-18
+
+### Fixed
+
+- Road decals cover as the game's programs make them: by the colour texture's alpha
+  alone, or, when the material turns on `diffuseRGBAOpacity`, by its blue and alpha
+  weighed by `alphaSelector` (default the blue) times `Opacity`. They no longer take
+  the red or green, so the road lines are as wide as their stripes, not wider
+  (on the speedway, 77 of 130 decals turn it on). Materials' `BoolParameters` are now
+  read (`Material::bool`).
+
 ## [0.65.0] - 2026-11-18
 
 ### Added

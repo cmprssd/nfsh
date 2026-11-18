@@ -1669,3 +1669,20 @@ the coarser side's left the coarser side's straight lines, by up to 2.9 m (docs/
   scales and far details already pinned do not move.
 - **A channel reaching the coverage is a weight, and only that**: it reaches every
   target, so its other uses can't be told apart.
+
+## 2026-11-18: road decals cover by their blue and alpha (decided by Claude, pending review)
+
+- **Off, the alpha whole; on, `alphaSelector.xy` on the blue and alpha times
+  `Opacity`**, chosen in `scene::look` from the material's `BoolParameters`, so the
+  shader only weighs two channels. Why: that is what all 29 colour programs do
+  (FORMATS, "A decal's programs"); the default selector is the shader's, (1, 0), the
+  blue, not the alpha nfsh assumed.
+- **The vertex term stays the vertex colour's red, applied always**, though the
+  programs apply (1 − the vertex's first input)^`vertexColorSharpener` only with
+  `VertexColorOpacity`. Why: which vertex input that is isn't settled (the vertex
+  program would tell), and guessing could hide decals that show today.
+- **Measured on the speedway's views**: only the road lines' edges change (0.5–0.8% of
+  pixels, all darker: the lines narrow to their alpha's stripes). The pale strips
+  where cracks lie keep their luminance (median 153 before and after in `track-low`),
+  so their paleness is the asphalt's, not decal coverage.
+

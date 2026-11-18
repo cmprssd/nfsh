@@ -55,11 +55,11 @@ pub enum Shading {
     /// texture coordinates' bytes).
     Ground,
     /// Blended over what is drawn under it, after everything opaque: the opacity is
-    /// the texture's channels weighted by `select`, times `opacity` and the vertex
+    /// the texture's blue and alpha weighted by `select`, times `opacity` and the vertex
     /// colour's red; the colour is the texture's red times `colour`, or else times
     /// the vertex colour (road lines, white or yellow).
     Decal {
-        select: [f32; 4],
+        select: [f32; 2],
         opacity: f32,
         colour: Option<[f32; 3]>,
     },
@@ -213,8 +213,9 @@ pub fn tangent(f: &frostbite::mesh::Frame) -> [i8; 4] {
 
 /// The texture a material's colour comes from, and how it is shaded, for the
 /// material `m` of the shader named `shader`: road decals (shaders named
-/// `…transparentdcl…`) blend their `Diffuse` by `alphaSelector`, `Opacity` and
-/// `lineColor`; asphalt (`Tarmac_FG_Diffuse`) is [`Asphalt`] when it names the rest
+/// `…transparentdcl…`) blend their `Diffuse` by its alpha, or by its blue and alpha
+/// weighed by `alphaSelector` times `Opacity` when `diffuseRGBAOpacity` is on, and
+/// paint it with `lineColor`; asphalt (`Tarmac_FG_Diffuse`) is [`Asphalt`] when it names the rest
 /// of its layers ([`asphalt_layers`]), else that texture's grey times
 /// `Tarmac_Tint_FG`, and gives way to the ground at its edges only with the shader
 /// that blends it (`…blendwithterrain`); anything else takes the first colour texture
@@ -222,9 +223,17 @@ pub fn tangent(f: &frostbite::mesh::Frame) -> [i8; 4] {
 pub fn look(shader: &str, m: &Material) -> Option<([u8; 16], Shading)> {
     let rgb = |v: [f32; 4]| [v[0], v[1], v[2]];
     if shader.contains("transparentdcl") {
+        // Weighed by the selector only when the material turns that on, else the
+        // alpha, whole (FORMATS, "A decal's programs").
+        let (select, opacity) = if m.bool("diffuseRGBAOpacity") {
+            let s = m.vector("alphaSelector").unwrap_or([1.0, 0.0, 0.0, 0.0]);
+            ([s[0], s[1]], m.vector("Opacity").map_or(1.0, |v| v[0]))
+        } else {
+            ([0.0, 1.0], 1.0)
+        };
         let shading = Shading::Decal {
-            select: m.vector("alphaSelector").unwrap_or([0.0, 0.0, 0.0, 1.0]),
-            opacity: m.vector("Opacity").map_or(1.0, |v| v[0]),
+            select,
+            opacity,
             colour: m.vector("lineColor").map(rgb),
         };
         return Some((m.texture("Diffuse")?, shading));
@@ -1272,7 +1281,7 @@ mod tests {
             ..Zone::default()
         };
         let decal = Shading::Decal {
-            select: [1.0, 0.0, 0.0, 0.0],
+            select: [1.0, 0.0],
             opacity: 0.5,
             colour: None,
         };
@@ -1321,6 +1330,7 @@ mod tests {
                 })
                 .collect(),
             vectors: vectors.iter().map(|&(n, v)| (n.into(), v)).collect(),
+            bools: vec![],
         }
     }
 
@@ -1462,7 +1472,17 @@ mod tests {
     #[test]
     fn road_decals_blend_by_their_selected_channel() {
         let shader = "wstroads/rd_dcl_transparentdcl_lerp";
-        let lines = material(
+        let decal = |select, opacity, colour| {
+            Some((
+                [4; 16],
+                Shading::Decal {
+                    select,
+                    opacity,
+                    colour,
+                },
+            ))
+        };
+        let mut lines = material(
             &[
                 ("Diffuse", Some(4)),
                 ("Normal", Some(5)),
@@ -1470,21 +1490,23 @@ mod tests {
             ],
             &[
                 ("alphaSelector", [0.0, 1.0, 0.0, 0.0]),
-                ("Opacity", [1.0, 0.0, 0.0, 0.0]),
+                ("Opacity", [0.5, 0.0, 0.0, 0.0]),
             ],
         );
-        assert_eq!(
-            look(shader, &lines),
-            Some((
-                [4; 16],
-                Shading::Decal {
-                    select: [0.0, 1.0, 0.0, 0.0],
-                    opacity: 1.0,
-                    colour: None
-                }
-            ))
-        );
-        // A line colour paints it; without a selector or opacity, the alpha, whole.
+        // Unless the material turns on diffuseRGBAOpacity, the alpha, whole, whatever
+        // its selector and opacity.
+        assert_eq!(look(shader, &lines), decal([0.0, 1.0], 1.0, None));
+        lines.bools.push(("diffuseRGBAOpacity".into(), false));
+        assert_eq!(look(shader, &lines), decal([0.0, 1.0], 1.0, None));
+        // Turned on, the blue and alpha weighed by the selector, times the opacity.
+        lines.bools[0].1 = true;
+        assert_eq!(look(shader, &lines), decal([0.0, 1.0], 0.5, None));
+        lines.vectors[0].1 = [0.25, 0.75, 1.0, 1.0];
+        assert_eq!(look(shader, &lines), decal([0.25, 0.75], 0.5, None));
+        // The shader's default selector is the blue; its default opacity 1.
+        lines.vectors.clear();
+        assert_eq!(look(shader, &lines), decal([1.0, 0.0], 1.0, None));
+        // A line colour paints it.
         let marks = material(
             &[("Diffuse", Some(4))],
             &[("lineColor", [0.003, 0.003, 0.003, 0.0])],
@@ -1494,21 +1516,14 @@ mod tests {
                 "shaders/world/roads/rd_dcl_transparentdcl_lerpnsmultiply",
                 &marks
             ),
-            Some((
-                [4; 16],
-                Shading::Decal {
-                    select: [0.0, 0.0, 0.0, 1.0],
-                    opacity: 1.0,
-                    colour: Some([0.003; 3])
-                }
-            ))
+            decal([0.0, 1.0], 1.0, Some([0.003; 3]))
         );
         // A decal without a colour texture is not drawn with another one.
         let bare = material(&[("Normal", Some(5))], &[]);
         assert_eq!(look(shader, &bare), None);
         // The same parameters under another shader are an ordinary colour.
         assert_eq!(
-            look("shaders/world/roads/rd_dcl_base_parallax", &lines),
+            look("shaders/world/roads/rd_dcl_base_parallax", &marks),
             Some(([4; 16], Shading::Colour))
         );
     }
@@ -1588,6 +1603,19 @@ mod tests {
             .iter()
             .filter(|d| d.lod == 0 && matches!(d.shading, Shading::Decal { colour: None, .. }))
             .count();
+        // Decals weighing their blue and alpha by a selector (diffuseRGBAOpacity on),
+        // and of those the ones weighing the blue alone.
+        let weighed: Vec<[f32; 2]> = scene
+            .draws
+            .iter()
+            .filter_map(|d| match d.shading {
+                Shading::Decal {
+                    select, opacity, ..
+                } if d.lod == 0 && (select, opacity) != ([0.0, 1.0], 1.0) => Some(select),
+                _ => None,
+            })
+            .collect();
+        let blue = weighed.iter().filter(|&&s| s == [1.0, 0.0]).count();
         let edged = scene
             .draws
             .iter()
@@ -1603,6 +1631,8 @@ mod tests {
         assert_eq!(count, [1047, 0, 0, 88, 130]);
         assert_eq!(edged, 58);
         assert_eq!(painted, 53);
+        // Counted 2026-11-18: 77 decals weigh by their selector, 67 of them the blue.
+        assert_eq!((weighed.len(), blue), (77, 67));
         assert_eq!(scene.textures.len(), 377);
     }
 }
