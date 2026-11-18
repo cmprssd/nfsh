@@ -1187,6 +1187,7 @@ mod tests {
             name: format!("textures/{name}"),
             scale: Some(0.1),
             far,
+            channels: Default::default(),
         };
         let textures = BTreeMap::from([
             (
