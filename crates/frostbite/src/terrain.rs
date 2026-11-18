@@ -1345,6 +1345,114 @@ struct Piece {
     colours: Vec<[u8; 4]>,
     weights: Vec<[u8; DETAIL_SLOTS]>,
     indices: Vec<u32>,
+    /// The leaf's square: its least x and z, and its side.
+    square: ([f32; 2], f32),
+    /// Metres between its vertices.
+    spacing: f32,
+    /// The vertices along each side, by [`Edge`] (as [`Edge::ALL`] lists them), in
+    /// order along it; holes left out.
+    edges: [Vec<u32>; 4],
+}
+
+impl Piece {
+    /// The line `edge` lies on: the axis it is level in (0 for x, 1 for z) and its
+    /// coordinate there.
+    fn line(&self, edge: Edge) -> (usize, f32) {
+        let ([x, z], side) = self.square;
+        match edge {
+            Edge::MinX => (0, x),
+            Edge::MaxX => (0, x + side),
+            Edge::MinZ => (1, z),
+            Edge::MaxZ => (1, z + side),
+        }
+    }
+
+    /// The height of the drawn edge `edge` at `along` metres along its line: a vertex's,
+    /// or the straight line between the two either side of it. `None` off the edge, or
+    /// across a hole.
+    fn height_along(&self, edge: Edge, along: f32) -> Option<f32> {
+        let (axis, _) = self.line(edge);
+        let k = along_axis(axis);
+        let vertices = &self.edges[edge as usize];
+        let at = |i: usize| self.positions[vertices[i] as usize];
+        let after = vertices.partition_point(|&v| self.positions[v as usize][k] < along - SEAM);
+        let b = at(after.min(vertices.len().checked_sub(1)?));
+        if (b[k] - along).abs() <= SEAM {
+            return Some(b[1]);
+        }
+        let a = at(after.checked_sub(1)?);
+        if after == vertices.len() || b[k] - a[k] > self.spacing + SEAM {
+            return None;
+        }
+        Some(a[1] + (b[1] - a[1]) * (along - a[k]) / (b[k] - a[k]))
+    }
+}
+
+/// How close, in metres, two places on a seam are taken as one.
+const SEAM: f32 = 1e-3;
+
+/// The position's coordinate along a line level in `axis` (0, x level: z; 1: x).
+fn along_axis(axis: usize) -> usize {
+    if axis == 0 { 2 } else { 0 }
+}
+
+/// Closes the cracks where the leaves meet: every vertex on a leaf's side takes the
+/// height the drawn ground has there on the side of the leaf that ranks first, the
+/// coarsest-drawn (then the first in the tree's order), so a finer leaf's vertices
+/// between a coarser neighbour's lie on that neighbour's straight lines, and vertices
+/// in the same place agree. Each leaf is closed after every leaf ranked before it,
+/// so it reads their sides as drawn. Only heights move; normals stay as they were.
+fn close_seams(pieces: &mut [Option<Piece>]) {
+    let mut order: Vec<usize> = (0..pieces.len()).filter(|&p| pieces[p].is_some()).collect();
+    let spacing = |p: usize| pieces[p].as_ref().map_or(0.0, |p| p.spacing);
+    order.sort_by(|&a, &b| spacing(b).total_cmp(&spacing(a)).then(a.cmp(&b)));
+    let mut rank = vec![usize::MAX; pieces.len()];
+    for (r, &p) in order.iter().enumerate() {
+        rank[p] = r;
+    }
+    // The sides on each line: its axis and its coordinate's bits.
+    let mut lines: HashMap<(usize, u32), Vec<(usize, Edge)>> = HashMap::new();
+    for &p in &order {
+        let piece = pieces[p].as_ref().expect("drawn");
+        for edge in Edge::ALL {
+            let (axis, at) = piece.line(edge);
+            lines
+                .entry((axis, at.to_bits()))
+                .or_default()
+                .push((p, edge));
+        }
+    }
+    for &p in &order {
+        let piece = pieces[p].as_ref().expect("drawn");
+        // Each side vertex's height from the first-ranked neighbour with a side there.
+        let mut moved: HashMap<u32, (usize, f32)> = HashMap::new();
+        for edge in Edge::ALL {
+            let (axis, at) = piece.line(edge);
+            let k = along_axis(axis);
+            let Some(sides) = lines.get(&(axis, at.to_bits())) else {
+                continue;
+            };
+            for &(q, other) in sides {
+                if other != edge.opposite() || rank[q] >= rank[p] {
+                    continue;
+                }
+                let neighbour = pieces[q].as_ref().expect("drawn");
+                for &v in &piece.edges[edge as usize] {
+                    let along = piece.positions[v as usize][k];
+                    if moved.get(&v).is_some_and(|&(r, _)| r < rank[q]) {
+                        continue;
+                    }
+                    if let Some(y) = neighbour.height_along(other, along) {
+                        moved.insert(v, (rank[q], y));
+                    }
+                }
+            }
+        }
+        let piece = pieces[p].as_mut().expect("drawn");
+        for (v, (_, y)) in moved {
+            piece.positions[v as usize][1] = y;
+        }
+    }
 }
 
 /// [`ground`] taking its chunks in any order, as they come off the disk: each leaf is
@@ -1493,6 +1601,7 @@ impl<'t> GroundWalk<'t> {
                 self.chunk(&id, data);
             }
         }
+        close_seams(&mut self.pieces);
         let mut ground = Ground {
             detail: self.detail.take().unwrap_or_default(),
             map: self.map,
@@ -1678,6 +1787,8 @@ fn emit(
     let cells = ((tile.size / cell).round() as usize / step).max(1);
     let base = 0;
     let side = cells + 1;
+    piece.square = (tile.min, tile.size);
+    piece.spacing = step as f32 * cell;
     // Each grid point's vertex, row by row; none where the heights have a hole.
     let mut index_of: Vec<Option<u32>> = vec![None; side * side];
     let mut next = base;
@@ -1733,6 +1844,21 @@ fn emit(
             }
         }
     }
+    // Each side's vertices, by the grid point (row, column) `k` points along it.
+    let side_of = |point: &dyn Fn(usize) -> (usize, usize)| -> Vec<u32> {
+        (0..side)
+            .filter_map(|k| {
+                let (i, j) = point(k);
+                index_of[i * side + j]
+            })
+            .collect()
+    };
+    piece.edges = [
+        side_of(&|k| (k, 0)),
+        side_of(&|k| (k, cells)),
+        side_of(&|k| (0, k)),
+        side_of(&|k| (cells, k)),
+    ];
     for i in 0..cells {
         for j in 0..cells {
             let at = |(i, j): (usize, usize)| index_of[i * side + j];
@@ -2554,6 +2680,93 @@ mod tests {
         assert_eq!((g.tiles, g.failed.len()), (0, 1));
     }
 
+    /// The widest crack in `g`, in metres: over every vertex on an x- or z-level edge
+    /// of the mesh's rim (a side of one triangle only), how far its height is from
+    /// another such edge through the same place, along that edge's straight line.
+    fn widest_seam(g: &Ground) -> f32 {
+        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        for t in g.indices.chunks(3) {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        let p = |v: u32| g.positions[v as usize];
+        let mut lines: HashMap<(usize, u32), Vec<(u32, u32)>> = HashMap::new();
+        let mut rim = Vec::new();
+        for (&(a, b), _) in uses.iter().filter(|&(_, &n)| n == 1) {
+            for (axis, k) in [(0, 0), (1, 2)] {
+                if p(a)[k] == p(b)[k] {
+                    lines
+                        .entry((axis, p(a)[k].to_bits()))
+                        .or_default()
+                        .push((a, b));
+                    rim.extend([(a, axis), (b, axis)]);
+                }
+            }
+        }
+        let mut widest = 0.0f32;
+        for (v, axis) in rim {
+            let (k, along) = if axis == 0 { (0, 2) } else { (2, 0) };
+            let at = p(v);
+            for &(a, b) in &lines[&(axis, at[k].to_bits())] {
+                let (pa, pb) = (p(a), p(b));
+                let (lo, hi) = (pa[along].min(pb[along]), pa[along].max(pb[along]));
+                if a == v || b == v || at[along] < lo - SEAM || at[along] > hi + SEAM {
+                    continue;
+                }
+                let y = pa[1] + (pb[1] - pa[1]) * (at[along] - pa[along]) / (pb[along] - pa[along]);
+                widest = widest.max((at[1] - y).abs());
+            }
+        }
+        widest
+    }
+
+    #[test]
+    fn a_finer_leafs_side_lies_on_its_coarser_neighbours_lines() {
+        // The root (2 m a sample) and the first and fourth tiles (1 m) have heights;
+        // the second has none and the third's chunk can't be read, so both are drawn
+        // from the root's, a vertex every 2 m beside the others' every metre. The
+        // tiles' heights rise and fall from sample to sample, the root's evenly.
+        let tree = Tree::parse(&sample_with_root(HEIGHTFIELD)).unwrap();
+        let heights = |h: fn(usize, usize) -> u16| {
+            let mut d = Vec::new();
+            for r in 0..SAMPLES {
+                for c in 0..SAMPLES {
+                    d.extend_from_slice(&h(r, c).to_le_bytes());
+                }
+            }
+            d
+        };
+        let root = |r: usize, c: usize| (200 + 3 * r + c) as u16;
+        let bumpy = |r: usize, c: usize| (100 + (r % 2) * 7 + (c % 2) * 5) as u16;
+        let grey = |d| coloured(d, block(0x8410, 0x8410, 0), block(0x8410, 0x8410, 0));
+        let g = ground(&tree, [-500.0; 2], [500.0; 2], 1.0, &[], |id| match id[0] {
+            0 => Ok(grey(heights(root))),
+            2 => Ok(grey(vec![])),
+            3 => Err(Error("unreadable".into())),
+            _ => Ok(grey(heights(bumpy))),
+        });
+        assert_eq!((g.tiles, g.failed.len()), (4, 1));
+        assert!(widest_seam(&g) < 1e-4, "{}", widest_seam(&g));
+        // The first tile's vertex at x 0, z −127 is halfway between the root's at
+        // z −128 and −126 (row 4 and 5, column 68), not at its own odd row's height.
+        let at = |x: f32, z: f32| {
+            let ys: Vec<f32> = g
+                .positions
+                .iter()
+                .filter(|p| p[0] == x && p[2] == z)
+                .map(|p| p[1])
+                .collect();
+            ys
+        };
+        let mid = (f32::from(root(4, 68)) + f32::from(root(5, 68))) / 2.0 * UNIT;
+        assert_eq!(at(0.0, -127.0), [mid]);
+        // Away from the seams, and where the sizes match, the heights are their own.
+        assert_eq!(at(-1.0, -127.0), [f32::from(bumpy(5, 131)) * UNIT]);
+        let shared = at(-64.0, 0.0);
+        assert_eq!(shared, [f32::from(bumpy(132, 68)) * UNIT; 2]);
+    }
+
     #[test]
     fn the_chunks_read_ahead_are_those_the_ground_reads_in_its_order() {
         for tree in [sample(), sample_with_root(HEIGHTFIELD)] {
@@ -2677,6 +2890,51 @@ mod tests {
         assert_eq!(m.texels_in([16_380.0, 98.0], 128.0), [4095..4096, 24..25]);
         let empty = GroundMap::new([5.0; 2], [5.0; 2], 2.0);
         assert_eq!((empty.width, empty.height, empty.colours.len()), (0, 0, 0));
+    }
+
+    /// Draws the ground from the store `NFSH_STORE` points at, a vertex every 2 m as
+    /// `nfsh view` does, around every leaf of 512 m or more that meets smaller ones
+    /// (where its 4 m between vertices meets their 2 m), and checks it has no crack
+    /// where its leaves meet.
+    #[test]
+    fn the_ground_has_no_crack_where_its_leaves_meet() {
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let store = Store::open(Path::new(&dir)).unwrap();
+        let tree = Tree::read(&store).unwrap();
+        let leaves: Vec<&Tile> = tree.tiles.iter().filter(|t| t.children.is_none()).collect();
+        let touch = |a: &Tile, b: &Tile| {
+            let (a_hi, b_hi) = (
+                [0, 1].map(|k| a.min[k] + a.size),
+                [0, 1].map(|k| b.min[k] + b.size),
+            );
+            let overlap = |k: usize| a.min[k] < b_hi[k] && b.min[k] < a_hi[k];
+            let meet = |k: usize| a.min[k] == b_hi[k] || b.min[k] == a_hi[k];
+            (meet(0) && overlap(1)) || (meet(1) && overlap(0))
+        };
+        let mut mixed = 0;
+        let mut chunks = Chunks::new(&store).unwrap();
+        for big in leaves.iter().filter(|t| t.size >= 512.0) {
+            if !leaves.iter().any(|t| t.size < big.size && touch(big, t)) {
+                continue;
+            }
+            mixed += 1;
+            // Its neighbours are drawn whole, so 1 m around it takes them all in.
+            let lo = big.min.map(|v| v - 1.0);
+            let hi = [0, 1].map(|k| big.min[k] + big.size + 1.0);
+            let g = ground(&tree, lo, hi, 2.0, &[], |id| chunks.read(id));
+            assert!(g.failed.is_empty(), "{:?}", g.failed);
+            let widest = widest_seam(&g);
+            assert!(
+                widest < 1e-3,
+                "a crack {widest} m wide around {:?}",
+                big.min
+            );
+        }
+        eprintln!("{mixed} leaves of 512 m or more beside smaller ones, no crack around any");
+        assert!(mixed > 0);
     }
 
     /// Reads Palm City's streaming tree and every heightfield in the store

@@ -6,6 +6,15 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-11-18
+
+### Fixed
+
+- The ground no longer cracks where a tile meets one drawn coarser: the finer tile's
+  vertices along their shared side are moved onto the coarser side's straight lines,
+  and vertices in the same place agree. A store test checks the ground under zone 495
+  has no crack.
+
 ## [0.60.0] - 2026-11-18
 
 ### Changed

@@ -431,7 +431,8 @@ The plan, one PR each (decided by Claude, pending review):
 - **Each leaf tile is drawn from its own heights, or its nearest ancestor's when its
   chunk has none**; holes (height 0) are left out. Where a tile meets a neighbour of
   coarser detail the edges don't share vertices, so small cracks can show; stitching
-  waits for streaming the terrain by distance.
+  waits for streaming the terrain by distance. (Superseded 2026-11-18, "The ground's
+  seams closed": the cracks are closed now.)
 - **The ground is one draw in plain grey**: the colour comes from the terrain's layers,
   which are in the blocks and the layer-combinations res not read yet.
 
@@ -1631,3 +1632,27 @@ packs' order, so handing them over in that order to the same walk would hide not
 - **Measured** (docs/BASELINE.md, "The ground walked as its chunks come"): cold, waiting
   for the ground falls from 0.95 to 0.7 s and the load from 21.6 to 21.1 s; warm is the
   same (3.68 against 3.67 s).
+
+## 2026-11-18: The ground's seams closed (decided by Claude, pending review)
+
+Where a leaf meets one drawn coarser (a 512 m tile next to 256 m ones at the 2 m
+spacing, or a leaf drawn from an ancestor's heights), the finer side's vertices between
+the coarser side's left the coarser side's straight lines, by up to 2.9 m (docs/FORMATS.md,
+"Where detail changes"). This supersedes 2026-11-01's "stitching waits".
+
+- **Every vertex on a leaf's side takes the height the ground is drawn at there on the
+  side of the leaf that ranks first**: the coarsest-drawn, then the first in the tree's
+  order. So a finer side lies on its coarser neighbour's lines (a vertex between two of
+  the neighbour's takes the line between them), and two vertices in one place agree.
+  Why: it closes every crack without new triangles or a skirt, and moves only what was
+  off the line; the coarser side never moves, so the hills keep their drawn shape.
+- **Done once every leaf is drawn** (`close_seams`, in `GroundWalk::finish`), from the
+  drawn vertices, not the heights. Why: the leaves are drawn as their chunks come, in
+  any order, and a neighbour's side may not be drawn yet; the pass works in rank
+  order, so each leaf reads its neighbours' sides already closed.
+- **Normals stay as they were drawn** from each leaf's own heights: the vertices move
+  at most a few metres on a slope, and lighting a moved vertex by its own tile's slope
+  shows no seam in the shading.
+- **The finer chunks' heights are not drawn**: drawing every leaf at its finest would
+  also close the cracks (the data are made for it), but is new drawn data; that is the
+  owner's call.
