@@ -544,10 +544,14 @@ mod tests {
         // Only turned: the finest turned scale.
         let burnt = scale(6, "t_burnforestground_01_d").unwrap();
         assert!((burnt - 0.1).abs() < 1e-6, "{burnt}");
-        // Bound for layers 5 and 29, never sampled for 28; the sand waves' coordinates
-        // are not a plain scale of the world position.
+        // Bound for layers 5 and 29, never sampled for 28.
         assert_eq!(scale(28, "t_terrain_desert_fine_gravel_02_d"), None);
-        assert_eq!(scale(3, "t_terrain_sand_wave_01_d"), None);
+        // The sand waves are turned by a right angle (a `mad` by 0) at 0.08, in every
+        // shader with layer 3, their normal and SMD maps with them.
+        for map in ["_d", "_n", "_smd"] {
+            let s = scale(3, &format!("t_terrain_sand_wave_01{map}")).unwrap();
+            assert!((s - 0.08).abs() < 1e-6, "{map}: {s}");
+        }
         assert_eq!(scale(3, "t_terrain_sand_footprints_01_d"), Some(0.2));
         // Every scaled diffuse map's normal map is its name with `_n`, sampled at the
         // same scale.
@@ -572,7 +576,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(paired, 31);
+        assert_eq!(paired, 32);
         // The far details (counted on the owner's store, 2026-11-02): each layer's at
         // one scale, its colour taking green but for mega grass's blue.
         let far = |layer: u16, name: &str| {
@@ -682,6 +686,17 @@ mod tests {
         assert_eq!(
             channels(8, "drv_set4_damage_d"),
             [vec![Colour], vec![Smoothness], vec![], vec![]]
+        );
+        // The road sets draw a grey from their red alone (no blue is read), and mix
+        // their two sets by a mask: layer 8 by set 3's normal map's blue, layer 9 by
+        // set 1's red, sampled at 0.02.
+        assert_eq!(
+            channels(8, "drv_set3_clean_d"),
+            [vec![Colour, Smoothness], vec![], vec![], vec![]]
+        );
+        assert_eq!(
+            channels(9, "drv_set1_full_damage_n"),
+            [vec![Weight], vec![Normal], vec![Weight], vec![]]
         );
     }
 }

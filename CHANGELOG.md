@@ -6,6 +6,19 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-11-18
+
+### Added
+
+- Layer 3's sand waves get a scale: they are sampled at 0.08 turned by a right angle,
+  which the compiler writes as a `mad` by zero. A shader's coordinates are now read
+  as their coefficients on the world position (through `mul`, `mad`, `add` and `dp2`,
+  negated sources included), so a turn is told from a mirror; no other layer's scale
+  changed. FORMATS also says how the waves are mixed with the footprints, and what the
+  road sets (layers 8 and 9) draw: a warm grey from their diffuse's red overlaid on
+  the global colour's luminance, never their purple (docs/FORMATS.md, "Shader
+  programs"). The layers store test checks them.
+
 ## [0.63.0] - 2026-11-18
 
 ### Added

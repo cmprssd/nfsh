@@ -1038,7 +1038,7 @@ reads their blue ("Shader programs", below). Layers 16, 17, 21 to 24, 27 and 31 
 shared detail normal.
 
 **Each layer's normal maps** (worked out on 2026-11-02) are among its own textures:
-every diffuse map with a scale has one named as it is with `_n` for `_d` (31 pairs
+every diffuse map with a scale has one named as it is with `_n` for `_d` (32 pairs
 across the layers), sampled at the same scale in every shader with the layer. They
 are BC1 unorm, 2048², the size and mips of their diffuse maps (BC1 sRGB), but for
 the road sets' and the sand waves' (BC7). As on the meshes' maps ("Normal maps",
@@ -1087,7 +1087,13 @@ green is along -z, as its curl says (below).
 **A layer's coordinates** are the world position times a literal (a `mul`, or a
 `mad` adding a literal), or the position turned and scaled: one axis a `mad` adding
 the other's product, the other a `dp2` with a literal pair, the scale being the
-pair's length. A shader samples most layers several ways: one direct scale for
+pair's length. A right angle is written with literal zeros: `mad u, x, 0, −0.08z`
+and `mad v, z, 0, 0.08x` (or an `add` of `0.08x` and `0·z`). `frostbite::dxbc`
+follows each coordinate through `mul`, `mad`, `add` and `dp2` by literals (negated
+sources included) to its coefficients on the input's two components: direct when
+the matrix is diagonal with equal entries, turned when it is a rotation (equal,
+orthogonal rows, positive determinant; a mirror is neither), the scale being a
+row's length. A shader samples most layers several ways: one direct scale for
 detail, often a far scale (a tenth of it, for the detail normal), a turned copy to
 hide repeats. In `46M_46V__2d`, mega grass is `r0.yx × 0.2`; field_base_03 is
 `r0.yx × 0.1` and the same turned (0.0924, 0.0383), length 0.1.
@@ -1098,10 +1104,20 @@ is sampled at in *every* shader with the layer: across the 282 shaders each laye
 has one such set. **Its primary scale** is the finest direct one in that set, or the
 finest turned one when there is none (the owner's choice, docs/DECISIONS.md): 0.2
 per metre for mega grass (layer 1), 0.1 for field_base_03 (2), 0.1 and 0.15 for the
-roads' `drv_set4_damage_d` in layers 8 and 9. Two have none: layer 28 binds
-`t_terrain_desert_fine_gravel_02_d` but only shaders also with layer 5 or 29 sample
-it, and layer 3's sand waves take their coordinates from something other than a
-literal scale (not worked out).
+roads' `drv_set4_damage_d` in layers 8 and 9, 0.08 turned for layer 3's sand waves.
+One has none: layer 28 binds `t_terrain_desert_fine_gravel_02_d` but only shaders
+also with layer 5 or 29 sample it.
+
+**Layer 3's sand** (worked out on 2026-11-18 from all 86 programs with it) is two
+maps: the footprints direct at 0.2, and the waves (`t_terrain_sand_wave_01_d`, `_n`,
+`_smd`) at 0.08 turned by a right angle: their u is −0.08 z and their v 0.08 x
+(where every other map's are x and z). The waves take over where
+the far detail (`t_terrain_mid_distance_details_n` at 0.001) is high: the two maps'
+colours, normals and SMD values are mixed by sat(6.667 b − 3) of its blue (footprints
+under 0.45, waves from 0.6). The waves' normal is turned back with them: its red and
+green, as a normal from −1 to 1, become (−g, r) (a `mad` by 0.000001 standing in for
+the zero cosine). The far detail is then overlaid at 0.1 on the mixed colour and
+normal, as the table below says.
 
 **The far detail is overlaid** (worked out on 2026-11-02): a program samples a far
 detail map once at each of its layers' far scales and lays it over the layer's maps
@@ -1135,6 +1151,25 @@ layers it is gentle; among all layers:
 store test in `layers` pins some of them.) Layer 11 has none; 5, 10, 26, 28 and 29
 overlay theirs on the normal map only; the road sets' normal maps take another road
 set's at 0.02 (not drawn: nfsh draws no road-set layer).
+
+**What the road sets draw** (layers 8 and 9, worked out on 2026-11-18 from all 149
+programs with either): not their diffuse maps' colour, but a grey tinted the same
+warm grey in both. Each mixes two sets by a mask sampled at 0.02: layer 8
+`drv_set3_clean` and `drv_set4_damage` (at 0.1) by sat(4 b − 2.2) of
+`drv_set3_clean_n`'s blue, layer 9 `drv_set4_damage` and `drv_set1_full_damage` (at
+0.15) by sat(3.333 r − 1.333) of `drv_set1_full_damage_n`'s red. From the mixed sets:
+
+- **Colour**: the diffuse's red, clamped to 0.7 (layer 8) or 0.6 (layer 9), laid
+  with the usual overlay on the global colour's luminance (its texel squared, then
+  0.3, 0.59, 0.11), times (0.936, 0.886, 0.819), added to the colour (with the
+  layer's weight). Neither green nor blue goes into the colour, so the purple of
+  `drv_set3_clean_d` never shows.
+- **Smoothness**: layer 8 mixes 0.67 × `drv_set3_clean_d`'s red with
+  `drv_set4_damage_d`'s green, layer 9 the two sets' greens; it is stored at 0.75
+  and 0.7 of that (the other layers store theirs whole).
+- **Normal**: the mixed normal maps, the mask's own map overlaid at 0.02 (0.03 and
+  0.1 strong); target 1's value is a smooth step of their blue mixed with the mask
+  map's, as on the other layers.
 
 **What each channel goes into** (worked out on 2026-11-18 from all 282 `__2d` programs;
 `layers::Texture::channels` reads it with `dxbc::output_sources`, which follows both
