@@ -71,6 +71,8 @@ pub struct Operand {
     pub components: [u8; 4],
     /// For a destination, how many of `components` are written.
     pub written: usize,
+    /// Whether a source is read negated (its extended token's `neg` modifier).
+    pub negated: bool,
 }
 
 impl Operand {
@@ -186,9 +188,11 @@ fn instructions(words: &[u32]) -> Result<Vec<Instruction>> {
 /// hold).
 fn operand(words: &[u32], at: &mut usize) -> Result<Operand> {
     let token = word(words, at)?;
-    if token >> 31 != 0 {
-        word(words, at)?;
-    }
+    // The extended token's type 1 is a modifier: 1 negates, 3 negates the magnitude.
+    let negated = token >> 31 != 0 && {
+        let e = word(words, at)?;
+        e & 0x3F == 1 && matches!(e >> 6 & 0xFF, 1 | 3)
+    };
     let count = token & 3;
     let selection = token >> 2 & 3;
     let select = token >> 4 & 0xFF;
@@ -227,6 +231,7 @@ fn operand(words: &[u32], at: &mut usize) -> Result<Operand> {
             register: 0,
             components: [0, 1, 2, 3],
             written: 4,
+            negated: false,
         });
     }
     if kind == 5 {
@@ -275,6 +280,7 @@ fn operand(words: &[u32], at: &mut usize) -> Result<Operand> {
         register,
         components,
         written,
+        negated,
     })
 }
 
@@ -315,15 +321,23 @@ fn sampled_slot(i: &Instruction) -> Option<u32> {
         .map(|t| t.register)
 }
 
-/// The scale of the sample at `at` when its coordinates come from the world position.
+/// The scale of the sample at `at` when its coordinates come from the world position:
+/// direct when each coordinate is its own axis times the same literal, turned when the
+/// two are a rotation of the position (a right angle included, which the compiler
+/// writes as a `mad` by 0), the scale being its rows' length.
 fn sample_scale(code: &[Instruction], at: usize) -> Option<Scale> {
     let uv = code[at].operands.get(1).filter(|o| o.kind == Kind::Temp)?;
-    let [u, v] = [0, 1].map(|c| axis_scale(code, at, uv.register, uv.components[c]));
-    match (u, v) {
-        (Some(Scale::Direct(a)), Some(Scale::Direct(b))) if a == b => Some(Scale::Direct(a)),
-        (Some(Scale::Rotated(s)), _) | (_, Some(Scale::Rotated(s))) => Some(Scale::Rotated(s)),
-        _ => None,
+    let [u, v] = [0, 1].map(|c| linear(code, at, uv.register, uv.components[c], DEPTH));
+    let ([ux, uz], [vx, vz]) = (u?, v?);
+    if ux != 0.0 && uz == 0.0 && vx == 0.0 && vz.abs() == ux.abs() {
+        return Some(Scale::Direct(ux.abs()));
     }
+    let (lu, lv) = (ux.hypot(uz), vx.hypot(vz));
+    let turned = lu > 0.0
+        && (lu - lv).abs() <= 1e-5 * lu
+        && (ux * vx + uz * vz).abs() <= 1e-5 * lu * lv
+        && ux * vz - uz * vx > 0.0;
+    turned.then_some(Scale::Rotated(lu.max(lv)))
 }
 
 /// One texture's sample overlaid on a value, then mixed in:
@@ -686,36 +700,57 @@ fn definitions(code: &[Instruction], at: usize, register: u32, c: u8) -> BTreeSe
     reaching
 }
 
-/// Whether component `c` of `register` at `at` is the world position: written from
-/// an input.
-fn is_world(code: &[Instruction], at: usize, register: u32, c: u8) -> bool {
-    definition(code, at, register, c)
-        .is_some_and(|d| code[d].operands[1..].iter().any(|o| o.kind == Kind::Input))
-}
+/// How many instructions back [`linear`] follows a coordinate.
+const DEPTH: u8 = 8;
 
-/// The scale component `c` of `register` at `at` has as a coordinate: the world
-/// position times a literal (`mul`, or `mad` adding a literal), or a literal pair's
-/// length in a `dp2` with it (a turned axis); a `mad` adding a register is the other
-/// half of a turn, and says nothing on its own.
-fn axis_scale(code: &[Instruction], at: usize, register: u32, c: u8) -> Option<Scale> {
+/// Component `c` of `register` at `at` as a linear form of the world position (an
+/// input mapped by a `mad` with constants): its coefficients on the input's x and y,
+/// constant terms left out. Followed through `mul`, `mad` and `add` by literals and
+/// `dp2` with a literal pair; anything else (a constant buffer's factor, a texture's
+/// result, another operation) is none.
+fn linear(code: &[Instruction], at: usize, register: u32, c: u8, depth: u8) -> Option<[f32; 2]> {
     let d = definition(code, at, register, c)?;
     let i = &code[d];
     let sources = i.operands.get(1..)?;
-    let world = |o: &Operand, k: u8| o.kind == Kind::Temp && is_world(code, d, o.register, k);
-    match i.opcode {
-        MUL | MAD => {
-            if i.opcode == MAD && sources.get(2)?.literal(0).is_none() {
-                return None;
+    if let Some(input) = sources.iter().find(|o| o.kind == Kind::Input) {
+        // The world position itself: an input times and plus constants.
+        let k = input.components[c as usize];
+        return (i.opcode == MAD && sources[0].kind == Kind::Input && k < 2).then(|| {
+            let mut e = [0.0; 2];
+            e[k as usize] = if input.negated { -1.0 } else { 1.0 };
+            e
+        });
+    }
+    // A source's form at component `k`: a literal adds nothing to it.
+    let form = |o: &Operand, k: u8| -> Option<[f32; 2]> {
+        let f = match o.kind {
+            Kind::Literal(_) => [0.0; 2],
+            Kind::Temp if depth > 0 => {
+                linear(code, d, o.register, o.components[k as usize], depth - 1)?
             }
-            let (a, b) = (sources.first()?, sources.get(1)?);
-            let (r, l) = if a.literal(0).is_some() {
-                (b, a)
-            } else {
-                (a, b)
-            };
-            let s = l.literal(c)?.abs();
-            world(r, r.components[c as usize]).then_some(Scale::Direct(s))
-        }
+            _ => return None,
+        };
+        Some(if o.negated { f.map(|x| -x) } else { f })
+    };
+    let scaled = |f: [f32; 2], l: f32| f.map(|x| x * l);
+    let add = |a: [f32; 2], b: [f32; 2]| [a[0] + b[0], a[1] + b[1]];
+    // A product of a register and a literal at component `k`.
+    let product = |a: &Operand, b: &Operand, k: u8| -> Option<[f32; 2]> {
+        let (r, l) = if a.literal(0).is_some() {
+            (b, a)
+        } else {
+            (a, b)
+        };
+        let sign = if l.negated { -1.0 } else { 1.0 };
+        Some(scaled(form(r, k)?, sign * l.literal(k)?))
+    };
+    match i.opcode {
+        ADD => Some(add(form(sources.first()?, c)?, form(sources.get(1)?, c)?)),
+        MUL => product(sources.first()?, sources.get(1)?, c),
+        MAD => Some(add(
+            product(sources.first()?, sources.get(1)?, c)?,
+            form(sources.get(2)?, c)?,
+        )),
         DP2 => {
             let (a, b) = (sources.first()?, sources.get(1)?);
             let (r, l) = if a.literal(0).is_some() {
@@ -723,9 +758,10 @@ fn axis_scale(code: &[Instruction], at: usize, register: u32, c: u8) -> Option<S
             } else {
                 (a, b)
             };
-            let (x, y) = (l.literal(0)?, l.literal(1)?);
-            (world(r, r.components[0]) && world(r, r.components[1]))
-                .then(|| Scale::Rotated(x.hypot(y)))
+            let sign = if l.negated { -1.0 } else { 1.0 };
+            let x = scaled(form(r, 0)?, sign * l.literal(0)?);
+            let y = scaled(form(r, 1)?, sign * l.literal(1)?);
+            Some(add(x, y))
         }
         _ => None,
     }
@@ -759,6 +795,12 @@ pub(crate) mod tests {
         }
         pub fn input(n: u32, swizzle: [u32; 4]) -> Vec<u32> {
             read(1, n, swizzle)
+        }
+        /// An operand read negated: its token extended by a `neg` modifier.
+        pub fn neg(mut o: Vec<u32>) -> Vec<u32> {
+            o[0] |= 1 << 31;
+            o.insert(1, 1 | 1 << 6);
+            o
         }
         pub fn texture(n: u32) -> Vec<u32> {
             read(7, n, [0, 1, 2, 3])
@@ -874,7 +916,7 @@ pub(crate) mod tests {
                     op::sampler(3),
                 ],
             ),
-            // A turn: r12.x = r0.y * 0.08 + r11.x, r12.y = dot(r0.xy, (0.08, 0.06)).
+            // A turn: r12.x = r0.y * 0.08 - r11.x, r12.y = dot(r0.xy, (0.08, 0.06)).
             ins(
                 MUL,
                 &[op::dest(11, 1), op::temp(0, [0; 4]), op::scalar(0.06)],
@@ -885,7 +927,7 @@ pub(crate) mod tests {
                     op::dest(12, 1),
                     op::temp(0, [1; 4]),
                     op::scalar(0.08),
-                    op::temp(11, [0; 4]),
+                    op::neg(op::temp(11, [0; 4])),
                 ],
             ),
             ins(
@@ -897,6 +939,36 @@ pub(crate) mod tests {
                 ],
             ),
             sample(12, 8),
+            // A right angle, as the sand waves are: r14.xyz = r0.yxy * (0.08, 0.08, 0),
+            // r13.x = r0.y * 0 - r14.y, r13.y = r14.x + r14.z.
+            ins(
+                MUL,
+                &[
+                    op::dest(14, 7),
+                    op::temp(0, [1, 0, 1, 1]),
+                    op::literal([0.08, 0.08, 0.0, 0.0]),
+                ],
+            ),
+            ins(
+                MAD,
+                &[
+                    op::dest(13, 1),
+                    op::temp(0, [1; 4]),
+                    op::scalar(0.0),
+                    op::neg(op::temp(14, [1; 4])),
+                ],
+            ),
+            ins(
+                ADD,
+                &[op::dest(13, 2), op::temp(14, [0; 4]), op::temp(14, [2; 4])],
+            ),
+            sample(13, 10),
+            // A mirror is no turn: r16 = r0.xy * 0.08 swaps the axes.
+            ins(
+                MUL,
+                &[op::dest(16, 3), op::temp(0, [0, 1, 0, 0]), op::scalar(0.08)],
+            ),
+            sample(16, 11),
             // mad with a literal offset is still direct.
             ins(
                 MAD,
@@ -922,7 +994,7 @@ pub(crate) mod tests {
             sample(4, 8),
         ];
         let code = parse(&res(&code)).unwrap();
-        assert_eq!(code.len(), 14, "the declaration is left out");
+        assert_eq!(code.len(), 20, "the declaration is left out");
         assert_eq!(sample_scales(&code, 5), [Scale::Direct(0.02)]);
         assert_eq!(sample_scales(&code, 3), [Scale::Direct(0.2)]);
         let s8 = sample_scales(&code, 8);
@@ -932,6 +1004,8 @@ pub(crate) mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(s8[1], Scale::Direct(0.1));
+        assert_eq!(sample_scales(&code, 10), [Scale::Rotated(0.08)]);
+        assert!(sample_scales(&code, 11).is_empty(), "a mirror");
         assert!(sample_scales(&code, 6).is_empty());
     }
 
