@@ -1,7 +1,10 @@
 //! A shader program's bytecode: a Direct3D shader container (`DXBC`) with its
 //! instructions (shader model 5), read only as far as finding the scale at which a
-//! terrain shader samples a texture (see docs/FORMATS.md, "Shader programs").
+//! terrain shader samples a texture, and which textures' channels and inputs an
+//! output is computed from (see docs/FORMATS.md, "Shader programs").
 //! Little-endian.
+
+use std::collections::BTreeSet;
 
 use crate::reader::Reader;
 use crate::{Error, Result, bail};
@@ -18,6 +21,7 @@ const ADD: u32 = 0x00;
 const DP2: u32 = 0x0F;
 const DP3: u32 = 0x10;
 const DP4: u32 = 0x11;
+const LD: u32 = 0x2D;
 const LT: u32 = 0x31;
 const MAD: u32 = 0x32;
 const MOVC: u32 = 0x37;
@@ -45,6 +49,8 @@ pub enum Kind {
     Literal([f32; 4]),
     /// A texture, `t<n>`.
     Texture,
+    /// An output, `o<n>`.
+    Output,
     /// Anything else (outputs, constants, samplers, indexed registers).
     Other,
 }
@@ -71,8 +77,8 @@ impl Operand {
         }
     }
 
-    fn writes(&self, register: u32, c: u8) -> bool {
-        self.kind == Kind::Temp
+    fn writes_as(&self, kind: Kind, register: u32, c: u8) -> bool {
+        self.kind == kind
             && self.register == register
             && self.components[..self.written].contains(&c)
     }
@@ -86,17 +92,25 @@ pub struct Instruction {
 }
 
 impl Instruction {
-    /// Whether it writes component `c` of temporary `register`.
-    fn writes(&self, register: u32, c: u8) -> bool {
-        let results = match self.opcode {
+    /// How many of its operands it writes.
+    fn results(&self) -> usize {
+        match self.opcode {
             o if NO_RESULT.contains(&o) => 0,
             o if TWO_RESULTS.contains(&o) => 2,
             _ => 1,
-        };
+        }
+    }
+
+    /// Whether it writes component `c` of temporary `register`.
+    fn writes(&self, register: u32, c: u8) -> bool {
+        self.writes_as(Kind::Temp, register, c)
+    }
+
+    fn writes_as(&self, kind: Kind, register: u32, c: u8) -> bool {
         self.operands
             .iter()
-            .take(results)
-            .any(|o| o.writes(register, c))
+            .take(self.results())
+            .any(|o| o.writes_as(kind, register, c))
     }
 }
 
@@ -239,6 +253,7 @@ fn operand(words: &[u32], at: &mut usize) -> Result<Operand> {
     let kind = match (kind, dimension) {
         (0, 1) => Kind::Temp,
         (1, 1) => Kind::Input,
+        (2, 1) => Kind::Output,
         (7, 1) => Kind::Texture,
         _ => Kind::Other,
     };
@@ -304,7 +319,7 @@ fn sample_scale(code: &[Instruction], at: usize) -> Option<Scale> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Overlay {
     /// The texture slots the base is computed from.
-    pub base: std::collections::BTreeSet<u32>,
+    pub base: BTreeSet<u32>,
     /// The blend's texture slot…
     pub slot: u32,
     /// …the scale it is sampled at…
@@ -380,7 +395,7 @@ fn overlay(
     let dest = code[at].operands.first()?;
     let mut channels = Vec::new();
     let mut found: Option<(u32, Option<Scale>, f32)> = None;
-    let mut base = std::collections::BTreeSet::new();
+    let mut base = BTreeSet::new();
     for &c in &dest.components[..dest.written] {
         let ((slot, scale, channel, from), strength) = each(c)?;
         if found.is_some_and(|f| f.0 != slot || f.2 != strength) {
@@ -439,20 +454,86 @@ fn halves(code: &[Instruction], m: Value) -> Option<(Core, Value)> {
 
 /// The texture slots whose samples component `c` of `register` at `at` is computed
 /// from, through every instruction before it (ignoring branches).
-fn slots(code: &[Instruction], at: usize, register: u32, c: u8) -> std::collections::BTreeSet<u32> {
-    let mut out = std::collections::BTreeSet::new();
+fn slots(code: &[Instruction], at: usize, register: u32, c: u8) -> BTreeSet<u32> {
+    let Some(d) = definition(code, at, register, c) else {
+        return BTreeSet::new();
+    };
+    trace(code, d, c, sampled_slot)
+        .into_iter()
+        .filter_map(|s| match s {
+            Source::Texture { slot, .. } => Some(slot),
+            Source::Input { .. } => None,
+        })
+        .collect()
+}
+
+/// What a value is computed from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Source {
+    /// A channel (0 red … 3 alpha) of the texture in `slot`, sampled or fetched.
+    Texture { slot: u32, channel: u8 },
+    /// A component of an input, `v<register>`.
+    Input { register: u32, component: u8 },
+}
+
+/// The textures' channels and the inputs component `c` (x = 0 … w = 3) of output
+/// `o<register>` is computed from, as the program leaves it: through every
+/// instruction before its last write (ignoring branches), not through a texture
+/// read's coordinates. Constants and literals are left out; empty when the program
+/// never writes it.
+pub fn output_sources(code: &[Instruction], register: u32, c: u8) -> BTreeSet<Source> {
+    code.iter()
+        .rposition(|i| i.writes_as(Kind::Output, register, c))
+        .map(|d| trace(code, d, c, read_slot))
+        .unwrap_or_default()
+}
+
+/// The texture slots `code` samples or fetches from.
+pub fn read_slots(code: &[Instruction]) -> BTreeSet<u32> {
+    code.iter().filter_map(read_slot).collect()
+}
+
+/// The output registers `code` writes.
+pub fn outputs(code: &[Instruction]) -> BTreeSet<u32> {
+    code.iter()
+        .flat_map(|i| i.operands.iter().take(i.results()))
+        .filter(|o| o.kind == Kind::Output)
+        .map(|o| o.register)
+        .collect()
+}
+
+/// The texture slot instruction `i` samples or fetches (`ld`) from.
+fn read_slot(i: &Instruction) -> Option<u32> {
+    if i.opcode == LD {
+        return i
+            .operands
+            .get(2)
+            .filter(|t| t.kind == Kind::Texture)
+            .map(|t| t.register);
+    }
+    sampled_slot(i)
+}
+
+/// What component `c` of the value the instruction at `at` writes is computed from,
+/// a texture read being one `reads` names a slot for.
+fn trace(
+    code: &[Instruction],
+    at: usize,
+    c: u8,
+    reads: fn(&Instruction) -> Option<u32>,
+) -> BTreeSet<Source> {
+    let mut out = BTreeSet::new();
     let mut seen = std::collections::HashSet::new();
-    let mut todo: Vec<(usize, u32, u8)> = vec![(at, register, c)];
-    while let Some((at, register, c)) = todo.pop() {
-        let Some(d) = definition(code, at, register, c) else {
-            continue;
-        };
+    let mut todo: Vec<(usize, u8)> = vec![(at, c)];
+    while let Some((d, c)) = todo.pop() {
         if !seen.insert((d, c)) {
             continue;
         }
         let i = &code[d];
-        if let Some(slot) = sampled_slot(i) {
-            out.insert(slot);
+        if let Some(slot) = reads(i) {
+            // The resource's swizzle says which of its channels each component takes.
+            let channel = i.operands[2].components[c as usize];
+            out.insert(Source::Texture { slot, channel });
             continue;
         }
         let read: &[u8] = match i.opcode {
@@ -461,9 +542,19 @@ fn slots(code: &[Instruction], at: usize, register: u32, c: u8) -> std::collecti
             DP4 => &[0, 1, 2, 3],
             _ => &[c],
         };
-        for o in i.operands.iter().skip(1).filter(|o| o.kind == Kind::Temp) {
+        for o in i.operands.iter().skip(i.results()) {
             for &k in read {
-                todo.push((d, o.register, o.components[k as usize]));
+                let k = o.components[k as usize];
+                match o.kind {
+                    Kind::Temp => todo.extend(definition(code, d, o.register, k).map(|e| (e, k))),
+                    Kind::Input => {
+                        out.insert(Source::Input {
+                            register: o.register,
+                            component: k,
+                        });
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -529,6 +620,10 @@ pub(crate) mod tests {
         /// `r<n>` written with `mask` (bits x = 1 … w = 8).
         pub fn dest(n: u32, mask: u32) -> Vec<u32> {
             vec![2 | mask << 4 | 1 << 20, n]
+        }
+        /// `o<n>` written with `mask`.
+        pub fn output(n: u32, mask: u32) -> Vec<u32> {
+            vec![2 | mask << 4 | 2 << 12 | 1 << 20, n]
         }
         /// `<kind><n>` read with `swizzle` (four component numbers).
         fn read(kind: u32, n: u32, swizzle: [u32; 4]) -> Vec<u32> {
@@ -777,7 +872,7 @@ pub(crate) mod tests {
         code.extend(overlay(10, [2; 4]));
         let code = parse(&res(&code)).unwrap();
         let o = overlays(&code);
-        let base = std::collections::BTreeSet::from([3]);
+        let base = BTreeSet::from([3]);
         assert_eq!(
             o,
             [
@@ -797,6 +892,67 @@ pub(crate) mod tests {
                 },
             ]
         );
+    }
+
+    /// An output's sources follow its value back through temporaries to the texture
+    /// channels and inputs it is made from, not to a read's coordinates.
+    #[test]
+    fn traces_an_output_to_texture_channels_and_inputs() {
+        let code = parse(&res(&[
+            // r0.xy = v2.xy: coordinates, which the outputs must not pick up
+            ins(0x36, &[op::dest(0, 3), op::input(2, [0, 1, 0, 0])]),
+            // r15.xyz = t2.zyx: x takes blue
+            ins(
+                0x45,
+                &[
+                    op::dest(15, 7),
+                    op::temp(0, [0, 1, 0, 0]),
+                    op::texture_as(2, [2, 1, 0, 3]),
+                    op::sampler(0),
+                ],
+            ),
+            // o0.w = r15.x × v1.w
+            ins(
+                MUL,
+                &[
+                    op::output(0, 8),
+                    op::temp(15, [0, 0, 0, 0]),
+                    op::input(1, [3, 3, 3, 3]),
+                ],
+            ),
+            // r14.x = ld t5 at r0, then o1.x = r14.x + r15.y (green)
+            ins(
+                LD,
+                &[op::dest(14, 1), op::temp(0, [0, 1, 0, 0]), op::texture(5)],
+            ),
+            ins(
+                ADD,
+                &[
+                    op::output(1, 1),
+                    op::temp(14, [0, 0, 0, 0]),
+                    op::temp(15, [1, 1, 1, 1]),
+                ],
+            ),
+        ]))
+        .unwrap();
+        let texture = |slot, channel| Source::Texture { slot, channel };
+        assert_eq!(
+            output_sources(&code, 0, 3),
+            BTreeSet::from([
+                texture(2, 2),
+                Source::Input {
+                    register: 1,
+                    component: 3
+                }
+            ])
+        );
+        assert_eq!(
+            output_sources(&code, 1, 0),
+            BTreeSet::from([texture(5, 0), texture(2, 1)])
+        );
+        assert!(output_sources(&code, 2, 0).is_empty());
+        assert_eq!(outputs(&code), BTreeSet::from([0, 1]));
+        assert_eq!(read_slots(&code), BTreeSet::from([2, 5]));
     }
 
     #[test]

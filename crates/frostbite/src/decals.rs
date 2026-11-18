@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::dxbc::{self, Source};
 use crate::ebx::name_hash;
 use crate::mesh::half;
 use crate::reader::Reader;
@@ -69,6 +70,22 @@ pub struct Decal {
 pub struct Bound {
     pub slot: u32,
     pub name: String,
+}
+
+/// What a decal shader's coverage (the alpha it writes with every target) is made
+/// of, from its program: the channels of its textures, and whether the vertex's
+/// opacity ([`Vertex::fade`]) scales it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Coverage {
+    /// Each bound texture and the channel of it (0 red … 3 alpha) it reads.
+    pub textures: Vec<(Bound, u8)>,
+    /// Whether the vertex's opacity (input `v1.w`) scales it.
+    pub faded: bool,
+    /// The program's outputs (render targets).
+    pub targets: BTreeSet<u32>,
+    /// The slots it reads that its shader's parameter block does not bind: textures
+    /// the engine supplies.
+    pub unbound: BTreeSet<u32>,
 }
 
 /// A decal vertex.
@@ -160,6 +177,29 @@ impl Decals {
         Ok(self.bindings(&db, &shaderdb::texture_names(store, &wanted)))
     }
 
+    /// Each shader the decals name with its program's [`Coverage`], from Palm City's
+    /// shader database; a shader with no permutation is left out. Every decal shader
+    /// has one permutation; with more, the first is read.
+    pub fn coverage(&self, store: &Store) -> Result<BTreeMap<String, Coverage>> {
+        let db = ShaderDb::read(store)?;
+        let bound = self.textures(store)?;
+        let mut entries = store.entries()?;
+        let mut out = BTreeMap::new();
+        for (shader, textures) in bound {
+            let Some(p) = db.permutations_of(name_hash(&shader.to_lowercase())).next() else {
+                continue;
+            };
+            let name = shaderdb::program_name(&db.programs[p.program as usize]);
+            let asset = store
+                .res(&name)
+                .ok_or_else(|| Error(format!("{shader}: {name} not in the store")))?;
+            let code = dxbc::parse(&entries.read(asset.location)?)
+                .map_err(|e| Error(format!("{shader}: {name}: {e}")))?;
+            out.insert(shader, coverage(&code, &textures));
+        }
+        Ok(out)
+    }
+
     /// The shaders the decals name, each once.
     fn shaders(&self) -> BTreeSet<&str> {
         self.decals
@@ -178,6 +218,35 @@ impl Decals {
         let data = store.entries()?.read(asset.location)?;
         Self::parse(&data).map_err(|e| Error(format!("{DECALS}: {e}")))
     }
+}
+
+/// The coverage of the program `code`, whose shader binds `textures`: the sources of
+/// its first target's alpha (`o0.w`), which every target repeats.
+fn coverage(code: &[dxbc::Instruction], textures: &[Bound]) -> Coverage {
+    let mut c = Coverage {
+        textures: Vec::new(),
+        faded: false,
+        targets: dxbc::outputs(code),
+        unbound: dxbc::read_slots(code)
+            .into_iter()
+            .filter(|s| textures.iter().all(|b| b.slot != *s))
+            .collect(),
+    };
+    for s in dxbc::output_sources(code, 0, 3) {
+        match s {
+            Source::Texture { slot, channel } => {
+                if let Some(b) = textures.iter().find(|b| b.slot == slot) {
+                    c.textures.push((b.clone(), channel));
+                }
+            }
+            Source::Input {
+                register: 1,
+                component: 3,
+            } => c.faded = true,
+            Source::Input { .. } => {}
+        }
+    }
+    c
 }
 
 /// A decal's record before its mesh is read.
@@ -592,6 +661,72 @@ mod tests {
                 "drv_cracks_decal_01_n",
                 "ut_naturalnoises_d"
             ]
+        );
+    }
+
+    /// Each decal shader's coverage, from its program: one or two channels of its own
+    /// textures (the tyre tracks' three in one mask's red, green and blue), scaled by
+    /// the vertex's opacity on all but 13 shaders, written to three or four targets.
+    #[test]
+    fn the_decals_programs_cover_by_a_texture_channel() {
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let store = Store::open(Path::new(&dir)).unwrap();
+        let s = Decals::read(&store).unwrap();
+        let all = s.coverage(&store).unwrap();
+        assert_eq!(all.len(), 49);
+        let short = |b: &Bound| b.name.rsplit('/').next().unwrap().to_lowercase();
+        let of = |shader: &str| -> (Vec<(String, u8)>, &Coverage) {
+            let (_, c) = all.iter().find(|(s, _)| s.ends_with(shader)).unwrap();
+            (
+                c.textures.iter().map(|(b, ch)| (short(b), *ch)).collect(),
+                c,
+            )
+        };
+        for (shader, channel) in [("01", 1), ("03", 0), ("04", 2)] {
+            let (t, c) = of(&format!("/TS_Decal_TireTracks_{shader}_2D"));
+            assert_eq!(t, [("t_tiretracks_01_a".to_string(), channel)]);
+            assert!(c.faded);
+            assert_eq!(c.targets, BTreeSet::from([0, 1, 2, 3]));
+            assert_eq!(c.unbound, BTreeSet::from([5, 6]));
+        }
+        let (t, c) = of("/TS_Road_Cracks_01_2D");
+        assert_eq!(t, [("drv_cracks_decal_01_d".to_string(), 2)]);
+        assert_eq!(c.targets, BTreeSet::from([0, 1, 2]));
+        assert_eq!(c.unbound, BTreeSet::from([4]));
+        let (t, c) = of("/TS_Road_Cracks_01_Disp");
+        assert_eq!(t, [("drv_cracks_decal_01_d".to_string(), 2)]);
+        assert_eq!(c.targets, BTreeSet::from([0, 2]));
+        let (t, _) = of("/TS_AsphaltRoad_01_2D");
+        assert_eq!(
+            t,
+            [
+                ("drv_set1_medium_damage_d".to_string(), 3),
+                ("ts_roadside_mask_01".to_string(), 0)
+            ]
+        );
+        // The parking lots pick a channel by the vertex, through an indexed register.
+        assert!(of("/TS_Decal_Plot_ParkingLots").0.is_empty());
+        let empty: Vec<&str> = all
+            .iter()
+            .filter(|(_, c)| c.textures.is_empty())
+            .map(|(s, _)| s.rsplit('/').next().unwrap())
+            .collect();
+        assert_eq!(
+            empty,
+            [
+                "TS_Decal_Lawnmower_TireTracks_ScatterMask_01_2D",
+                "TS_Decal_Plot_ParkingLots",
+                "TS_Decal_CropFields_ScatterMask"
+            ]
+        );
+        assert!(all.values().all(|c| c.textures.len() <= 2));
+        assert_eq!(all.values().filter(|c| c.faded).count(), 36);
+        assert!(
+            all.values()
+                .all(|c| c.targets.contains(&0) && c.targets.contains(&2))
         );
     }
 
