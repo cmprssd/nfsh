@@ -451,8 +451,18 @@ The vertices carry two colours: the first (0x1E) scales the layers' blue (green 
 
 Besides these, the shader darkens it when wet (`WaterCycle`) and for occlusion
 (`OccShadow_*`, which leaves it as it is at the defaults), and adds the normal maps.
-nfsh draws the normal maps (red and green as in "Normal maps" below), each as much as
-its layer shows; the wet look and occlusion not yet.
+The two layers' red and green are mixed as much as step 2's clean layer shows. In
+`rd_drv_blendwithterrain` the shoulder's red and green (`Shoulder_NH` at the third
+coordinates times `Shoulder_Tiling`, with no test of x, unlike its blue; at (0, 0)
+without them) are then joined to them while still stored as 0 to 1: with l the
+layers' and s the shoulder's, the vector (l + s, 3 (1 − s·l)) made unit length, and
+its x and y unpacked (× 2 − 1) as a normal map's red and green. Flat maps give
+−0.03 on both, and a layer's slope comes out about 0.6 as steep as on its own. The
+third component is made 1 − xy rather than √(1 − x² − y²), then the whole turned by
+the vertex's frame and made unit length, mixed from the vertex normal by
+`Overall_NormalIntensity_VE` (1). nfsh draws the normal maps that way (red and green
+as in "Normal maps" below, the third component as on every map); the wet look and
+occlusion not yet.
 
 A parameter block's constants (between its third and fourth offsets) are records of
 60 bytes: the constant's name (32 bytes, zero-padded), its name hash, a slot word,

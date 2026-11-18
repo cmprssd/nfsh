@@ -6,6 +6,16 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-11-18
+
+### Added
+
+- The asphalt's shoulder normal: `Shoulder_NH`'s red and green now bend the road where
+  it gives way to the ground, joined to the two layers' normal maps as the game's
+  `rd_drv_blendwithterrain` programs join them (added before unpacking, then made unit
+  length). The road's relief is a little softer as a result (as the game's), and its
+  edge takes the shoulder's own slope.
+
 ## [0.66.0] - 2026-11-18
 
 ### Fixed

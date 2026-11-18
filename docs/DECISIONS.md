@@ -638,7 +638,7 @@ the meshes' alone), the ground's layers to follow.
   one as its colour shows, each at its layer's tiling, flat where the ground shows
   through at its edges. The shoulder's red and green (also a normal) are left out.
   Why: the same split as the colour and the heights; how the original mixes them was
-  not read from its programs.
+  not read from its programs. (Since 2026-11-18 drawn: "The shoulder's normal".)
 
 ## 2026-11-01: The progress page's before and after
 
@@ -1742,3 +1742,29 @@ the shoulder atlas's sampling) with a throwaway build writing one term to a chan
   "Asphalt", step 5). If the ground's drawing changes and the map does not follow, the
   road mesh's outer band would differ from the ground beside it; the `road-edge` profile
   above is the check.
+
+## 2026-11-18: The shoulder's normal (decided by Claude, pending review)
+
+Follows "Normal maps" (2026-11-01), which left `Shoulder_NH`'s red and green out.
+
+- **Joined to the layers' normal as the program joins them**: read in two
+  `rd_drv_blendwithterrain` programs with a colour output, one sampling the shoulder
+  at the third coordinates times `Shoulder_Tiling`, one at (0, 0). Both add its red
+  and green to the layers' (mixed by the clean layer's share) as stored, 0 to 1, with
+  3 (1 − shoulder · layers) as the third component, make that unit length and only
+  then unpack its x and y (FORMATS "Asphalt"). nfsh does the same in `shouldered`
+  (zone.wgsl), only where the shader is `rd_drv_blendwithterrain`. Why: it is what the
+  game draws; drawing the layers alone made their relief steeper than the game's.
+- **Its consequences kept, not corrected**: flat maps tilt the normal slightly (−0.03
+  on both axes once unpacked), and a layer's slope comes out about 0.6 as steep as it
+  did. Why: they are the program's, on every road with this shader.
+- **The third component stays nfsh's √(1 − x² − y²)**, where the program writes
+  1 − xy. Why: the shared `bent` serves every normal map, and for the asphalt's slopes
+  (x and y under about 0.2) the two tilt the normal within about a degree of each
+  other (16.4° against 15.2° at 0.2 and −0.2).
+- **Measured** on the `road-edge` history view (3739,82.5,2978,20,-60, headless,
+  0.66.0's build against this one): 711k of the 922k pixels change, by 4 levels on
+  average (of 255; 95% within 9), the road's mean 1 level darker and its fine relief
+  7% softer (high-pass rms 13.8 → 12.8 over the road); the band along the edge, where
+  the shoulder's own normal tilts, changes most (5.8 on average, 95% within 18, at
+  most 70).

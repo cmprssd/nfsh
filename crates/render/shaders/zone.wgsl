@@ -235,7 +235,8 @@ fn overlay(c: vec3<f32>, detail: vec3<f32>, amount: f32) -> vec3<f32> {
 // the mask's red is low; the detail colours follow the layers' blue times the vertex
 // colour's green and blue, and the noise times the second vertex colour; the wheel
 // paths (the mask's blue, dark) take their tint. The layers' normal maps bend the
-// normal as much as each layer shows, and not where the ground shows through.
+// normal as much as each layer shows, with the shoulder's added where the road gives
+// way to the ground, and not where the ground shows through.
 @fragment
 fn fs_asphalt(in: Out) -> @location(0) vec4<f32> {
     let clean_uv = in.uv * look.tiling.xy;
@@ -259,9 +260,12 @@ fn fs_asphalt(in: Out) -> @location(0) vec4<f32> {
     // The mesh's normal, or the triangle's where it has none, so the ground's can be
     // bent from it too.
     let base = vec4(select(upward(in.world), normalize(in.normal.xyz), in.normal.w > 0.5), 1.0);
-    var normal = bent(base, in.tangent, mix(damaged_n.rg, clean_n.rg, s));
-    if look.edge.z > 0.5 {
-        let road = road_shows(in, s, height, clean_n.b, mask.g);
+    let edged = look.edge.z > 0.5;
+    let shoulder_n = textureSample(shoulder, filtered, in.uv3 * look.edge.xy);
+    let layers = mix(damaged_n.rg, clean_n.rg, s);
+    var normal = bent(base, in.tangent, select(layers, shouldered(layers, shoulder_n.rg), edged));
+    if edged {
+        let road = road_shows(in, s, height, clean_n.b, mask.g, shoulder_n.b);
         let under = ground_under(in.world.xz);
         let level = ground_normal_under(in.world.xz, base.xyz);
         c = mix(under.colour, c, road);
@@ -270,15 +274,24 @@ fn fs_asphalt(in: Out) -> @location(0) vec4<f32> {
     return shade(in.world, normal, clamp(c, vec3(0.04), vec3(0.5)), 1.0);
 }
 
+// The layers' normal-map red and green `layers` with the shoulder's `shoulder`, as
+// Heat's road programs join them: added as stored (0 to 1, not yet unpacked), with
+// 3 (1 - shoulder . layers) as the third component, made unit length, the red and
+// green of that to be unpacked. Flat maps give a slight tilt (-0.03 on both once
+// unpacked), as in the game; the sum's third component is at least 0, never all zero.
+fn shouldered(layers: vec2<f32>, shoulder: vec2<f32>) -> vec2<f32> {
+    return normalize(vec3(layers + shoulder, 3.0 * (1.0 - dot(shoulder, layers)))).xy;
+}
+
 // How much of the road shows over the ground: where the shoulder's blue says, in
 // the third coordinates (none outside 0 to 1 across), and the vertex colour's red;
 // taken away where the mask's green times the layers' height (as blended by `s`)
 // falls under the dirt's offset, unless the red keeps it.
-fn road_shows(in: Out, s: f32, damaged_height: f32, clean_height: f32, green: f32) -> f32 {
+fn road_shows(in: Out, s: f32, damaged_height: f32, clean_height: f32, green: f32, blue: f32) -> f32 {
     let height = mix(damaged_height, clean_height, s);
     let dirt = 1.0 - blend(green * (1.0 - look.dirt.z) * height, look.dirt.x, look.dirt.y);
     let across = in.uv3.x >= 0.0 && in.uv3.x <= 1.0;
-    let edge = select(0.0, saturate(textureSample(shoulder, filtered, in.uv3 * look.edge.xy).b), across);
+    let edge = select(0.0, saturate(blue), across);
     let red = in.vertex_colour.r;
     return max(edge, red) * (1.0 - dirt * (1.0 - red));
 }
