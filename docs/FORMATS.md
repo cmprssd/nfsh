@@ -851,8 +851,24 @@ little-endian.
   runs across a track (0 to 1 or 2), v along it. The four halves are equal on 2,601
   decals (0 to 1, lower at a track's ends): likely its opacity.
 
-nfsh does not draw them yet; each shader's textures are in the level's shader database
-("Shader programs", below), not looked up for them yet.
+**Each decal shader's textures** (worked out on 2026-11-18; `Decals::textures` reads
+them and a store test checks them) are in the level's shader database ("Terrain
+layers", below), found as the layers' are: by the hash of the shader's lowercase name
+to its permutations, and from their parameter block the textures' name hashes, each an
+ebx texture the store names. All 49 shaders the decals name are there, each with one
+permutation; they bind 65 textures, in slots from 1 on with no gap. A colour shader
+binds a diffuse or colour map and most a normal map, and many a shared noise
+(`ut_naturalnoises_d`): `TS_Road_Cracks_01_2D` binds `drv_cracks_decal_01_d`, `_n` and
+the noise; `TS_Decal_TireTracks_01_2D` (1,510 decals) binds `t_tiretracks_01_nha`,
+the desert gravel's normal and diffuse, and `t_tiretracks_01_a`, likely the track's
+mask; the parking lots bind `parkinglots` alone. A scatter mask shader binds one of
+its colour shader's maps (the tracks' `_a` or `_nha`, the crop mask), but the
+lawnmower tracks' binds none. A displacement shader binds its colour shader's maps
+less the noise: the tracks' `_nha` (likely normal, height and alpha), the manholes'
+`_d`, `_n` and `_smd`. How each program samples and mixes them is in its bytecode, not
+worked out.
+
+nfsh does not draw the decals yet.
 
 ### Terrain layers
 

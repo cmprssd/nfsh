@@ -188,18 +188,7 @@ pub fn textures(store: &Store) -> Result<BTreeMap<u16, Vec<Texture>>> {
             .iter()
             .flat_map(|s| s.overlays.values().flatten().map(|c| c.0)),
     );
-    let mut names: HashMap<u32, &str> = HashMap::new();
-    for e in store
-        .superbundles
-        .iter()
-        .flat_map(|sb| &sb.bundles)
-        .flat_map(|b| &b.bundle.ebx)
-    {
-        let hash = name_hash(&e.name.to_lowercase());
-        if wanted.contains(&hash) {
-            names.entry(hash).or_insert(&e.name);
-        }
-    }
+    let names = shaderdb::texture_names(store, &wanted);
     Ok(own
         .into_iter()
         .map(|(layer, textures)| {

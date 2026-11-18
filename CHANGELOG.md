@@ -6,6 +6,15 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-11-18
+
+### Added
+
+- The terrain decals' shaders' textures are read (docs/FORMATS.md, "Terrain decals";
+  `Decals::textures`): all 49 shaders the decals name are in Palm City's shader
+  database, binding 65 textures by slot (diffuse, normal, masks, a shared noise), each
+  named by its ebx. A store test checks them.
+
 ## [0.56.0] - 2026-11-18
 
 ### Added

@@ -2,6 +2,9 @@
 //! and its shader permutations (see docs/FORMATS.md, "Terrain layers").
 //! Little-endian.
 
+use std::collections::{BTreeSet, HashMap};
+
+use crate::ebx::name_hash;
 use crate::reader::Reader;
 use crate::store::Store;
 use crate::{Error, Result, bail};
@@ -140,6 +143,24 @@ impl ShaderDb {
         self.permutations_of(shader)
             .flat_map(|p| &self.blocks[p.block as usize])
     }
+}
+
+/// The ebx names of the textures whose name hashes are in `wanted`, as the store
+/// spells them; a hash no ebx has is left out.
+pub fn texture_names(store: &Store, wanted: &BTreeSet<u32>) -> HashMap<u32, String> {
+    let mut names = HashMap::new();
+    for e in store
+        .superbundles
+        .iter()
+        .flat_map(|sb| &sb.bundles)
+        .flat_map(|b| &b.bundle.ebx)
+    {
+        let hash = name_hash(&e.name.to_lowercase());
+        if wanted.contains(&hash) {
+            names.entry(hash).or_insert_with(|| e.name.clone());
+        }
+    }
+    names
 }
 
 /// The res holding the bytecode of the program whose GUID is `guid`:
