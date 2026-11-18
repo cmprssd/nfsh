@@ -51,6 +51,8 @@ pub enum Kind {
     Texture,
     /// An output, `o<n>`.
     Output,
+    /// A constant, `cb<buffer>[<register>]`.
+    Constant { buffer: u32 },
     /// Anything else (outputs, constants, samplers, indexed registers).
     Other,
 }
@@ -228,6 +230,7 @@ fn operand(words: &[u32], at: &mut usize) -> Result<Operand> {
         bail!("a 64-bit literal");
     }
     let mut register = 0;
+    let mut second = 0;
     for d in 0..dimension {
         let index = match token >> (22 + 3 * d) & 7 {
             0 => word(words, at)?,
@@ -246,8 +249,10 @@ fn operand(words: &[u32], at: &mut usize) -> Result<Operand> {
             }
             r => bail!("index representation {r}"),
         };
-        if d == 0 {
-            register = index;
+        match d {
+            0 => register = index,
+            1 => second = index,
+            _ => {}
         }
     }
     let kind = match (kind, dimension) {
@@ -255,6 +260,11 @@ fn operand(words: &[u32], at: &mut usize) -> Result<Operand> {
         (1, 1) => Kind::Input,
         (2, 1) => Kind::Output,
         (7, 1) => Kind::Texture,
+        (8, 2) => {
+            let buffer = register;
+            register = second;
+            Kind::Constant { buffer }
+        }
         _ => Kind::Other,
     };
     Ok(Operand {
@@ -491,6 +501,78 @@ pub fn output_sources(code: &[Instruction], register: u32, c: u8) -> BTreeSet<So
 /// The texture slots `code` samples or fetches from.
 pub fn read_slots(code: &[Instruction]) -> BTreeSet<u32> {
     code.iter().filter_map(read_slot).collect()
+}
+
+/// The constants (`(buffer, register)`) the coordinates of every read of texture
+/// `slot` are computed from, through the temporaries (not through other reads).
+pub fn read_constants(code: &[Instruction], slot: u32) -> BTreeSet<(u32, u32)> {
+    let mut out = BTreeSet::new();
+    let mut todo = Vec::new();
+    for (at, i) in code.iter().enumerate() {
+        if read_slot(i) != Some(slot) {
+            continue;
+        }
+        let Some(coords) = i.operands.get(1) else {
+            continue;
+        };
+        for &k in &coords.components[..2] {
+            match coords.kind {
+                Kind::Temp => todo.extend(definition(code, at, coords.register, k).map(|d| (d, k))),
+                Kind::Constant { buffer } => {
+                    out.insert((buffer, coords.register));
+                }
+                _ => {}
+            }
+        }
+    }
+    out.extend(constants(code, todo));
+    out
+}
+
+/// The constants (`(buffer, register)`) component `c` of output `o<register>` is
+/// computed from, as the program leaves it (ignoring branches), not through a
+/// texture read's coordinates.
+pub fn output_constants(code: &[Instruction], register: u32, c: u8) -> BTreeSet<(u32, u32)> {
+    code.iter()
+        .rposition(|i| i.writes_as(Kind::Output, register, c))
+        .map(|d| constants(code, vec![(d, c)]))
+        .unwrap_or_default()
+}
+
+/// The constants the values the instructions in `todo` write (each an instruction
+/// and a component) are computed from, through the temporaries; a texture read ends
+/// the walk.
+fn constants(code: &[Instruction], mut todo: Vec<(usize, u8)>) -> BTreeSet<(u32, u32)> {
+    let mut out = BTreeSet::new();
+    let mut seen = std::collections::HashSet::new();
+    while let Some((d, c)) = todo.pop() {
+        if !seen.insert((d, c)) {
+            continue;
+        }
+        let i = &code[d];
+        if read_slot(i).is_some() {
+            continue;
+        }
+        let read: &[u8] = match i.opcode {
+            DP2 => &[0, 1],
+            DP3 => &[0, 1, 2],
+            DP4 => &[0, 1, 2, 3],
+            _ => &[c],
+        };
+        for o in i.operands.iter().skip(i.results()) {
+            for &k in read {
+                let k = o.components[k as usize];
+                match o.kind {
+                    Kind::Temp => todo.extend(definition(code, d, o.register, k).map(|e| (e, k))),
+                    Kind::Constant { buffer } => {
+                        out.insert((buffer, o.register));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The output registers `code` writes.
@@ -953,6 +1035,51 @@ pub(crate) mod tests {
         assert!(output_sources(&code, 2, 0).is_empty());
         assert_eq!(outputs(&code), BTreeSet::from([0, 1]));
         assert_eq!(read_slots(&code), BTreeSet::from([2, 5]));
+    }
+
+    #[test]
+    fn finds_the_constants_coordinates_and_outputs_come_from() {
+        let code = parse(&res(&[
+            // r0.xy = v2.xy × cb1[1].xy + cb1[1].zw, then t5 fetched at r0 × cb1[2]
+            ins(
+                MAD,
+                &[
+                    op::dest(0, 3),
+                    op::input(2, [0, 1, 0, 0]),
+                    op::constant(1, 1, [0, 1, 0, 0]),
+                    op::constant(1, 1, [2, 3, 2, 2]),
+                ],
+            ),
+            ins(
+                MUL,
+                &[
+                    op::dest(1, 3),
+                    op::temp(0, [0, 1, 0, 0]),
+                    op::constant(1, 2, [0, 1, 0, 0]),
+                ],
+            ),
+            ins(
+                LD,
+                &[op::dest(14, 1), op::temp(1, [0, 1, 0, 0]), op::texture(5)],
+            ),
+            // t6 sampled at r0 directly
+            sample(0, 6),
+            // o2.y = r14.x × cb1[0].x; the read's coordinates' constants stay out
+            ins(
+                MUL,
+                &[
+                    op::output(2, 2),
+                    op::temp(14, [0, 0, 0, 0]),
+                    op::constant(1, 0, [0, 0, 0, 0]),
+                ],
+            ),
+        ]))
+        .unwrap();
+        assert_eq!(read_constants(&code, 5), BTreeSet::from([(1, 1), (1, 2)]));
+        assert_eq!(read_constants(&code, 6), BTreeSet::from([(1, 1)]));
+        assert!(read_constants(&code, 7).is_empty());
+        assert_eq!(output_constants(&code, 2, 1), BTreeSet::from([(1, 0)]));
+        assert!(output_constants(&code, 0, 0).is_empty());
     }
 
     #[test]

@@ -9,7 +9,7 @@ use crate::dxbc::{self, Source};
 use crate::ebx::name_hash;
 use crate::mesh::half;
 use crate::reader::Reader;
-use crate::shaderdb::{self, ShaderDb};
+use crate::shaderdb::{self, ShaderDb, Supplied};
 use crate::store::Store;
 use crate::{Error, Result, bail};
 
@@ -83,9 +83,10 @@ pub struct Coverage {
     pub faded: bool,
     /// The program's outputs (render targets).
     pub targets: BTreeSet<u32>,
-    /// The slots it reads that its shader's parameter block does not bind: textures
-    /// the engine supplies.
-    pub unbound: BTreeSet<u32>,
+    /// The slots it reads that its shader's parameter block does not bind, textures
+    /// the engine supplies, with what each holds: the terrain's heightfield (fetched
+    /// at 16 texels to build the ground's normal) or its global colour.
+    pub supplied: BTreeMap<u32, Supplied>,
 }
 
 /// A decal vertex.
@@ -195,7 +196,12 @@ impl Decals {
                 .ok_or_else(|| Error(format!("{shader}: {name} not in the store")))?;
             let code = dxbc::parse(&entries.read(asset.location)?)
                 .map_err(|e| Error(format!("{shader}: {name}: {e}")))?;
-            out.insert(shader, coverage(&code, &textures));
+            let supplied = shaderdb::supplied(
+                &code,
+                &db.blocks[p.block as usize],
+                &db.constants[p.block as usize],
+            );
+            out.insert(shader, coverage(&code, &textures, supplied));
         }
         Ok(out)
     }
@@ -220,17 +226,19 @@ impl Decals {
     }
 }
 
-/// The coverage of the program `code`, whose shader binds `textures`: the sources of
-/// its first target's alpha (`o0.w`), which every target repeats.
-fn coverage(code: &[dxbc::Instruction], textures: &[Bound]) -> Coverage {
+/// The coverage of the program `code`, whose shader binds `textures` and is
+/// `supplied` the rest: the sources of its first target's alpha (`o0.w`), which
+/// every target repeats.
+fn coverage(
+    code: &[dxbc::Instruction],
+    textures: &[Bound],
+    supplied: BTreeMap<u32, Supplied>,
+) -> Coverage {
     let mut c = Coverage {
         textures: Vec::new(),
         faded: false,
         targets: dxbc::outputs(code),
-        unbound: dxbc::read_slots(code)
-            .into_iter()
-            .filter(|s| textures.iter().all(|b| b.slot != *s))
-            .collect(),
+        supplied,
     };
     for s in dxbc::output_sources(code, 0, 3) {
         match s {
@@ -537,6 +545,7 @@ mod tests {
                 vec![bind("t_d", 1), bind("t_n", 2)],
                 vec![bind("nameless", 1)],
             ],
+            constants: vec![Vec::new(); 3],
             programs: vec![[0; 16]],
             permutations: vec![
                 permutation("a_2d", 0),
@@ -690,12 +699,15 @@ mod tests {
             assert_eq!(t, [("t_tiretracks_01_a".to_string(), channel)]);
             assert!(c.faded);
             assert_eq!(c.targets, BTreeSet::from([0, 1, 2, 3]));
-            assert_eq!(c.unbound, BTreeSet::from([5, 6]));
+            assert_eq!(
+                c.supplied,
+                BTreeMap::from([(5, Supplied::Heightfield), (6, Supplied::GlobalColor)])
+            );
         }
         let (t, c) = of("/TS_Road_Cracks_01_2D");
         assert_eq!(t, [("drv_cracks_decal_01_d".to_string(), 2)]);
         assert_eq!(c.targets, BTreeSet::from([0, 1, 2]));
-        assert_eq!(c.unbound, BTreeSet::from([4]));
+        assert_eq!(c.supplied, BTreeMap::from([(4, Supplied::GlobalColor)]));
         let (t, c) = of("/TS_Road_Cracks_01_Disp");
         assert_eq!(t, [("drv_cracks_decal_01_d".to_string(), 2)]);
         assert_eq!(c.targets, BTreeSet::from([0, 2]));
@@ -728,6 +740,89 @@ mod tests {
             all.values()
                 .all(|c| c.targets.contains(&0) && c.targets.contains(&2))
         );
+        // Every supplied texture is told by its transform: 9 programs fetch the
+        // heightfield, 17 sample the global colour.
+        let count = |kind| {
+            all.values()
+                .filter(|c| c.supplied.values().any(|k| *k == kind))
+                .count()
+        };
+        assert_eq!(count(Supplied::Unknown), 0);
+        assert_eq!(count(Supplied::Mask), 0);
+        assert_eq!(count(Supplied::Heightfield), 9);
+        assert_eq!(count(Supplied::GlobalColor), 17);
+        assert_eq!(all.values().filter(|c| !c.supplied.is_empty()).count(), 20);
+    }
+
+    /// The layer shaders are supplied the same textures as the decals, and target 2's
+    /// second value is the smoothness: the road cracks pull it toward 0.8 by their
+    /// `wetSmoothness` constant, which reaches no other value.
+    #[test]
+    fn the_layers_are_supplied_alike_and_target_2_holds_the_smoothness() {
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let store = Store::open(Path::new(&dir)).unwrap();
+        let db = ShaderDb::read(&store).unwrap();
+        let mut entries = store.entries().unwrap();
+        let mut program = |shader: &str| {
+            let p = *db
+                .permutations_of(name_hash(&shader.to_lowercase()))
+                .next()
+                .unwrap();
+            let name = shaderdb::program_name(&db.programs[p.program as usize]);
+            let code =
+                dxbc::parse(&entries.read(store.res(&name).unwrap().location).unwrap()).unwrap();
+            let block = p.block as usize;
+            (code, db.blocks[block].clone(), db.constants[block].clone())
+        };
+        let asset = store.res(crate::layers::COMBINATIONS).unwrap();
+        let combinations = store.entries().unwrap().read(asset.location).unwrap();
+        let layers = crate::layers::flat_shaders(&combinations).unwrap();
+        let name = &layers
+            .iter()
+            .find(|s| s.name.ends_with("__46M_46V__2d__0"))
+            .unwrap()
+            .name;
+        let (code, bound, constants) = program(name);
+        assert_eq!(
+            shaderdb::supplied(&code, &bound, &constants),
+            BTreeMap::from([
+                (1, Supplied::Heightfield),
+                (2, Supplied::Mask),
+                (7, Supplied::GlobalColor)
+            ])
+        );
+        let (code, _, constants) =
+            program("Shaders/World/Roads/TS_RoadShaders/TS_Road_Cracks_01_2D");
+        let named = |o, c| -> BTreeSet<String> {
+            dxbc::output_constants(&code, o, c)
+                .into_iter()
+                .filter(|&(b, _)| b == 1)
+                .map(|(_, r)| constants[r as usize].name.clone())
+                .collect()
+        };
+        assert_eq!(
+            named(2, 1),
+            BTreeSet::from([
+                "wetSmoothness".to_string(),
+                "wetSmoothnessBoost".to_string()
+            ])
+        );
+        for (o, c) in [
+            (0, 0),
+            (0, 1),
+            (0, 2),
+            (0, 3),
+            (1, 0),
+            (1, 1),
+            (1, 2),
+            (2, 0),
+            (2, 2),
+        ] {
+            assert!(named(o, c).is_empty(), "o{o}.{c}");
+        }
     }
 
     /// Reads Palm City's decals from the store `NFSH_STORE` points at and checks them:

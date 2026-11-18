@@ -1,9 +1,12 @@
-//! A level's shader database: its parameter blocks (the textures each shader binds)
-//! and its shader permutations (see docs/FORMATS.md, "Terrain layers").
+//! A level's shader database: its parameter blocks (the textures each shader binds
+//! and its named constants) and its shader permutations (see docs/FORMATS.md,
+//! "Terrain layers"), and what the textures a program reads but its block does not
+//! bind hold.
 //! Little-endian.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::dxbc::{self, Instruction};
 use crate::ebx::name_hash;
 use crate::reader::Reader;
 use crate::store::Store;
@@ -19,6 +22,10 @@ const BLOCKS: usize = 0x1C;
 /// between the second and third.
 const BLOCK_HEADER: usize = 56;
 const TEXTURE: usize = 16;
+/// A constant: its name (32 bytes, NUL-padded), its name hash, a slot word, a count
+/// and a default `Vec4`; they lie between the block's third and fourth offsets.
+const CONSTANT: usize = 60;
+const CONSTANT_NAME: usize = 32;
 /// Where Palm City's file holds the programs and their count, then the permutations
 /// and theirs; the sections between the blocks and them are not worked out, so these
 /// are not found from the file.
@@ -44,6 +51,65 @@ pub struct Binding {
     pub slot: u32,
 }
 
+/// A constant a parameter block names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Constant {
+    pub name: String,
+    /// Its register in the program's constant buffer 1: its place in the block's
+    /// list.
+    pub register: u32,
+}
+
+/// What a texture holds that the engine supplies to a terrain or decal program (one
+/// its parameter block does not bind), told by the constant its reads' coordinates
+/// are mapped by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Supplied {
+    /// The terrain's heightfield (`worldToHeightfieldUvTransform`).
+    Heightfield,
+    /// The terrain's global colour (`worldToGlobalColorUvTransform`).
+    GlobalColor,
+    /// The layers' masks (`worldToMask<n>UvTransform`).
+    Mask,
+    /// None of these.
+    Unknown,
+}
+
+/// The slots program `code` reads that its block, binding `bound` and naming
+/// `constants`, does not bind, with what each holds.
+pub fn supplied(
+    code: &[Instruction],
+    bound: &[Binding],
+    constants: &[Constant],
+) -> BTreeMap<u32, Supplied> {
+    dxbc::read_slots(code)
+        .into_iter()
+        .filter(|s| bound.iter().all(|b| b.slot != *s))
+        .map(|slot| {
+            let names: Vec<&str> = dxbc::read_constants(code, slot)
+                .into_iter()
+                .filter(|&(buffer, _)| buffer == 1)
+                .filter_map(|(_, r)| constants.iter().find(|c| c.register == r))
+                .map(|c| c.name.as_str())
+                .collect();
+            let has = |n: &str| names.contains(&n);
+            let kind = if has("worldToHeightfieldUvTransform") {
+                Supplied::Heightfield
+            } else if has("worldToGlobalColorUvTransform") {
+                Supplied::GlobalColor
+            } else if names
+                .iter()
+                .any(|n| n.starts_with("worldToMask") && n.ends_with("UvTransform"))
+            {
+                Supplied::Mask
+            } else {
+                Supplied::Unknown
+            };
+            (slot, kind)
+        })
+        .collect()
+}
+
 /// One compiled variant of a shader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Permutation {
@@ -59,6 +125,8 @@ pub struct Permutation {
 pub struct ShaderDb {
     /// Each parameter block's textures, in the order it lists them.
     pub blocks: Vec<Vec<Binding>>,
+    /// Each parameter block's constants, in its order.
+    pub constants: Vec<Vec<Constant>>,
     /// Each program's GUID, as stored: its bytecode is the res [`program_name`] names.
     pub programs: Vec<[u8; 16]>,
     pub permutations: Vec<Permutation>,
@@ -68,10 +136,12 @@ impl ShaderDb {
     pub fn parse(data: &[u8]) -> Result<Self> {
         let count = Reader::at(data, BLOCK_COUNT_AT)?.u32_le()? as usize;
         let mut blocks = Vec::with_capacity(count.min(data.len() / BLOCK_HEADER));
+        let mut constants = Vec::with_capacity(blocks.capacity());
         let mut at = BLOCKS;
         for b in 0..count {
             let block = read_block(data, at).map_err(|e| Error(format!("block {b}: {e}")))?;
             blocks.push(block.1);
+            constants.push(block.2);
             at += block.0;
         }
         if at > PROGRAM_COUNT_AT {
@@ -118,6 +188,7 @@ impl ShaderDb {
         }
         Ok(Self {
             blocks,
+            constants,
             programs,
             permutations,
         })
@@ -180,17 +251,17 @@ pub fn program_name(guid: &[u8; 16]) -> String {
     )
 }
 
-/// Reads the parameter block at `at`: its size and its textures.
-fn read_block(data: &[u8], at: usize) -> Result<(usize, Vec<Binding>)> {
+/// Reads the parameter block at `at`: its size, its textures and its constants.
+fn read_block(data: &[u8], at: usize) -> Result<(usize, Vec<Binding>, Vec<Constant>)> {
     let mut r = Reader::at(data, at)?;
     let size = r.u64_le()?;
     let mut offsets = [0; 6];
     for o in &mut offsets {
         *o = r.u64_le()?;
     }
-    let (from, to) = (offsets[1], offsets[2]);
-    if size < BLOCK_HEADER as u64 || !(from <= to && to <= size) {
-        bail!("size {size}, textures from {from} to {to}");
+    let (from, to, end) = (offsets[1], offsets[2], offsets[3]);
+    if size < BLOCK_HEADER as u64 || !(from <= to && to <= end && end <= size) {
+        bail!("size {size}, textures from {from} to {to}, constants to {end}");
     }
     let (from, to) = (from as usize, to as usize);
     let mut r = Reader::at(data, at + from)?;
@@ -201,8 +272,20 @@ fn read_block(data: &[u8], at: usize) -> Result<(usize, Vec<Binding>)> {
         r.bytes(8)?;
         textures.push(Binding { texture, slot });
     }
+    let end = end as usize;
+    let mut r = Reader::at(data, at + to)?;
+    let mut constants = Vec::with_capacity((end - to) / CONSTANT);
+    for register in 0..((end - to) / CONSTANT) as u32 {
+        let c = r.bytes(CONSTANT)?;
+        let name = &c[..CONSTANT_NAME];
+        let name = &name[..name.iter().position(|&b| b == 0).unwrap_or(CONSTANT_NAME)];
+        constants.push(Constant {
+            name: String::from_utf8_lossy(name).into_owned(),
+            register,
+        });
+    }
     Reader::at(data, at)?.bytes(size as usize)?;
-    Ok((size as usize, textures))
+    Ok((size as usize, textures, constants))
 }
 
 #[cfg(test)]
@@ -213,25 +296,36 @@ pub(crate) mod tests {
         d[at..at + bytes.len()].copy_from_slice(bytes);
     }
 
-    /// A block binding `textures` (name hash, slot), with 8 bytes of constants after.
+    /// A block binding `textures` (name hash, slot), with 8 bytes after.
     fn block(textures: &[(u32, u32)]) -> Vec<u8> {
-        let end = (BLOCK_HEADER + TEXTURE * textures.len()) as u64;
+        block_with(textures, &[])
+    }
+
+    /// A block binding `textures` (name hash, slot) and naming `constants`, with 8
+    /// bytes after.
+    fn block_with(textures: &[(u32, u32)], constants: &[&str]) -> Vec<u8> {
+        let to = (BLOCK_HEADER + TEXTURE * textures.len()) as u64;
+        let end = to + (CONSTANT * constants.len()) as u64;
         let mut d = Vec::new();
-        for v in [
-            end + 8,
-            0,
-            BLOCK_HEADER as u64,
-            end,
-            end + 8,
-            end + 8,
-            end + 8,
-        ] {
+        for v in [end + 8, 0, BLOCK_HEADER as u64, to, end, end + 8, end + 8] {
             d.extend_from_slice(&v.to_le_bytes());
         }
         for &(name, slot) in textures {
             d.extend_from_slice(&name.to_le_bytes());
             d.extend_from_slice(&slot.to_le_bytes());
             d.extend_from_slice(&[0; 8]);
+        }
+        for (i, name) in constants.iter().enumerate() {
+            let mut c = [0; CONSTANT];
+            c[..name.len()].copy_from_slice(name.as_bytes());
+            put(&mut c, CONSTANT_NAME, &name_hash(name).to_le_bytes());
+            put(
+                &mut c,
+                CONSTANT_NAME + 4,
+                &(0x1_0001 + i as u32).to_le_bytes(),
+            );
+            put(&mut c, CONSTANT_NAME + 8, &4u32.to_le_bytes());
+            d.extend_from_slice(&c);
         }
         d.extend_from_slice(&[0xCC; 8]);
         d
@@ -299,6 +393,93 @@ pub(crate) mod tests {
         assert_eq!(db.programs.len(), 103);
         assert_eq!(db.programs[101][0], 101);
         assert_eq!(db.permutations_of(0xA).count(), 2);
+    }
+
+    #[test]
+    fn reads_a_blocks_constants_in_order() {
+        let d = block_with(&[(7, 1)], &["heightfieldPixelSizeAndAspect", "isOpaque"]);
+        let (size, textures, constants) = read_block(&d, 0).unwrap();
+        assert_eq!(size, d.len());
+        assert_eq!(
+            textures,
+            [Binding {
+                texture: 7,
+                slot: 1
+            }]
+        );
+        let c = |name: &str, register| Constant {
+            name: name.into(),
+            register,
+        };
+        assert_eq!(
+            constants,
+            [c("heightfieldPixelSizeAndAspect", 0), c("isOpaque", 1)]
+        );
+        let mut crossed = d;
+        put(&mut crossed, 32, &(1u64 << 20).to_le_bytes());
+        assert!(read_block(&crossed, 0).is_err(), "constants past the block");
+    }
+
+    /// A program fetching t5 at a heightfield transform and sampling t6 at a global
+    /// colour one, t1 bound: t5 and t6 are supplied, each told by its transform.
+    #[test]
+    fn tells_supplied_textures_by_their_coordinates_transform() {
+        use crate::dxbc::tests::{ins, op, res, sample};
+        let mad = |dest, constant| {
+            ins(
+                0x32,
+                &[
+                    op::dest(dest, 3),
+                    op::input(2, [0, 1, 0, 0]),
+                    op::constant(1, constant, [0, 1, 0, 0]),
+                    op::constant(1, constant, [2, 3, 2, 2]),
+                ],
+            )
+        };
+        let code = dxbc::parse(&res(&[
+            mad(0, 2),
+            ins(
+                0x2D,
+                &[op::dest(14, 1), op::temp(0, [0, 1, 0, 0]), op::texture(5)],
+            ),
+            mad(1, 4),
+            sample(1, 6),
+            mad(2, 3),
+            sample(2, 7),
+            sample(1, 1),
+        ]))
+        .unwrap();
+        let constants: Vec<Constant> = [
+            "heightfieldPixelSizeAndAspect",
+            "clipToWorldSpaceXzTransform",
+            "worldToHeightfieldUvTransform",
+            "worldToMask0UvTransform",
+            "worldToGlobalColorUvTransform",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, n)| Constant {
+            name: n.to_string(),
+            register: i as u32,
+        })
+        .collect();
+        let bound = [Binding {
+            texture: 9,
+            slot: 1,
+        }];
+        assert_eq!(
+            supplied(&code, &bound, &constants),
+            BTreeMap::from([
+                (5, Supplied::Heightfield),
+                (6, Supplied::GlobalColor),
+                (7, Supplied::Mask)
+            ])
+        );
+        assert_eq!(
+            supplied(&code, &bound, &[])[&5],
+            Supplied::Unknown,
+            "no names"
+        );
     }
 
     #[test]
