@@ -360,13 +360,46 @@ stands** (worked out on 2026-11-06): both layer diffuses of all 88 asphalt mater
 `BC1_UNORM` or `BC7_UNORM`, while most ordinary diffuses are `…_SRGB`, and the shaders' programs
 multiply the sample by its tint with no decoding, then write it to the G-buffer. So
 the red's mean is 0.34, times the tint 0.57 is 0.19, before the detail colours.
-A decal's texture holds its shape in one channel, which `alphaSelector`
-picks: (1, 0, 0, 0) for cracks and tyre marks (red), (0, 1, 0, 0) for road lines
-(green, the stripes); `Opacity` scales it (tyre marks 0.4). Its colour is the
-texture's red times `lineColor` (0.214 for cracks, 0.003 for tyre marks, 0.716 for arrows, a
-default of 1), in 27 of the 29 decal programs writing a colour; the other two are not read.
-Road lines set no `lineColor`: their texture's red is near white (214) and their
-vertex colour makes them white or yellow.
+**A decal's programs** (worked out on 2026-11-18 from all 183 programs of the three
+`rd_dcl_transparentdcl_…` shaders in the level's shader database, "Terrain layers"
+below; a store test in `frostbite::shaderdb` checks them). 29 write a colour (target
+1): 12 of `…_lerp`, 9 of `…_lerpnsmultiply`, 8 of `…_lerpbasecolor`; the others
+write only the normal and smoothness targets, or nothing. In all 29 the colour
+texture is t3 and:
+
+- **The colour** is its red times `lineColor` (default 1, so the red as it stands).
+  Where wet it is darkened: raised to the power (A + 2.4)/2 and mixed toward that by
+  min(0.8 r + A, 1), r a rain amount (a function of `WaterCycle`'s phase, 0 at its
+  default 0) and A how deep a puddle is (a smoothstep of twice the water level, also
+  from `WaterCycle`, over a height made of the shared noise, the vertex normal's slope
+  and the normal map's blue scaled by t7's green). `…_lerp` then mixes it toward
+  `WaterColor` (default 0.143, 0.134, 0.118) by the same smoothstep of ten times the
+  depth, so a puddle 0.1 deep is water.
+  Dry, at the defaults, it is the red times `lineColor`. `…_lerpnsmultiply` writes
+  1 + coverage × (colour − 1), for a multiplying blend: it darkens what is under it.
+- **The coverage** is the texture's **blue and alpha weighed by `alphaSelector`'s x
+  and y** (default (1, 0, 0, 0): the blue), times `Opacity`, when the material turns
+  on `diffuseRGBAOpacity` (a `BoolParameters` entry; off by default, the coverage is
+  then the alpha), times (1 − the vertex's first input)^`vertexColorSharpener` when it
+  turns on `VertexColorOpacity`. It is then scaled by a dirt term from t7's red
+  (`Dirt_Height_…`) and, with `Splat_Mask_OnOff`, a splat mask in world space. Never
+  the red or green: in `drv_cracks_decal_01_d` the red is a grey almost everywhere and
+  the blue and alpha are masks (zero on 64% and 60% of texels); in
+  `drv_l_roadlines_01_d` the red is near white (214) and the alpha the stripes (45%
+  on). The skid marks' material sets `diffuseRGBAOpacity` and `VertexColorOpacity`
+  true. nfsh still weighs all four channels by the selector (red for cracks, green for
+  lines), so its decals cover more than the game's.
+- **t7**, which no block binds, holds a dirt amount (red) and a puddle height scale
+  (green). Programs 433 and 442, the last two read, are one program but for it: 433
+  samples it at a fixed point, (0, 0), 442 at the mesh's first coordinates, with the
+  decal's own textures at its second. Where the block binds another texture at t6
+  (the noise then at t7), it is t8.
+- The road G-buffer is packed unlike the terrain's: target 0 holds the normal (x and
+  y, turned through one of the engine's matrices, picked per pixel) and the
+  smoothness, from `Smoothness` (default 1) times the texture's green where the normal
+  map's blue is over `SmoothTreshold`, plus the wetness, kept within 0.1 to 0.9;
+  target 2's blue is `reflectance` (default 0.5) times the normal map's alpha, pulled
+  toward 0.3 where wet. Everything is premultiplied by the coverage.
 
 **Asphalt** (`rd_drv_blendwithterrain`, `rd_drv_basesurface_wetness`; worked out on
 2026-11-01 from the material parameters, the textures and the shaders' programs).

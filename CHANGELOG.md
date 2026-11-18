@@ -6,6 +6,19 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-11-18
+
+### Added
+
+- The road decals' programs are all read: the last two (433 and 442, one program
+  sampling the engine's wetness and dirt texture at a fixed point or at the mesh's
+  coordinates) paint the colour texture's red times `lineColor` like the other 27,
+  darkened when wet and, in `…_lerp`, mixed toward `WaterColor` in puddles. Their
+  coverage is the texture's blue and alpha weighed by `alphaSelector`, never its red
+  or green; nfsh's renderer still weighs all four, so its road decals cover more than
+  the game's (docs/FORMATS.md, "Road materials"). `shaderdb::Constant` gives each
+  constant's default value. A store test checks all 29.
+
 ## [0.64.0] - 2026-11-18
 
 ### Added

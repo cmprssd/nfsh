@@ -26,6 +26,8 @@ const TEXTURE: usize = 16;
 /// and a default `Vec4`; they lie between the block's third and fourth offsets.
 const CONSTANT: usize = 60;
 const CONSTANT_NAME: usize = 32;
+/// Where a constant's default `Vec4` starts: after its name, hash, slot word and count.
+const CONSTANT_DEFAULT: usize = CONSTANT_NAME + 12;
 /// Where Palm City's file holds the programs and their count, then the permutations
 /// and theirs; the sections between the blocks and them are not worked out, so these
 /// are not found from the file.
@@ -52,12 +54,14 @@ pub struct Binding {
 }
 
 /// A constant a parameter block names.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Constant {
     pub name: String,
     /// Its register in the program's constant buffer 1: its place in the block's
     /// list.
     pub register: u32,
+    /// Its value where a material sets none.
+    pub default: [f32; 4],
 }
 
 /// What a texture holds that the engine supplies to a terrain or decal program (one
@@ -279,9 +283,15 @@ fn read_block(data: &[u8], at: usize) -> Result<(usize, Vec<Binding>, Vec<Consta
         let c = r.bytes(CONSTANT)?;
         let name = &c[..CONSTANT_NAME];
         let name = &name[..name.iter().position(|&b| b == 0).unwrap_or(CONSTANT_NAME)];
+        let mut default = [0.0; 4];
+        for (k, v) in default.iter_mut().enumerate() {
+            let at = CONSTANT_DEFAULT + 4 * k;
+            *v = f32::from_le_bytes([c[at], c[at + 1], c[at + 2], c[at + 3]]);
+        }
         constants.push(Constant {
             name: String::from_utf8_lossy(name).into_owned(),
             register,
+            default,
         });
     }
     Reader::at(data, at)?.bytes(size as usize)?;
@@ -325,6 +335,7 @@ pub(crate) mod tests {
                 &(0x1_0001 + i as u32).to_le_bytes(),
             );
             put(&mut c, CONSTANT_NAME + 8, &4u32.to_le_bytes());
+            put(&mut c, CONSTANT_DEFAULT, &(i as f32 + 0.5).to_le_bytes());
             d.extend_from_slice(&c);
         }
         d.extend_from_slice(&[0xCC; 8]);
@@ -410,6 +421,7 @@ pub(crate) mod tests {
         let c = |name: &str, register| Constant {
             name: name.into(),
             register,
+            default: [register as f32 + 0.5, 0.0, 0.0, 0.0],
         };
         assert_eq!(
             constants,
@@ -461,6 +473,7 @@ pub(crate) mod tests {
         .map(|(i, n)| Constant {
             name: n.to_string(),
             register: i as u32,
+            default: [0.0; 4],
         })
         .collect();
         let bound = [Binding {
@@ -523,5 +536,105 @@ pub(crate) mod tests {
             ShaderDb::parse(&crossed).is_err(),
             "textures past the block"
         );
+    }
+
+    /// The road decals' programs (`rd_dcl_transparentdcl_…`): the 29 writing a colour
+    /// paint their colour texture's (t3) red by `lineColor`, darkened when wet, and
+    /// cover by its blue and alpha, weighed by `alphaSelector`, never its red or green.
+    #[test]
+    fn the_road_decals_paint_red_by_line_color_and_cover_by_blue_or_alpha() {
+        use crate::dxbc::{Kind, Source};
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let store = Store::open(std::path::Path::new(&dir)).unwrap();
+        let db = ShaderDb::read(&store).unwrap();
+        let mut entries = store.entries().unwrap();
+        let t3 = |channel| Source::Texture { slot: 3, channel };
+        let mut painting = BTreeMap::new();
+        let mut code_of = HashMap::new();
+        for shader in ["lerp", "lerpnsmultiply", "lerpbasecolor"] {
+            let name = format!("shaders/world/roads/rd_dcl_transparentdcl_{shader}");
+            let programs: BTreeMap<u32, u32> = db
+                .permutations_of(name_hash(&name))
+                .map(|p| (p.program, p.block))
+                .collect();
+            for (program, block) in programs {
+                let asset = store
+                    .res(&program_name(&db.programs[program as usize]))
+                    .unwrap();
+                let code = dxbc::parse(&entries.read(asset.location).unwrap()).unwrap();
+                if !dxbc::outputs(&code).contains(&1) {
+                    continue;
+                }
+                let constants = &db.constants[block as usize];
+                let register = |name: &str| {
+                    let c = constants.iter().find(|c| c.name == name).unwrap();
+                    (1, c.register)
+                };
+                let paint = dxbc::output_sources(&code, 1, 0);
+                assert!(paint.contains(&t3(0)), "{program}: {paint:?}");
+                let paint = dxbc::output_constants(&code, 1, 0);
+                assert!(paint.contains(&register("lineColor")), "{program}");
+                assert!(paint.contains(&register("WaterCycle")), "{program}");
+                let cover = dxbc::output_sources(&code, 1, 3);
+                assert!(
+                    cover.contains(&t3(2)) && cover.contains(&t3(3)),
+                    "{program}"
+                );
+                assert!(
+                    !cover.contains(&t3(0)) && !cover.contains(&t3(1)),
+                    "{program}"
+                );
+                let cover = dxbc::output_constants(&code, 1, 3);
+                for name in ["alphaSelector", "Opacity", "diffuseRGBAOpacity"] {
+                    assert!(cover.contains(&register(name)), "{program}: {name}");
+                }
+                let default =
+                    |name: &str| constants.iter().find(|c| c.name == name).unwrap().default;
+                assert_eq!(default("lineColor"), [1.0, 1.0, 1.0, 0.0]);
+                assert_eq!(default("alphaSelector"), [1.0, 0.0, 0.0, 0.0]);
+                assert_eq!(default("diffuseRGBAOpacity"), [0.0; 4]);
+                assert_eq!(default("WaterCycle"), [0.0; 4]);
+                painting
+                    .entry(shader)
+                    .or_insert_with(Vec::new)
+                    .push(program);
+                code_of.insert(program, (code, block));
+            }
+        }
+        let count: Vec<(&str, usize)> = painting.iter().map(|(s, p)| (*s, p.len())).collect();
+        assert_eq!(
+            count,
+            [("lerp", 12), ("lerpbasecolor", 8), ("lerpnsmultiply", 9)]
+        );
+        // Only `…_lerp` mixes toward a water colour, a dark warm grey.
+        for (program, (_, block)) in &code_of {
+            let water = db.constants[*block as usize]
+                .iter()
+                .find(|c| c.name == "WaterColor");
+            assert_eq!(water.is_some(), painting["lerp"].contains(program));
+            if let Some(w) = water {
+                assert_eq!(w.default, [0.143, 0.134, 0.118, 0.0]);
+            }
+        }
+        // 433 and 442 are one program but for t7, the engine's wetness and dirt
+        // texture: 433 samples it at a fixed point, 442 at the mesh's first
+        // coordinates (its own textures at its second).
+        let t7_at = |program: u32| {
+            let (code, _) = &code_of[&program];
+            let read = code
+                .iter()
+                .find(|i| {
+                    i.operands
+                        .iter()
+                        .any(|o| o.kind == Kind::Texture && o.register == 7)
+                })
+                .unwrap();
+            read.operands[1].kind
+        };
+        assert_eq!(t7_at(433), Kind::Literal([0.0; 4]));
+        assert_eq!(t7_at(442), Kind::Temp);
     }
 }
