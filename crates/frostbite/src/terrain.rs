@@ -810,6 +810,73 @@ impl Heightfield {
         let length = (dx * dx + 1.0 + dz * dz).sqrt();
         Some([-dx / length, 1.0 / length, -dz / length])
     }
+
+    /// The `CELLS + 1` raw samples (0 a hole) along one edge of the tile, border left
+    /// out: along z for [`Edge::MinX`] and [`Edge::MaxX`], along x for the others.
+    pub fn edge(&self, edge: Edge) -> Vec<u16> {
+        let (first, last) = (BORDER, BORDER + CELLS);
+        (first..=last)
+            .map(|k| {
+                let (row, column) = match edge {
+                    Edge::MinX => (k, first),
+                    Edge::MaxX => (k, last),
+                    Edge::MinZ => (first, k),
+                    Edge::MaxZ => (last, k),
+                };
+                self.samples[row * SAMPLES + column]
+            })
+            .collect()
+    }
+}
+
+/// A side of a tile's square.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    MinX,
+    MaxX,
+    MinZ,
+    MaxZ,
+}
+
+impl Edge {
+    pub const ALL: [Edge; 4] = [Edge::MinX, Edge::MaxX, Edge::MinZ, Edge::MaxZ];
+
+    /// The side of the neighbour that shares this one.
+    pub fn opposite(self) -> Edge {
+        match self {
+            Edge::MinX => Edge::MaxX,
+            Edge::MaxX => Edge::MinX,
+            Edge::MinZ => Edge::MaxZ,
+            Edge::MaxZ => Edge::MinZ,
+        }
+    }
+}
+
+/// How far, in the heights' units, a finer tile's edge `fine` lies from its coarser
+/// neighbour's edge over the same stretch, `coarse`, drawn as straight lines between
+/// its samples: the greatest distance at any of `fine`'s samples (0 when every one
+/// lies on the coarse edge). Heat's tiles are made so this is next to nothing
+/// (docs/FORMATS.md, "Terrain"), so a crack where detail changes is at most that
+/// wide. `None` where either has a hole, or the lengths are not `n·k + 1` and
+/// `n + 1` samples.
+pub fn edge_gap(fine: &[u16], coarse: &[u16]) -> Option<f32> {
+    let spans = coarse.len().checked_sub(1).filter(|&n| n > 0)?;
+    let k = fine.len().checked_sub(1).filter(|f| f % spans == 0)? / spans;
+    if k == 0 || fine.contains(&0) || coarse.contains(&0) {
+        return None;
+    }
+    let gap = fine
+        .iter()
+        .enumerate()
+        .map(|(i, &f)| {
+            let (span, j) = (i / k, i % k);
+            let a = f32::from(coarse[span]);
+            let b = coarse.get(span + 1).map_or(a, |&b| f32::from(b));
+            let line = a + (b - a) * j as f32 / k as f32;
+            (f32::from(f) - line).abs()
+        })
+        .fold(0.0, f32::max);
+    Some(gap)
 }
 
 /// A tile's colour, `COLOUR_SIDE` × `COLOUR_SIDE` texels (sRGB-encoded) in rows
@@ -2212,6 +2279,43 @@ mod tests {
     }
 
     #[test]
+    fn an_edge_is_its_samples_from_border_to_border() {
+        // Each sample is its row plus 1: the x edges rise along z, the z edges are
+        // one row's value throughout.
+        let h = Heightfield::parse(&rows()).unwrap();
+        let rising: Vec<u16> = (BORDER as u16 + 1..=(BORDER + CELLS) as u16 + 1).collect();
+        assert_eq!(h.edge(Edge::MinX), rising);
+        assert_eq!(h.edge(Edge::MaxX), rising);
+        assert_eq!(h.edge(Edge::MinZ), vec![BORDER as u16 + 1; CELLS + 1]);
+        assert_eq!(
+            h.edge(Edge::MaxZ),
+            vec![(BORDER + CELLS) as u16 + 1; CELLS + 1]
+        );
+        assert!(Edge::ALL.iter().all(|e| e.opposite().opposite() == *e));
+        assert_eq!(Edge::MinZ.opposite(), Edge::MaxZ);
+    }
+
+    #[test]
+    fn an_edges_gap_is_its_distance_from_the_coarser_edges_lines() {
+        // Two coarse spans, four fine samples to each: on the lines, then one off.
+        let coarse = [100, 140, 120];
+        let mut fine = vec![100, 110, 120, 130, 140, 135, 130, 125, 120];
+        assert_eq!(edge_gap(&fine, &coarse), Some(0.0));
+        fine[5] = 132;
+        assert_eq!(edge_gap(&fine, &coarse), Some(3.0));
+        // Twice as fine, the in-between samples halfway.
+        assert_eq!(edge_gap(&[100, 121, 140], &[100, 140]), Some(1.0));
+        // The same detail: sample against sample.
+        assert_eq!(edge_gap(&[7, 9], &[7, 8]), Some(1.0));
+        // Holes, and lengths that don't fit, have no gap.
+        assert_eq!(edge_gap(&[100, 0, 140], &[100, 140]), None);
+        assert_eq!(edge_gap(&[100, 120, 140], &[0, 140]), None);
+        assert_eq!(edge_gap(&[1, 2, 3, 4], &[1, 4, 7]), None);
+        assert_eq!(edge_gap(&[1, 2], &[1]), None);
+        assert_eq!(edge_gap(&[], &[1, 2]), None);
+    }
+
+    #[test]
     fn the_ground_takes_each_leaf_from_its_own_heights_or_an_ancestors() {
         let tree = Tree::parse(&sample()).unwrap();
         let mut asked = Vec::new();
@@ -2738,6 +2842,85 @@ mod tests {
             }
         }
         assert_eq!((equal, near, holes), (2_365, 37, 2));
+        // Where detail changes: every leaf heightfield at its finest (its finer
+        // chunk's quadrants when it has them), each edge against the neighbour of its
+        // size or larger across it. Counted by the gap from the coarser edge's lines
+        // (within 2 units, within 5, more), for edges between pieces of one size and
+        // of two; edges with a hole aside.
+        let mut pieces: Vec<([f32; 2], f32, Heightfield)> = Vec::new();
+        for (i, t) in tree.tiles.iter().enumerate() {
+            let Some(h) = heights[i].as_ref().filter(|_| t.children.is_none()) else {
+                continue;
+            };
+            let halves = t
+                .finer
+                .filter(|&(_, size)| finer_layout(size).unwrap().0)
+                .map(|(id, _)| {
+                    let chunk = chunks.read(&id).unwrap();
+                    Finer::parse(&chunk, tree.finer_pages(t))
+                        .unwrap()
+                        .heights
+                        .unwrap()
+                });
+            match halves {
+                Some(q) => {
+                    for (h, min) in q.into_iter().zip(quadrants(t.min, t.size)) {
+                        pieces.push((min, t.size / 2.0, h));
+                    }
+                }
+                None => pieces.push((t.min, t.size, h.clone())),
+            }
+        }
+        // The axis a side lies across, and its x or z.
+        let line = |min: [f32; 2], size: f32, e: Edge| match e {
+            Edge::MinX => (0, min[0]),
+            Edge::MaxX => (0, min[0] + size),
+            Edge::MinZ => (1, min[1]),
+            Edge::MaxZ => (1, min[1] + size),
+        };
+        let mut by_line: HashMap<(u8, u32), Vec<usize>> = HashMap::new();
+        for (n, (min, size, _)) in pieces.iter().enumerate() {
+            for e in Edge::ALL {
+                let at = line(*min, *size, e).1;
+                by_line.entry((e as u8, at.to_bits())).or_default().push(n);
+            }
+        }
+        let (mut same, mut mixed, mut holes) = ([0usize; 3], [0usize; 3], 0);
+        for (n, (min, size, h)) in pieces.iter().enumerate() {
+            for e in Edge::ALL {
+                let (axis, at) = line(*min, *size, e);
+                let along = 1 - axis;
+                let Some(across) = by_line.get(&(e.opposite() as u8, at.to_bits())) else {
+                    continue;
+                };
+                for &m in across {
+                    let (min1, size1, h1) = &pieces[m];
+                    let inside =
+                        min1[along] <= min[along] && min[along] + size <= min1[along] + size1;
+                    // Each pair of one size once, from its lower side.
+                    if size1 < size || !inside || (size1 == size && m < n) {
+                        continue;
+                    }
+                    let ratio = (size1 / size) as usize;
+                    let first = ((min[along] - min1[along]) / size1 * CELLS as f32) as usize;
+                    let coarse = &h1.edge(e.opposite())[first..=first + CELLS / ratio];
+                    let Some(gap) = edge_gap(&h.edge(e), coarse) else {
+                        holes += 1;
+                        continue;
+                    };
+                    let count = if ratio == 1 { &mut same } else { &mut mixed };
+                    count[if gap <= 2.0 {
+                        0
+                    } else if gap <= 5.0 {
+                        1
+                    } else {
+                        2
+                    }] += 1;
+                }
+            }
+        }
+        assert_eq!(pieces.len(), 7_469);
+        assert_eq!((same, mixed, holes), ([14_554, 0, 0], [252, 24, 2], 33));
     }
 
     /// Reads the surface map's table and checks it against Palm City's material grid
