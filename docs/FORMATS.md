@@ -865,8 +865,48 @@ mask; the parking lots bind `parkinglots` alone. A scatter mask shader binds one
 its colour shader's maps (the tracks' `_a` or `_nha`, the crop mask), but the
 lawnmower tracks' binds none. A displacement shader binds its colour shader's maps
 less the noise: the tracks' `_nha` (likely normal, height and alpha), the manholes'
-`_d`, `_n` and `_smd`. How each program samples and mixes them is in its bytecode, not
-worked out.
+`_d`, `_n` and `_smd`.
+
+**How the programs use them** (worked out on 2026-11-18 from the 49 programs, one per
+shader; `Decals::coverage` reads each program's coverage with `dxbc::output_sources`,
+and a store test checks it). They are pixel shaders with no branches, and they write
+**the targets the terrain's layer shaders write, packed the same way** (read on
+`46M_46V__2d` and on the decals): target 0 holds the normal's x and the colour's red
+and green, target 1 the normal's z, a value and the normal's y, target 2 the colour's
+blue (twice) and a value, every target's alpha the coverage, and everything multiplied
+by it (premultiplied). The normal is in the world's frame (x, up, z), stored as
+½n + ½; the colour is stored as its square root. Programs writing a fourth target
+(the layer shaders, the tyre tracks and the dirt roads) give it zeros and the
+coverage. The two values, likely smoothness and a specular or occlusion term, are not
+worked out. So the decals are drawn into the ground's own layer targets, likely its
+virtual texture pages, not over the finished frame.
+
+- **The coverage** (the alpha) is one channel of one of the shader's own textures
+  (two on the sea weed and on the roads' asphalt, with the roadside mask's red), times
+  the vertex's four halves' last (`v1.w`, so the halves are the opacity) on 36 of the
+  49: on every colour shader but the parking lots and their lines and the white lines,
+  and on the road decals' displacement shaders. The three tyre-track shaders share one
+  mask, `t_tiretracks_01_a`, holding three tracks: `_01` reads its green, `_03` its red
+  and `_04` its blue. Elsewhere it is the `_d` map's blue (road cracks, gutters,
+  concrete tiles) or alpha (manholes, plough, erosion), a mask's red (crop fields, wet
+  sand, white lines) or a normal map's alpha (river, golf bunker). The parking lots
+  pick red, green or blue of `parkinglots` by the vertex (`v1.z`, through an indexed
+  register, which `output_sources` does not follow) and paint a constant light grey;
+  the lawnmower tracks' scatter mask writes a constant 0.6 and the crop fields' writes
+  one minus the crop mask with a coverage of 0.
+- **Textures no block binds**: 20 programs read one or two slots just past their
+  bound ones, which the engine supplies: one fetched (`ld`) at 16 texels around the
+  point (the tyre tracks, plough, sea weed, golf bunker, field edge, dirt road 02),
+  one sampled once at the position mapped by constants (the road decals, crop fields,
+  erosion, lawnmower tracks, tyre tracks). The road cracks square that sample's colour
+  and mix 29.5% of it into their grey. Likely the ground's heights (for its normal, as
+  the layer shaders build theirs from the heightfield) and its colour; not confirmed.
+- **The road cracks**, as an example: the `_d` map's red is a grey (times 0.527), its
+  blue the coverage, its green a value; the `_n` map's red and green are the normal,
+  turned by the vertex's frame, and its blue a depth that, overlaid with the noise
+  (`ut_naturalnoises_d` at a 500th of the position) and sharpened (×20 − 7), says
+  where the crack shows its normal and darkens the grey. Skid marks 01 paint a
+  constant colour through their mask's red.
 
 nfsh does not draw the decals yet.
 
@@ -955,7 +995,9 @@ bytecode. nfsh reads the tiling from it (below, "Shader programs").
 
 Worked out on 2026-11-01; `frostbite::dxbc` reads a program as far as finding the
 scales a terrain shader samples a texture at, and `frostbite::layers` each layer
-diffuse's primary scale, which a store test checks.
+diffuse's primary scale, which a store test checks. `dxbc::output_sources` follows an
+output back through the temporaries to the textures' channels (by the resource's
+swizzle) and the inputs it is made from (2026-11-18, for the decals' coverage).
 
 **A bytecode res** is a 32-byte header (u32s 1 and 1, the container's size, its
 offset, 0x20, then zeros) and a Direct3D shader container (`DXBC`): its chunk count

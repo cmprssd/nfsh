@@ -6,6 +6,18 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-11-18
+
+### Added
+
+- How the terrain decals' programs use their textures is read (docs/FORMATS.md,
+  "Terrain decals"; `Decals::coverage`, `dxbc::output_sources`): the decals write the
+  terrain layer shaders' own targets, packed the same way (normal, colour as its
+  square root, two values, premultiplied by the coverage), and each one's coverage is
+  one channel of its own textures, scaled by the vertex's opacity on 36 of the 49
+  shaders. The three tyre-track shaders pick red, green or blue of one shared mask. A
+  store test checks every program.
+
 ## [0.57.0] - 2026-11-18
 
 ### Added

@@ -51,9 +51,10 @@ Every reader is bounds-checked and returns `Error`; none panics. Formats are des
 - `layers.rs`: terrain layer tree, per-layer textures and shader bindings.
 - `scatter.rs`: terrain scattering (VisualResource), each layer's meshes and their settings.
 - `decals.rs`: terrain decals (`DecalsResource`), meshes laid on the ground, their shaders'
-  textures.
+  textures and coverage.
 - `shaderdb.rs`: level shader database, parameter blocks, permutations, texture names.
-- `dxbc.rs`: DXBC (SM5) bytecode, read only for terrain texture sample scales.
+- `dxbc.rs`: DXBC (SM5) bytecode: terrain texture sample scales, overlays, what an output
+  is made from.
 - `lighting.rs`: time-of-day sun, sky and exposure; sky panorama and gradient.
 - `level.rs`: level graph, sub-level bundles, zones, placed meshes in world space.
 
