@@ -213,6 +213,62 @@ fn a_normal_map_bends_the_mesh_normal() {
     assert_eq!(missing.len(), 1);
 }
 
+/// Far vegetation (`Shading::Vista`) on the square, grey, its frame's normal
+/// `normal` (towards the camera: -z) and its tangent along +x with `sign`, with a
+/// normal map.
+fn vista(normal: [f32; 3], sign: f32, shading: Shading) -> impl Fn(&Geometry) -> Section {
+    move |g| {
+        let mut g = g.clone();
+        let frame = Frame {
+            normal,
+            tangent: [1.0, 0.0, 0.0],
+            sign,
+        };
+        g.frames = Some(vec![frame; g.positions.len()]);
+        Section {
+            normal_map: Some([9; 16]),
+            ..textured(1, shading)(&g)
+        }
+    }
+}
+
+#[test]
+fn far_vegetation_takes_its_normal_maps_blue_and_mirrors_it_behind() {
+    let draw = |section, map: [u8; 8]| {
+        let (m, missing) = middle(section, |id| {
+            Ok(if *id == [9; 16] {
+                bc1(0x36, map)
+            } else {
+                bc1(0x37, solid(16, 32, 16))
+            })
+        });
+        assert_eq!(missing, []);
+        m
+    };
+    let front = [0.0, 0.0, -1.0];
+    // Blue whole: as flat as a leaf's map whose blue is made up.
+    let flat = draw(vista(front, 1.0, Shading::Cutout), solid(16, 32, 0));
+    let whole = draw(vista(front, 1.0, Shading::Vista), solid(16, 32, 31));
+    assert!(
+        whole.iter().zip(&flat).all(|(a, b)| a.abs_diff(*b) <= 2),
+        "{whole:?} {flat:?}"
+    );
+    // Blue none: the normal points into the card, away from the sun.
+    let none = draw(vista(front, 1.0, Shading::Vista), solid(16, 32, 0));
+    assert!(none[0] + 20 < whole[0], "{none:?} {whole:?}");
+    // Green 60 degrees up the bitangent, seen from behind: mirrored across the card,
+    // lit as the same map seen from the front (whose bitangent then runs the other
+    // way), not turned around as a leaf's normal is.
+    let up = solid(16, 59, 16);
+    // The bitangent runs up here: the mirrored normal still points up, tinted by
+    // the sky's blue; the leaf's, turned around, points down.
+    let behind = draw(vista([0.0, 0.0, 1.0], 1.0, Shading::Vista), up);
+    assert_eq!(behind, draw(vista(front, -1.0, Shading::Vista), up));
+    let leaf = draw(vista([0.0, 0.0, 1.0], 1.0, Shading::Cutout), up);
+    let sky = |p: [u8; 4]| i32::from(p[2]) - i32::from(p[0]);
+    assert!(sky(behind) > sky(leaf) + 10, "{behind:?} {leaf:?}");
+}
+
 #[test]
 fn draws_a_placed_mesh_where_the_camera_sees_it() {
     let gpu = Gpu::new_headless().unwrap();

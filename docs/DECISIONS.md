@@ -633,7 +633,7 @@ the meshes' alone), the ground's layers to follow.
   `Normal_Tiling`, `Normal02`, `backgroundNormal`, graffiti's in its second
   coordinates) and blue are left out. Why: they appear about a hundred times among
   zone 495's 1,081 materials, beside a `Normal` or in place of it, and what each does
-  needs its shader read.
+  needs its shader read. (Since 2026-11-19 `_NT` is drawn: "Far vegetation".)
 - **Asphalt blends its two layers' normal maps as its colour**: as much of the clean
   one as its colour shows, each at its layer's tiling, flat where the ground shows
   through at its edges. The shoulder's red and green (also a normal) are left out.
@@ -1768,3 +1768,37 @@ Follows "Normal maps" (2026-11-01), which left `Shoulder_NH`'s red and green out
   7% softer (high-pass rms 13.8 → 12.8 over the road); the band along the edge, where
   the shoulder's own normal tilts, changes most (5.8 on average, 95% within 18, at
   most 70).
+
+## 2026-11-19: Far vegetation (decided by Claude, pending review)
+
+Follows "Normal maps" (2026-11-01), which left the other normal maps out.
+
+- **`_NT` first, of the six left**: near zone 495, `_NT` is on 23 materials over 557
+  placements, against `ParallaxNH` (18 materials, 61 placements: road decals beside a
+  `Normal`), `Normal_Tiling` (tree trunks, 42), `Dirt_BG_Normal` (wet asphalt, 30),
+  `backgroundNormal` (11) and `Normal02` (4). Why: the most placed, and the only one
+  standing in place of a `Normal`, so the only one whose surfaces drew no relief.
+- **Its colour too**: the same materials name `_CA` and nothing else, which nfsh read
+  as no colour: every far tree and bush was a solid grey slab. Drawn as the program
+  draws it (FORMATS "Far vegetation"): `_CA`'s colour, cut out by its alpha. Why: a
+  normal map on a grey slab shows nothing; the colour is what changes the picture.
+- **The dither at its middle**: the program cuts where alpha (0.76 + 0.24 noise) is
+  under 0.585; nfsh cuts under 0.665, the noise taken as a half. Why: no noise
+  texture or new binding for a threshold the textures barely test (no texel of the
+  urban tree's alpha lies between 0.5 and 0.665).
+- **Blue as stored and the mirror behind**, as the program: its normals point either
+  side of the card (blue under a half on up to 46% of it), and seen from behind it
+  mirrors them across the card, keeping their sideways part. In `vista` (zone.wgsl),
+  reached from `fs_cutout` by the draw's look (`cut.y`), so no new pipeline. Why: a
+  made-up blue would face every leaf towards the card's front, and turning the normal
+  around (as every other draw is) would light the far side of a crown from the wrong
+  side.
+- **Left out**: `_NT`'s alpha (1 − a/4 into the G-buffer, not worked out),
+  `TerrainNormalSoften` and `Color` (no material sets them; their defaults change
+  nothing), and vista structures (`_CA` with `_NS`, still grey: their program unread).
+- **Measured** on the gallery's six zone 495 views (headless, 0.67.0's renders against
+  this build; a pixel changed when a channel moves more than 8): speedway-overview
+  5.26%, track-wide 2.94%, grandstand 1.59%, track-low 0.71%, pipe 0.39%,
+  barrels-night 0.07%, by 54 to 97 levels on average where they change (24 at night).
+  The grey slabs on the skyline become trees; a few light specks show at the crowns'
+  edges, where the filtered alpha passes the cut over a light colour.

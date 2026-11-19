@@ -1461,6 +1461,31 @@ increasing. The shaders' defaults are flat: `shaders/generictextures/ut_default_
 (8², BC3: 0.5, 0.5, 1) and `systems/terrain/meshscattering/normalmapdefault_n`
 (4², BC5).
 
+**Far vegetation** (`shaders/world/vegetation/veg_ss_vista_lodfade_ao_vertex`; worked
+out on 2026-11-19): a tree's or bush's last LOD (`vista_Mat`, a few crossed cards: 6
+triangles on `tree_urban_large_a_04`) names `_CA` and `_NT` and nothing else; near zone
+495, 23 materials over 557 placements. Its G-buffer programs (block 504, 74
+instructions; slot 1 `_NT`, slot 2 `_CA`, slot 3 a noise) read both at the first
+coordinates:
+
+- `_CA` (512², BC7 sRGB): the colour, times `Color` (white by default), and the
+  alpha that cuts it out: a pixel goes where alpha × (0.76 + 0.24 × noise) is under
+  0.585, the noise (`cloudnoise_v2` at 8 times the coordinates) a dither. The alpha
+  is two-valued in practice: on the urban tree no texel lies between 0.5 and 0.665.
+- `_NT` (512², BC7 unorm): red, green **and blue** the normal, each × 2 − 1, turned
+  by the vertex's frame (red along the tangent, green along the bitangent, blue along
+  the normal), made unit length and mixed towards straight up by
+  `TerrainNormalSoften` (0 by default; none of the 23 sets it or `Color`). Blue is
+  stored, not made up: the three are unit length to 0.98 to 0.99, and blue goes below
+  a half on as much as 46% of a card (urban tree: 31 to 46% under −0.2 by quarter),
+  the crown's normals pointing either side of its card. Seen from behind, the normal is
+  mirrored across the card (its part along the vertex normal reversed), not turned
+  around. Alpha goes to the G-buffer as 1 − a/4 (not worked out).
+
+nfsh draws them so ([`Shading::Vista`](../crates/render/src/scene.rs)), the dither
+taken at its middle (alpha under 0.585 / 0.88 = 0.665). Vista structures
+(`vista_structures_alpha`: `_CA` with `_NS`) are not read yet.
+
 The header (0x84 bytes; every texture res is exactly that, and its 16 bytes of res
 metadata are 0x0C, then the flags below in byte 4, then zeros):
 

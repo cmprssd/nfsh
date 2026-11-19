@@ -45,6 +45,12 @@ pub enum Shading {
     /// The texture's colour; pixels whose alpha is under a half are not drawn
     /// (leaves).
     Cutout,
+    /// A far tree or bush (`veg_ss_vista_lodfade_ao_vertex`): the texture is its
+    /// `_CA`, its colour and alpha, cut out where the alpha is under 0.665, and
+    /// its normal map its `_NT`, red, green and blue the normal along the frame,
+    /// mirrored across the surface where it is seen from behind (see
+    /// `docs/FORMATS.md`, "Far vegetation").
+    Vista,
     /// The texture's red channel as a grey, times `tint`: a road's asphalt when its
     /// layers are not all there.
     Grey { tint: [f32; 3] },
@@ -218,8 +224,8 @@ pub fn tangent(f: &frostbite::mesh::Frame) -> [i8; 4] {
 /// paint it with `lineColor`; asphalt (`Tarmac_FG_Diffuse`) is [`Asphalt`] when it names the rest
 /// of its layers ([`asphalt_layers`]), else that texture's grey times
 /// `Tarmac_Tint_FG`, and gives way to the ground at its edges only with the shader
-/// that blends it (`…blendwithterrain`); anything else takes the first colour texture
-/// it names.
+/// that blends it (`…blendwithterrain`); far vegetation naming `_CA` and `_NT` is
+/// [`Shading::Vista`]; anything else takes the first colour texture it names.
 pub fn look(shader: &str, m: &Material) -> Option<([u8; 16], Shading)> {
     let rgb = |v: [f32; 4]| [v[0], v[1], v[2]];
     if shader.contains("transparentdcl") {
@@ -248,6 +254,9 @@ pub fn look(shader: &str, m: &Material) -> Option<([u8; 16], Shading)> {
         }
         let tint = m.vector("Tarmac_Tint_FG").map_or([1.0; 3], rgb);
         return Some((t, Shading::Grey { tint }));
+    }
+    if let (Some(t), Some(_)) = (m.texture("_CA"), m.texture("_NT")) {
+        return Some((t, Shading::Vista));
     }
     COLOUR.iter().find_map(|&(name, cutout)| {
         let shading = if cutout {
@@ -832,6 +841,7 @@ fn lod_sections(
             let (layers, normal_map) = match (look, material) {
                 (Some((_, Shading::Asphalt(_))), Some(m)) => (asphalt_layers(m, noise), None),
                 (Some((_, Shading::Grey { .. })), _) => ([None; 6], None),
+                (Some((_, Shading::Vista)), Some(m)) => ([None; 6], m.texture("_NT")),
                 _ => ([None; 6], material.and_then(|m| m.texture("Normal"))),
             };
             Some(lod.section(s, data).map(|geometry| Section {
@@ -1351,6 +1361,13 @@ mod tests {
             Some(([5; 16], Shading::Colour))
         );
         assert_eq!(look(&[("Normal", Some(1)), ("SMD", Some(2))]), None);
+        // Far vegetation: its colour and alpha, with its own normal map.
+        assert_eq!(
+            look(&[("_CA", Some(6)), ("_NT", Some(7))]),
+            Some(([6; 16], Shading::Vista))
+        );
+        // Without `_NT` (vista structures name `_NS`), not read yet: no colour.
+        assert_eq!(look(&[("_CA", Some(6)), ("_NS", Some(7))]), None);
     }
 
     #[test]
@@ -1560,8 +1577,9 @@ mod tests {
         // triangles), which shared the foliage's textures.
         let first: Vec<_> = scene.draws.iter().filter(|d| d.lod == 0).collect();
         assert_eq!(first.len(), 760);
-        // 238 textures at the first LODs; the far roads' baked colours add 37.
-        assert_eq!(scene.textures.len(), 275);
+        // 238 textures at the first LODs; the far roads' baked colours add 37, and
+        // the far trees' and bushes' colours and normal maps (2026-11-19) 46.
+        assert_eq!(scene.textures.len(), 321);
         assert_eq!(scene.instances.len(), 2171);
         assert_eq!(scene.triangles(), 3_933_324);
         // Every LOD, 2026-11-03: 6,061 LODs over the placements, and half as many
@@ -1592,7 +1610,7 @@ mod tests {
         for d in scene.draws.iter().filter(|d| d.lod == 0) {
             count[match d.shading {
                 Shading::Colour | Shading::Ground => 0,
-                Shading::Cutout => 1,
+                Shading::Cutout | Shading::Vista => 1,
                 Shading::Grey { .. } => 2,
                 Shading::Asphalt(_) => 3,
                 Shading::Decal { .. } => 4,
@@ -1633,6 +1651,7 @@ mod tests {
         assert_eq!(painted, 53);
         // Counted 2026-11-18: 77 decals weigh by their selector, 67 of them the blue.
         assert_eq!((weighed.len(), blue), (77, 67));
-        assert_eq!(scene.textures.len(), 377);
+        // The far trees' and bushes' colours and normal maps add 46 (2026-11-19).
+        assert_eq!(scene.textures.len(), 423);
     }
 }
