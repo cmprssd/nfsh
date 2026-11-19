@@ -633,7 +633,7 @@ the meshes' alone), the ground's layers to follow.
   `Normal_Tiling`, `Normal02`, `backgroundNormal`, graffiti's in its second
   coordinates) and blue are left out. Why: they appear about a hundred times among
   zone 495's 1,081 materials, beside a `Normal` or in place of it, and what each does
-  needs its shader read.
+  needs its shader read. (Since 2026-11-19 `_NT` is drawn: "Far vegetation".)
 - **Asphalt blends its two layers' normal maps as its colour**: as much of the clean
   one as its colour shows, each at its layer's tiling, flat where the ground shows
   through at its edges. The shoulder's red and green (also a normal) are left out.
