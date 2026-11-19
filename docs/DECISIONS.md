@@ -1796,3 +1796,9 @@ Follows "Normal maps" (2026-11-01), which left the other normal maps out.
 - **Left out**: `_NT`'s alpha (1 − a/4 into the G-buffer, not worked out),
   `TerrainNormalSoften` and `Color` (no material sets them; their defaults change
   nothing), and vista structures (`_CA` with `_NS`, still grey: their program unread).
+- **Measured** on the gallery's six zone 495 views (headless, 0.67.0's renders against
+  this build; a pixel changed when a channel moves more than 8): speedway-overview
+  5.26%, track-wide 2.94%, grandstand 1.59%, track-low 0.71%, pipe 0.39%,
+  barrels-night 0.07%, by 54 to 97 levels on average where they change (24 at night).
+  The grey slabs on the skyline become trees; a few light specks show at the crowns'
+  edges, where the filtered alpha passes the cut over a light colour.
