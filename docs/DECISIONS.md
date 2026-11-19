@@ -1802,3 +1802,31 @@ Follows "Normal maps" (2026-11-01), which left the other normal maps out.
   barrels-night 0.07%, by 54 to 97 levels on average where they change (24 at night).
   The grey slabs on the skyline become trees; a few light specks show at the crowns'
   edges, where the filtered alpha passes the cut over a light colour.
+
+## 2026-11-19: Shader presets (decided by Claude, pending review)
+
+Follows "Far vegetation" (2026-11-19), whose next step was vista structures.
+
+- **Shader presets before vista structures**: counting what nfsh still draws grey near
+  zone 495 for lack of a colour it knows, vista structures
+  (`vista_structures_alpha`, `_CA` with `_NS`) are 2 materials on 2 placements (the
+  bridge's and the gate's far LODs), against the wood walls' (13 materials on four
+  meshes, placed 105 times), whose `Shader` names a `SurfaceShaderPreset` (FORMATS "Shader presets").
+  Why: the most placed, and not a program to read but a reference nfsh didn't follow.
+- **Joined where materials are read** (`Meshes::materials`, each preset partition
+  read once): the preset's shader, then the material's parameters over the preset's,
+  a texture parameter set to null leaving the preset's; a preset naming a preset is
+  followed up to four steps, and one that can't be read leaves the material as it
+  was. Why: every user of a material (look, normal map, asphalt layers, tints) then
+  sees the real shader and its textures without knowing presets exist. Null not
+  overriding is what the walls need: the wood preset's `Normal` and `SMD` are null
+  and the wall sets them; the wall's `Diffuse` is null and the preset sets it.
+- **Left out**: `bldn_walls_macro_4xdiffusetint_dirt`'s per-quarter tints
+  (`_TintColor_Q1`…`Q4`, `UseUVTint`; the plaster's fourth is red) and its dirt,
+  which nfsh reads for no wall; the wall decals (`dcl_wall_dsmdn`), drawn opaque with
+  their colour as nfsh draws that shader elsewhere, not blended.
+- **Measured** (headless, 0.68.0's build against this one, a pixel changed when a
+  channel moves more than 8): on the gallery's six zone 495 views, track-wide 0.01%
+  and the rest under 0.01% (the walls are barely in them); on a view of the walls
+  (3640,95,3075,140,-18), 0.30% (2,732 pixels), the walls' posts from grey (99, 102,
+  111 on average) to wood (66, 57, 42). Vista structures and `ParallaxNH` are next.

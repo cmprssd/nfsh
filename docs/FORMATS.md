@@ -1447,6 +1447,19 @@ has a `Shader` struct whose `TextureParameters` array holds `Value` (a reference
 the texture asset's partition, or null) and `ParameterName` (`Diffuse`, `Normal`,
 `SMD`, …).
 
+**Shader presets** (worked out on 2026-11-19): a material's `Shader` can name, in
+place of a shader, a partition whose one instance is a `SurfaceShaderPreset`. Its
+`ShaderPreset` struct has the same fields as a material's `Shader` (`Shader`, the
+real shader's partition; `TextureParameters`, `VectorParameters`, `BoolParameters`,
+…), and the material's own parameters go over it: the speedway's wood walls
+(`barr_cr_woodwalla_*`) name `ssp_woodwalla_wood_01`, whose `Diffuse` is the wood
+and whose `Normal` and `SMD` are null, and set those two themselves, naming no
+`Diffuse`; `ssp_woodwalla_plaster_01` sets all three and the walls nothing. Over
+Palm City's 232 zones, 43 of the placed meshes' 14,806 materials name one of 11
+presets (on 30 meshes, 1,044 placements: barriers, fences and wall decals). nfsh takes the preset's shader, then each parameter as the material
+sets it, else as the preset does, a texture parameter set to null leaving the
+preset's (`Material::over`, crates/frostbite/src/texture.rs).
+
 **Normal maps** (`Normal`; worked out on 2026-11-01 from the 653 materials near zone
 495 that name one) are BC7 (465), BC1 (134), BC3 (50) or BC5 (4), all unorm. In every
 format red and green are the normal across the surface, 0.5 being none (their means

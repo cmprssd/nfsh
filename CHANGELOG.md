@@ -6,6 +6,15 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-11-19
+
+### Fixed
+
+- Materials that name a shader preset (`SurfaceShaderPreset`) in place of a shader
+  take its shader, textures and settings, their own going over them. They were drawn
+  grey: the speedway's wood walls, and 43 materials on 1,044 placements across Palm
+  City (barriers, fences, wall decals), now have their wood and plaster colours.
+
 ## [0.68.0] - 2026-11-19
 
 ### Fixed

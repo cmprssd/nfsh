@@ -1578,8 +1578,9 @@ mod tests {
         let first: Vec<_> = scene.draws.iter().filter(|d| d.lod == 0).collect();
         assert_eq!(first.len(), 760);
         // 238 textures at the first LODs; the far roads' baked colours add 37, and
-        // the far trees' and bushes' colours and normal maps (2026-11-19) 46.
-        assert_eq!(scene.textures.len(), 321);
+        // the far trees' and bushes' colours and normal maps (2026-11-19) 46, and the
+        // wood walls' colours, which their shader presets name (2026-11-19), 3.
+        assert_eq!(scene.textures.len(), 324);
         assert_eq!(scene.instances.len(), 2171);
         assert_eq!(scene.triangles(), 3_933_324);
         // Every LOD, 2026-11-03: 6,061 LODs over the placements, and half as many
@@ -1587,6 +1588,41 @@ mod tests {
         let lods = scene.lods.iter().map(|l| usize::from(l.count));
         assert_eq!((scene.draws.len(), lods.sum::<usize>()), (2043, 6061));
         assert_eq!(scene.positions.len(), 2_011_727);
+    }
+
+    /// The speedway's wood walls, from the store `NFSH_STORE` points at: their
+    /// materials name shader presets (`ssp_woodwalla_…`), whose shader and colour
+    /// they take.
+    #[test]
+    fn the_speedway_wood_walls_take_their_presets_colours() {
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let store = frostbite::store::Store::open(std::path::Path::new(&dir)).unwrap();
+        let mut level =
+            frostbite::level::Level::new(&store, "Win32/levels/mainlevel/mainlevel").unwrap();
+        let zone = level.zone("levels/mainlevel/worldart_zs_495").unwrap();
+        let mut meshes = Meshes::new(&store).unwrap();
+        let mut shaders = std::collections::BTreeMap::new();
+        for mesh in zone.meshes.iter().filter(|m| m.name.contains("woodwalla")) {
+            for m in meshes.materials(&mesh.partition).unwrap() {
+                let shader = m.shader.and_then(|g| store.partition_name(&g)).unwrap();
+                assert_eq!(look(shader, &m).map(|l| l.1), Some(Shading::Colour));
+                *shaders.entry(shader.to_owned()).or_insert(0) += 1;
+            }
+        }
+        // Counted 2026-11-19: the walls' 13 materials.
+        assert_eq!(
+            shaders.into_iter().collect::<Vec<_>>(),
+            [
+                (
+                    "shaders/world/buildings/generic/bldn_walls_macro_4xdiffusetint_dirt".into(),
+                    7
+                ),
+                ("shaders/world/decals/dcl_wall_dsmdn".into(), 6)
+            ]
+        );
     }
 
     /// The roads near zone 495, from the store `NFSH_STORE` points at: asphalt is
@@ -1651,7 +1687,8 @@ mod tests {
         assert_eq!(painted, 53);
         // Counted 2026-11-18: 77 decals weigh by their selector, 67 of them the blue.
         assert_eq!((weighed.len(), blue), (77, 67));
-        // The far trees' and bushes' colours and normal maps add 46 (2026-11-19).
-        assert_eq!(scene.textures.len(), 423);
+        // The far trees' and bushes' colours and normal maps add 46 (2026-11-19), and
+        // the wood walls' colours from their shader presets 3 (2026-11-19).
+        assert_eq!(scene.textures.len(), 426);
     }
 }

@@ -417,6 +417,38 @@ impl Material {
     pub fn bool(&self, name: &str) -> bool {
         self.bools.iter().any(|b| b.0 == name && b.1)
     }
+
+    /// This material, which names the preset `preset` as its shader, over it: the
+    /// preset's shader, and each parameter as this material sets it, else as the
+    /// preset does. A texture parameter naming no texture leaves the preset's.
+    pub fn over(self, preset: &Material) -> Material {
+        let mut textures: Vec<TextureParameter> = preset.textures.clone();
+        for t in self.textures {
+            match textures.iter_mut().find(|p| p.name == t.name) {
+                Some(p) if t.texture.is_some() => p.texture = t.texture,
+                Some(_) => {}
+                None => textures.push(t),
+            }
+        }
+        fn join<T>(under: &[(String, T)], over: Vec<(String, T)>) -> Vec<(String, T)>
+        where
+            T: Clone,
+        {
+            let mut all: Vec<_> = under
+                .iter()
+                .filter(|u| !over.iter().any(|o| o.0 == u.0))
+                .cloned()
+                .collect();
+            all.extend(over);
+            all
+        }
+        Material {
+            shader: preset.shader,
+            textures,
+            vectors: join(&preset.vectors, self.vectors),
+            bools: join(&preset.bools, self.bools),
+        }
+    }
 }
 
 /// Whether a section of the shader named `shader` only casts a shadow: the
@@ -448,48 +480,72 @@ pub fn materials(p: &Partition) -> Result<Vec<Material>> {
         let Some(Value::Struct(shader)) = field(p, instance_object(p, i)?, "Shader")? else {
             bail!("{}: material {i} has no Shader", p.name);
         };
-        let mut material = Material {
-            shader: import(p, field(p, shader, "Shader")?)?,
-            ..Material::default()
-        };
-        for t in elements(p, shader, "TextureParameters")? {
-            let Value::Struct(t) = t else {
-                bail!("{}: a texture parameter is {t:?}", p.name);
-            };
-            material.textures.push(TextureParameter {
-                name: parameter_name(p, t)?,
-                texture: import(p, field(p, t, "Value")?)?,
-            });
-        }
-        // Not every shader struct has vector parameters.
-        if field(p, shader, "VectorParameters")?.is_some() {
-            for v in elements(p, shader, "VectorParameters")? {
-                let Value::Struct(v) = v else {
-                    bail!("{}: a vector parameter is {v:?}", p.name);
-                };
-                let Some(Value::Struct(value)) = field(p, v, "Value")? else {
-                    bail!("{}: a vector parameter has no Vec4 Value", p.name);
-                };
-                let [x, y, z, w] = ["x", "y", "z", "w"].map(|c| float(p, value, c));
-                material
-                    .vectors
-                    .push((parameter_name(p, v)?, [x?, y?, z?, w?]));
-            }
-        }
-        if field(p, shader, "BoolParameters")?.is_some() {
-            for b in elements(p, shader, "BoolParameters")? {
-                let Value::Struct(b) = b else {
-                    bail!("{}: a bool parameter is {b:?}", p.name);
-                };
-                let Some(Value::Bool(value)) = field(p, b, "Value")? else {
-                    bail!("{}: a bool parameter has no Bool Value", p.name);
-                };
-                material.bools.push((parameter_name(p, b)?, value));
-            }
-        }
-        materials.push(material);
+        materials.push(parameters(p, shader)?);
     }
     Ok(materials)
+}
+
+/// The parameters of a shader struct (a material's `Shader`, a preset's
+/// `ShaderPreset`): its `Shader`, `TextureParameters`, `VectorParameters` and
+/// `BoolParameters`.
+fn parameters(p: &Partition, shader: Object) -> Result<Material> {
+    let mut material = Material {
+        shader: import(p, field(p, shader, "Shader")?)?,
+        ..Material::default()
+    };
+    for t in elements(p, shader, "TextureParameters")? {
+        let Value::Struct(t) = t else {
+            bail!("{}: a texture parameter is {t:?}", p.name);
+        };
+        material.textures.push(TextureParameter {
+            name: parameter_name(p, t)?,
+            texture: import(p, field(p, t, "Value")?)?,
+        });
+    }
+    // Not every shader struct has vector parameters.
+    if field(p, shader, "VectorParameters")?.is_some() {
+        for v in elements(p, shader, "VectorParameters")? {
+            let Value::Struct(v) = v else {
+                bail!("{}: a vector parameter is {v:?}", p.name);
+            };
+            let Some(Value::Struct(value)) = field(p, v, "Value")? else {
+                bail!("{}: a vector parameter has no Vec4 Value", p.name);
+            };
+            let [x, y, z, w] = ["x", "y", "z", "w"].map(|c| float(p, value, c));
+            material
+                .vectors
+                .push((parameter_name(p, v)?, [x?, y?, z?, w?]));
+        }
+    }
+    if field(p, shader, "BoolParameters")?.is_some() {
+        for b in elements(p, shader, "BoolParameters")? {
+            let Value::Struct(b) = b else {
+                bail!("{}: a bool parameter is {b:?}", p.name);
+            };
+            let Some(Value::Bool(value)) = field(p, b, "Value")? else {
+                bail!("{}: a bool parameter has no Bool Value", p.name);
+            };
+            material.bools.push((parameter_name(p, b)?, value));
+        }
+    }
+    Ok(material)
+}
+
+/// What a `SurfaceShaderPreset` partition sets, its shader in [`Material::shader`]; `None`
+/// for any other partition (a shader's own). A material can name a preset where it names
+/// a shader (see `docs/FORMATS.md`, "Shader presets"): [`Material::over`] then joins
+/// the two.
+pub fn preset(p: &Partition) -> Result<Option<Material>> {
+    for instance in &p.instances {
+        if p.type_name(instance.type_index) != "SurfaceShaderPreset" {
+            continue;
+        }
+        let Some(Value::Struct(shader)) = field(p, p.object(instance), "ShaderPreset")? else {
+            bail!("{}: a SurfaceShaderPreset has no ShaderPreset", p.name);
+        };
+        return parameters(p, shader).map(Some);
+    }
+    Ok(None)
 }
 
 fn parameter_name(p: &Partition, o: Object) -> Result<String> {
@@ -1016,6 +1072,49 @@ mod tests {
         assert_eq!(found[0].texture("Mask"), None);
         assert_eq!(found[1].vector("Tint"), Some([0.2, 0.3, 0.4, 1.0]));
         assert_eq!(found[1].vector("Opacity"), None);
+    }
+
+    #[test]
+    fn a_material_over_its_preset_takes_the_presets_shader_and_fills_its_gaps() {
+        let param = |name: &str, texture: Option<u8>| TextureParameter {
+            name: name.to_owned(),
+            texture: texture.map(|b| [b; 16]),
+        };
+        let named = |name: &str, v: f32| (name.to_owned(), [v; 4]);
+        // As the speedway's wood wall: the mesh names its own normal map and SMD, the
+        // preset (ssp_woodwalla_wood_01) the colour, with its normal map unset.
+        let preset = Material {
+            shader: Some([9; 16]),
+            textures: vec![
+                param("Diffuse", Some(1)),
+                param("SMD", None),
+                param("Normal", Some(2)),
+            ],
+            vectors: vec![named("Tint", 0.5), named("Dirt", 0.1)],
+            bools: vec![("UseUVTint".to_owned(), true)],
+        };
+        let own = Material {
+            shader: Some([8; 16]),
+            textures: vec![
+                param("Normal", Some(3)),
+                param("SMD", Some(4)),
+                param("Diffuse", None),
+                param("Mask", Some(5)),
+            ],
+            vectors: vec![named("Tint", 0.25)],
+            bools: vec![("UseUVTint".to_owned(), false)],
+        };
+        let m = own.over(&preset);
+        assert_eq!(m.shader, Some([9; 16]));
+        // Its own where it names a texture, the preset's where it names none.
+        assert_eq!(m.texture("Diffuse"), Some([1; 16]));
+        assert_eq!(m.texture("Normal"), Some([3; 16]));
+        assert_eq!(m.texture("SMD"), Some([4; 16]));
+        assert_eq!(m.texture("Mask"), Some([5; 16]));
+        assert_eq!(m.vector("Tint"), Some([0.25; 4]));
+        assert_eq!(m.vector("Dirt"), Some([0.1; 4]));
+        assert!(!m.bool("UseUVTint"));
+        assert_eq!(m.vectors.len(), 2);
     }
 
     #[test]

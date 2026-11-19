@@ -646,6 +646,9 @@ pub struct Meshes<'s> {
     sets: HashMap<u64, Location>,
     /// Every chunk by id (as bundles list it), with its size.
     chunks: HashMap<[u8; 16], Location>,
+    /// Each shader partition materials named, read: what it sets when it is a
+    /// preset ([`crate::texture::preset`]), else `None` (or unreadable).
+    presets: HashMap<[u8; 16], Option<Material>>,
 }
 
 impl<'s> Meshes<'s> {
@@ -655,6 +658,7 @@ impl<'s> Meshes<'s> {
             entries: store.entries()?,
             sets: store.res_of_type(MESH_SET),
             chunks: store.whole_chunks(),
+            presets: HashMap::new(),
         })
     }
 
@@ -721,7 +725,8 @@ impl<'s> Meshes<'s> {
     }
 
     /// The materials of the mesh asset in the partition `guid` (see
-    /// [`crate::texture::materials`]).
+    /// [`crate::texture::materials`]), each naming a shader preset joined to it
+    /// ([`Material::over`]), so that its shader is the preset's.
     pub fn materials(&mut self, guid: &[u8; 16]) -> Result<Vec<Material>> {
         let copy = self.store.partitions(guid)?.next();
         let Some((_, asset)) = copy.and_then(|at| self.store.ebx_at(at)) else {
@@ -730,7 +735,31 @@ impl<'s> Meshes<'s> {
         let data = self.entries.read(asset.location)?;
         let p =
             Partition::parse(&data).map_err(|e| crate::Error(format!("{}: {e}", asset.name)))?;
-        materials(&p)
+        let mut all = materials(&p)?;
+        for m in &mut all {
+            // A preset could name another; a few steps, never a loop.
+            for _ in 0..4 {
+                let Some(preset) = m.shader.and_then(|g| self.preset(&g)) else {
+                    break;
+                };
+                *m = std::mem::take(m).over(&preset);
+            }
+        }
+        Ok(all)
+    }
+
+    /// What the partition `guid` sets when it is a shader preset; `None` for a
+    /// shader, or a partition that can't be read (its materials stay as they are).
+    fn preset(&mut self, guid: &[u8; 16]) -> Option<Material> {
+        if let Some(known) = self.presets.get(guid) {
+            return known.clone();
+        }
+        let preset = self.partition(guid).ok().and_then(|data| {
+            let p = Partition::parse(&data).ok()?;
+            crate::texture::preset(&p).ok().flatten()
+        });
+        self.presets.insert(*guid, preset.clone());
+        preset
     }
 
     /// The mesh set of the mesh asset in the ebx `name`.
