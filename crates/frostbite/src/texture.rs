@@ -1075,6 +1075,49 @@ mod tests {
     }
 
     #[test]
+    fn a_material_over_its_preset_takes_the_presets_shader_and_fills_its_gaps() {
+        let param = |name: &str, texture: Option<u8>| TextureParameter {
+            name: name.to_owned(),
+            texture: texture.map(|b| [b; 16]),
+        };
+        let named = |name: &str, v: f32| (name.to_owned(), [v; 4]);
+        // As the speedway's wood wall: the mesh names its own normal map and SMD, the
+        // preset (ssp_woodwalla_wood_01) the colour, with its normal map unset.
+        let preset = Material {
+            shader: Some([9; 16]),
+            textures: vec![
+                param("Diffuse", Some(1)),
+                param("SMD", None),
+                param("Normal", Some(2)),
+            ],
+            vectors: vec![named("Tint", 0.5), named("Dirt", 0.1)],
+            bools: vec![("UseUVTint".to_owned(), true)],
+        };
+        let own = Material {
+            shader: Some([8; 16]),
+            textures: vec![
+                param("Normal", Some(3)),
+                param("SMD", Some(4)),
+                param("Diffuse", None),
+                param("Mask", Some(5)),
+            ],
+            vectors: vec![named("Tint", 0.25)],
+            bools: vec![("UseUVTint".to_owned(), false)],
+        };
+        let m = own.over(&preset);
+        assert_eq!(m.shader, Some([9; 16]));
+        // Its own where it names a texture, the preset's where it names none.
+        assert_eq!(m.texture("Diffuse"), Some([1; 16]));
+        assert_eq!(m.texture("Normal"), Some([3; 16]));
+        assert_eq!(m.texture("SMD"), Some([4; 16]));
+        assert_eq!(m.texture("Mask"), Some([5; 16]));
+        assert_eq!(m.vector("Tint"), Some([0.25; 4]));
+        assert_eq!(m.vector("Dirt"), Some([0.1; 4]));
+        assert!(!m.bool("UseUVTint"));
+        assert_eq!(m.vectors.len(), 2);
+    }
+
+    #[test]
     fn reads_every_texture_palm_city_places() {
         let Some(dir) = std::env::var_os("NFSH_STORE") else {
             eprintln!("NFSH_STORE not set; skipped");
