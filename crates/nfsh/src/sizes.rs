@@ -803,11 +803,17 @@ pub fn run(dir: &Path) -> Result<String> {
                 .any(|lang| l == format!("LocalizedWaveAsset {lang}"))
         })
     };
-    let english = |n: usize| {
-        entries[n]
-            .toc
-            .is_some_and(|s| loc_part(&store.superbundles[s as usize].name) == Some(1))
-    };
+    // A chunk is English when `loc/en` lists it, whichever table the copy kept below
+    // comes from (`chunks0` lists the same chunk too).
+    let mut in_loc_en = vec![false; owners.len()];
+    for e in &entries {
+        if let (Some(c), Some(s)) = (e.chunk, e.toc)
+            && loc_part(&store.superbundles[s as usize].name) == Some(1)
+        {
+            in_loc_en[c as usize] = true;
+        }
+    }
+    let english = |n: usize| entries[n].chunk.is_some_and(|c| in_loc_en[c as usize]);
     let left = |needed: &dyn Fn(usize) -> bool| -> (u64, u64) {
         let mut copies: HashMap<(u64, u64), (bool, u64, u64)> = HashMap::new();
         for n in 0..entries.len() {
