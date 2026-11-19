@@ -6,6 +6,16 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-11-19
+
+### Fixed
+
+- Far trees and bushes are drawn as trees: their last LOD (`veg_ss_vista_lodfade_ao_vertex`)
+  was solid grey slabs, as nfsh read no colour from it. They now take their `_CA`
+  colour, cut out by its alpha, and are lit by their `_NT` normal map as the game's
+  programs light them: all three channels the normal, mirrored across the card when
+  it is seen from behind.
+
 ## [0.67.0] - 2026-11-18
 
 ### Added

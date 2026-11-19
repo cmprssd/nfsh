@@ -54,6 +54,9 @@ struct Look {
     edge: vec4<f32>,
     dirt: vec4<f32>,
     ground_map: vec4<f32>,
+    // A cut-out draw's: the alpha under which a pixel is not drawn, and 1 in y for
+    // far vegetation's normals (scene.rs, Shading::Vista).
+    cut: vec4<f32>,
 }
 
 @group(0) @binding(0) var colour: texture_2d<f32>;
@@ -173,6 +176,12 @@ fn shade(world: vec3<f32>, mesh: vec4<f32>, albedo: vec3<f32>, alpha: f32) -> ve
             n = -n;
         }
     }
+    return lit(world, n, albedo, alpha);
+}
+
+// Lit by the unit normal `n` as it stands.
+fn lit(world: vec3<f32>, n: vec3<f32>, albedo: vec3<f32>, alpha: f32) -> vec4<f32> {
+    let to_eye = push.eye.xyz - world;
     let sun = max(dot(n, push.sun.xyz), 0.0);
     let ambient = mix(vec3(push.sun_light.w), push.sky.rgb, n.y * 0.5 + 0.5);
     var light = albedo * (ambient + push.sun_light.rgb * sun);
@@ -202,10 +211,33 @@ fn fs_main(in: Out) -> @location(0) vec4<f32> {
 @fragment
 fn fs_cutout(in: Out) -> @location(0) vec4<f32> {
     let c = textureSample(colour, filtered, in.uv);
-    if c.a < 0.5 {
+    if c.a < look.cut.x {
         discard;
     }
+    if look.cut.y > 0.5 {
+        return vista(in, albedo(c));
+    }
     return shade(in.world, mapped(in), albedo(c), 1.0);
+}
+
+// Far vegetation (scene.rs, Shading::Vista), as its program does: the normal map's
+// red, green and blue, each unpacked, along the frame (x the tangent, y the
+// bitangent, z the mesh's normal), made unit length; seen from behind, mirrored
+// across the surface rather than turned around, so the tree's far side stays lit
+// as its near side. Without a frame, lit as fs_cutout lights the rest.
+fn vista(in: Out, albedo: vec3<f32>) -> vec4<f32> {
+    if in.normal.w < 0.5 || in.tangent.w == 0.0 {
+        return shade(in.world, in.normal, albedo, 1.0);
+    }
+    let m = normalize(in.normal.xyz);
+    let t = normalize(in.tangent.xyz - m * dot(m, in.tangent.xyz));
+    let b = sign(in.tangent.w) * cross(m, t);
+    let xyz = textureSample(normal_map, filtered, in.uv).rgb * 2.0 - 1.0;
+    var n = normalize(xyz.x * t + xyz.y * b + xyz.z * m);
+    if dot(m, push.eye.xyz - in.world) < 0.0 {
+        n -= 2.0 * dot(n, m) * m;
+    }
+    return lit(in.world, n, albedo, 1.0);
 }
 
 // Road lines, cracks and tyre marks over the asphalt.

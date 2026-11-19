@@ -68,7 +68,7 @@ impl Pass {
             Shading::Colour | Shading::Grey { .. } => Self::Opaque,
             Shading::Asphalt(_) => Self::Asphalt,
             Shading::Ground => Self::Ground,
-            Shading::Cutout => Self::Cutout,
+            Shading::Cutout | Shading::Vista => Self::Cutout,
             Shading::Decal { .. } => Self::Decal,
         }
     }
@@ -114,6 +114,9 @@ struct Look {
     dirt: [f32; 4],
     /// …and where the ground map lies: its corner (x, z) and one over its size.
     ground_map: [f32; 4],
+    /// A cut-out draw's: the alpha under which a pixel is not drawn, and 1 in `y`
+    /// for [`Shading::Vista`]'s normals (blue stored, mirrored behind).
+    cut: [f32; 4],
 }
 
 /// Where each look starts in the looks buffer: a multiple of 256 bytes, the most any
@@ -139,11 +142,15 @@ impl Look {
             edge: [0.0; 4],
             dirt: [0.0; 4],
             ground_map: [0.0; 4],
+            cut: [0.5, 0.0, 0.0, 0.0],
         };
         let rgb = |c: [f32; 3], w| [c[0], c[1], c[2], w];
         match *shading {
             Shading::Colour | Shading::Cutout | Shading::Ground => {}
             Shading::Grey { tint } => look.tint = rgb(tint, 1.0),
+            // The program cuts where alpha (0.76 + 0.24 noise) is under 0.585, the
+            // noise a dither; at the noise's middle, alpha under 0.585 / 0.88.
+            Shading::Vista => look.cut = [0.585 / 0.88, 1.0, 0.0, 0.0],
             Shading::Asphalt(a) => {
                 look.tint = rgb(a.tint[0], 1.0);
                 look.tint_bg = rgb(a.tint[1], 0.0);
