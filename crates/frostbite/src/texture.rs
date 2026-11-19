@@ -417,6 +417,38 @@ impl Material {
     pub fn bool(&self, name: &str) -> bool {
         self.bools.iter().any(|b| b.0 == name && b.1)
     }
+
+    /// This material, which names the preset `preset` as its shader, over it: the
+    /// preset's shader, and each parameter as this material sets it, else as the
+    /// preset does. A texture parameter naming no texture leaves the preset's.
+    pub fn over(self, preset: &Material) -> Material {
+        let mut textures: Vec<TextureParameter> = preset.textures.clone();
+        for t in self.textures {
+            match textures.iter_mut().find(|p| p.name == t.name) {
+                Some(p) if t.texture.is_some() => p.texture = t.texture,
+                Some(_) => {}
+                None => textures.push(t),
+            }
+        }
+        fn join<T>(under: &[(String, T)], over: Vec<(String, T)>) -> Vec<(String, T)>
+        where
+            T: Clone,
+        {
+            let mut all: Vec<_> = under
+                .iter()
+                .filter(|u| !over.iter().any(|o| o.0 == u.0))
+                .cloned()
+                .collect();
+            all.extend(over);
+            all
+        }
+        Material {
+            shader: preset.shader,
+            textures,
+            vectors: join(&preset.vectors, self.vectors),
+            bools: join(&preset.bools, self.bools),
+        }
+    }
 }
 
 /// Whether a section of the shader named `shader` only casts a shadow: the
@@ -448,48 +480,72 @@ pub fn materials(p: &Partition) -> Result<Vec<Material>> {
         let Some(Value::Struct(shader)) = field(p, instance_object(p, i)?, "Shader")? else {
             bail!("{}: material {i} has no Shader", p.name);
         };
-        let mut material = Material {
-            shader: import(p, field(p, shader, "Shader")?)?,
-            ..Material::default()
-        };
-        for t in elements(p, shader, "TextureParameters")? {
-            let Value::Struct(t) = t else {
-                bail!("{}: a texture parameter is {t:?}", p.name);
-            };
-            material.textures.push(TextureParameter {
-                name: parameter_name(p, t)?,
-                texture: import(p, field(p, t, "Value")?)?,
-            });
-        }
-        // Not every shader struct has vector parameters.
-        if field(p, shader, "VectorParameters")?.is_some() {
-            for v in elements(p, shader, "VectorParameters")? {
-                let Value::Struct(v) = v else {
-                    bail!("{}: a vector parameter is {v:?}", p.name);
-                };
-                let Some(Value::Struct(value)) = field(p, v, "Value")? else {
-                    bail!("{}: a vector parameter has no Vec4 Value", p.name);
-                };
-                let [x, y, z, w] = ["x", "y", "z", "w"].map(|c| float(p, value, c));
-                material
-                    .vectors
-                    .push((parameter_name(p, v)?, [x?, y?, z?, w?]));
-            }
-        }
-        if field(p, shader, "BoolParameters")?.is_some() {
-            for b in elements(p, shader, "BoolParameters")? {
-                let Value::Struct(b) = b else {
-                    bail!("{}: a bool parameter is {b:?}", p.name);
-                };
-                let Some(Value::Bool(value)) = field(p, b, "Value")? else {
-                    bail!("{}: a bool parameter has no Bool Value", p.name);
-                };
-                material.bools.push((parameter_name(p, b)?, value));
-            }
-        }
-        materials.push(material);
+        materials.push(parameters(p, shader)?);
     }
     Ok(materials)
+}
+
+/// The parameters of a shader struct (a material's `Shader`, a preset's
+/// `ShaderPreset`): its `Shader`, `TextureParameters`, `VectorParameters` and
+/// `BoolParameters`.
+fn parameters(p: &Partition, shader: Object) -> Result<Material> {
+    let mut material = Material {
+        shader: import(p, field(p, shader, "Shader")?)?,
+        ..Material::default()
+    };
+    for t in elements(p, shader, "TextureParameters")? {
+        let Value::Struct(t) = t else {
+            bail!("{}: a texture parameter is {t:?}", p.name);
+        };
+        material.textures.push(TextureParameter {
+            name: parameter_name(p, t)?,
+            texture: import(p, field(p, t, "Value")?)?,
+        });
+    }
+    // Not every shader struct has vector parameters.
+    if field(p, shader, "VectorParameters")?.is_some() {
+        for v in elements(p, shader, "VectorParameters")? {
+            let Value::Struct(v) = v else {
+                bail!("{}: a vector parameter is {v:?}", p.name);
+            };
+            let Some(Value::Struct(value)) = field(p, v, "Value")? else {
+                bail!("{}: a vector parameter has no Vec4 Value", p.name);
+            };
+            let [x, y, z, w] = ["x", "y", "z", "w"].map(|c| float(p, value, c));
+            material
+                .vectors
+                .push((parameter_name(p, v)?, [x?, y?, z?, w?]));
+        }
+    }
+    if field(p, shader, "BoolParameters")?.is_some() {
+        for b in elements(p, shader, "BoolParameters")? {
+            let Value::Struct(b) = b else {
+                bail!("{}: a bool parameter is {b:?}", p.name);
+            };
+            let Some(Value::Bool(value)) = field(p, b, "Value")? else {
+                bail!("{}: a bool parameter has no Bool Value", p.name);
+            };
+            material.bools.push((parameter_name(p, b)?, value));
+        }
+    }
+    Ok(material)
+}
+
+/// What a `SurfaceShaderPreset` partition sets, its shader in [`Material::shader`]; `None`
+/// for any other partition (a shader's own). A material can name a preset where it names
+/// a shader (see `docs/FORMATS.md`, "Shader presets"): [`Material::over`] then joins
+/// the two.
+pub fn preset(p: &Partition) -> Result<Option<Material>> {
+    for instance in &p.instances {
+        if p.type_name(instance.type_index) != "SurfaceShaderPreset" {
+            continue;
+        }
+        let Some(Value::Struct(shader)) = field(p, p.object(instance), "ShaderPreset")? else {
+            bail!("{}: a SurfaceShaderPreset has no ShaderPreset", p.name);
+        };
+        return parameters(p, shader).map(Some);
+    }
+    Ok(None)
 }
 
 fn parameter_name(p: &Partition, o: Object) -> Result<String> {
