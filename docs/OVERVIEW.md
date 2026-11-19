@@ -136,8 +136,8 @@ Rules that shape it:
 ### History
 
 <!-- progress:history -->
-108 commits, 107 merged PRs from 2026-10-30 to 2026-11-19, on 18 working days: 67 feat,
-20 docs, 10 fix, 7 perf, 2 ci, 1 The. About 49,884 lines added and 3,630 removed; 88
+108 commits, 107 merged PRs from 2026-10-30 to 2026-11-19, on 18 working days: 66 feat,
+20 docs, 11 fix, 7 perf, 2 ci, 1 The. About 49,884 lines added and 3,630 removed; 88
 tracked files.
 
 ```mermaid
