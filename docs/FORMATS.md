@@ -1499,6 +1499,38 @@ nfsh draws them so ([`Shading::Vista`](../crates/render/src/scene.rs)), the dith
 taken at its middle (alpha under 0.585 / 0.88 = 0.665). Vista structures
 (`vista_structures_alpha`: `_CA` with `_NS`) are not read yet.
 
+**Parallax** (`shaders/world/roads/rd_dcl_base_parallax` and `…_noopacity`; worked out
+on 2026-11-20 from programs 1204 and 2969, a store test in `frostbite::shaderdb`
+checking all 18 that do it): manholes and the grass of planters and plots, near zone 495 18
+materials over 61 placements. Each names `ParallaxNH` beside `Normal`, **the same
+texture** in all 18 (`drv_plot_manholes_01_n`, `t_terrain_grass_01_tile_n`, …): red
+and green the normal, blue a height. Before the colour, normal and `SMD` are read,
+the coordinates are moved:
+
+- In the frame (x the tangent, y the direction of v increasing, as the programs
+  take it from the normal and tangent), the eye's direction e, and its slope f =
+  e · normal. The farthest the coordinates move is e.xy / f × `Parallax_Height` × 0.1.
+- Steps: trunc(mix(`Parallax_Max`, `Parallax_Min`, f)), fewer face on; s = 1 / steps.
+- From a level of 1 and an offset of 0, each step reads `ParallaxNH`'s blue at the
+  offset coordinates (with the coordinates' own derivatives, as the loop needs) and
+  takes the height there as 1 − (blue − `Parallax_NeutralHeight`). Where the level is
+  under it, the offset is mixed between this step's and the last by
+  (height − level) / (s + height − last height), and the stepping stops; else the
+  level falls by s and the offset grows by s × the farthest.
+
+So a blue over the neutral one (0.5 by default) stands out of the surface, towards
+the eye, and a negative `Parallax_Height` (2 of the 18) sinks it. Defaults, in both
+shaders: `Parallax_Height` 0.2, `Parallax_Min` 16, `Parallax_Max` 32,
+`Parallax_NeutralHeight` 0.5; the materials set 0.15, 0.3 or −0.2 and 8 to 32 steps.
+`…_noopacity` multiplies the coordinates by `Tiling` (1 by default, set by none)
+first. Not worked out: `Parallax` (0.009, on 4), which no program's block names.
+
+nfsh draws them so ([`Shading::Parallax`](../crates/render/src/scene.rs), `parallaxed`
+in zone.wgsl), reading the height from the normal map it binds already, at most 64
+steps, and not where the eye is behind the surface. Their blending
+(`alphaSelector` over the colour's alpha and `SMD`'s blue, times `Opacity`) is not
+drawn: they are opaque as before.
+
 The header (0x84 bytes; every texture res is exactly that, and its 16 bytes of res
 metadata are 0x0C, then the flags below in byte 4, then zeros):
 

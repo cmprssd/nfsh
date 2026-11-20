@@ -637,4 +637,78 @@ pub(crate) mod tests {
         assert_eq!(t7_at(433), Kind::Literal([0.0; 4]));
         assert_eq!(t7_at(442), Kind::Temp);
     }
+
+    /// `rd_dcl_base_parallax`'s and `…_noopacity`'s programs that move their
+    /// coordinates: each steps through a texture its block does not bind (the
+    /// material's `ParallaxNH`), reading its blue, and its block names the parallax's
+    /// four constants with the same defaults.
+    #[test]
+    fn the_parallax_programs_step_through_their_heights_blue() {
+        use crate::dxbc::Kind;
+        let Some(dir) = std::env::var_os("NFSH_STORE") else {
+            eprintln!("NFSH_STORE not set; skipped");
+            return;
+        };
+        let store = Store::open(std::path::Path::new(&dir)).unwrap();
+        let db = ShaderDb::read(&store).unwrap();
+        let mut entries = store.entries().unwrap();
+        // `sample_d`, sampling with given derivatives, which a loop needs.
+        const SAMPLE_D: u32 = 0x49;
+        let mut stepping = BTreeMap::new();
+        for shader in ["rd_dcl_base_parallax", "rd_dcl_base_parallax_noopacity"] {
+            let name = format!("shaders/world/roads/{shader}");
+            let programs: BTreeMap<u32, u32> = db
+                .permutations_of(name_hash(&name))
+                .map(|p| (p.program, p.block))
+                .collect();
+            for (program, block) in programs {
+                let asset = store
+                    .res(&program_name(&db.programs[program as usize]))
+                    .unwrap();
+                let code = dxbc::parse(&entries.read(asset.location).unwrap()).unwrap();
+                let reads: Vec<_> = code.iter().filter(|i| i.opcode == SAMPLE_D).collect();
+                let constants = &db.constants[block as usize];
+                let default = |name: &str| {
+                    constants
+                        .iter()
+                        .find(|c| c.name == name)
+                        .map(|c| c.default[0])
+                };
+                if reads.is_empty() {
+                    continue;
+                }
+                assert_eq!(default("Parallax_Height"), Some(0.2), "{program}");
+                assert_eq!(default("Parallax_Min"), Some(16.0), "{program}");
+                assert_eq!(default("Parallax_Max"), Some(32.0), "{program}");
+                assert_eq!(default("Parallax_NeutralHeight"), Some(0.5), "{program}");
+                for read in reads {
+                    let (dest, texture) = (read.operands[0], read.operands[2]);
+                    assert_eq!(
+                        (dest.written, texture.kind),
+                        (1, Kind::Texture),
+                        "{program}"
+                    );
+                    let channel = texture.components[usize::from(dest.components[0])];
+                    assert_eq!(channel, 2, "{program}: not the blue");
+                    let bound = db.blocks[block as usize]
+                        .iter()
+                        .any(|b| b.slot == texture.register);
+                    assert!(
+                        !bound,
+                        "{program}: t{} bound by its block",
+                        texture.register
+                    );
+                }
+                *stepping.entry(shader).or_insert(0) += 1;
+            }
+        }
+        // Counted 2026-11-20.
+        assert_eq!(
+            stepping.into_iter().collect::<Vec<_>>(),
+            [
+                ("rd_dcl_base_parallax", 0),
+                ("rd_dcl_base_parallax_noopacity", 0)
+            ]
+        );
+    }
 }

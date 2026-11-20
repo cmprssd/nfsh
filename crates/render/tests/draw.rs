@@ -269,6 +269,86 @@ fn far_vegetation_takes_its_normal_maps_blue_and_mirrors_it_behind() {
     assert!(sky(behind) > sky(leaf) + 10, "{behind:?} {leaf:?}");
 }
 
+/// The square at 5 m turned 45 degrees about y, its +u side towards the camera, red
+/// on its left half and green on its right, with a flat normal map whose blue is 1;
+/// the middle pixel, drawn as `shading`.
+fn turned_halves(shading: Shading) -> [u8; 4] {
+    let gpu = Gpu::new_headless().unwrap();
+    let (mut zone, mut square) = square_zone(&[5.0]);
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    let t = &mut zone.placements[0].transform;
+    t.right = [s, 0.0, -s];
+    t.forward = [s, 0.0, s];
+    // The bitangent along +y, v decreasing, as the square's coordinates run.
+    let frame = Frame {
+        normal: [0.0, 0.0, -1.0],
+        tangent: [1.0, 0.0, 0.0],
+        sign: -1.0,
+    };
+    square.frames = Some(vec![frame; square.positions.len()]);
+    let section = Section {
+        geometry: square,
+        texture: Some([1; 16]),
+        normal_map: Some([9; 16]),
+        shading,
+        ..Section::default()
+    };
+    let scene = scene::build(&zone, |_| Ok(Model::whole(vec![section.clone()])));
+    // Red (index 0) in the first two texels of every row, green (1) in the others.
+    const HALVES: [u8; 8] = [0x00, 0xF8, 0xE0, 0x07, 0x50, 0x50, 0x50, 0x50];
+    let renderer = ZoneRenderer::new(
+        &gpu,
+        &scene,
+        Target::COLOR_FORMAT,
+        |id| {
+            Ok(if *id == [9; 16] {
+                bc1(0x36, solid(16, 32, 31))
+            } else {
+                bc1(0x37, HALVES)
+            })
+        },
+        &[],
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(renderer.missing, []);
+    let mut target = Target::new(&gpu, W, H).unwrap();
+    let extent = target.color.extent;
+    let camera = Camera::new([0.0; 3], 0.0, 0.0, W, H);
+    let rgba = target
+        .render(|cmd| renderer.record(cmd, &camera, extent, &LIGHT))
+        .unwrap();
+    pixel(&rgba, W / 2, H / 2)
+}
+
+#[test]
+fn parallax_moves_the_colour_towards_the_eye_where_the_blue_stands_out() {
+    let parallax = |height, neutral| {
+        Shading::Parallax(scene::Parallax {
+            height,
+            steps: [16.0, 32.0],
+            neutral,
+        })
+    };
+    let green = |p: [u8; 4]| i32::from(p[1]) - i32::from(p[0]);
+    // The middle of the square is where its halves meet.
+    let plain = turned_halves(Shading::Colour);
+    // Standing out half the height (blue 1 over a neutral half), seen 45 degrees from
+    // +u: a twentieth of the square towards +u, into the green.
+    let raised = turned_halves(parallax(1.0, 0.5));
+    assert!(green(raised) > green(plain) + 20, "{raised:?} {plain:?}");
+    // A height below zero sinks it: towards the red.
+    let sunken = turned_halves(parallax(-1.0, 0.5));
+    assert!(green(sunken) + 20 < green(plain), "{sunken:?} {plain:?}");
+    // A blue that is the neutral one lies on the surface: nothing moves.
+    let level = turned_halves(parallax(1.0, 1.0));
+    assert!(
+        level.iter().zip(&plain).all(|(a, b)| a.abs_diff(*b) <= 2),
+        "{level:?} {plain:?}"
+    );
+}
+
 #[test]
 fn draws_a_placed_mesh_where_the_camera_sees_it() {
     let gpu = Gpu::new_headless().unwrap();

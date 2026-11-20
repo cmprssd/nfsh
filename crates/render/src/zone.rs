@@ -65,7 +65,7 @@ enum Pass {
 impl Pass {
     fn of(shading: &Shading) -> Self {
         match shading {
-            Shading::Colour | Shading::Grey { .. } => Self::Opaque,
+            Shading::Colour | Shading::Grey { .. } | Shading::Parallax(_) => Self::Opaque,
             Shading::Asphalt(_) => Self::Asphalt,
             Shading::Ground => Self::Ground,
             Shading::Cutout | Shading::Vista => Self::Cutout,
@@ -117,6 +117,9 @@ struct Look {
     /// A cut-out draw's: the alpha under which a pixel is not drawn, and 1 in `y`
     /// for [`Shading::Vista`]'s normals (blue stored, mirrored behind).
     cut: [f32; 4],
+    /// [`Shading::Parallax`]'s height (0 for none), steps face on and edge on, and
+    /// neutral blue.
+    parallax: [f32; 4],
 }
 
 /// Where each look starts in the looks buffer: a multiple of 256 bytes, the most any
@@ -143,6 +146,7 @@ impl Look {
             dirt: [0.0; 4],
             ground_map: [0.0; 4],
             cut: [0.5, 0.0, 0.0, 0.0],
+            parallax: [0.0; 4],
         };
         let rgb = |c: [f32; 3], w| [c[0], c[1], c[2], w];
         match *shading {
@@ -151,6 +155,9 @@ impl Look {
             // The program cuts where alpha (0.76 + 0.24 noise) is under 0.585, the
             // noise a dither; at the noise's middle, alpha under 0.585 / 0.88.
             Shading::Vista => look.cut = [0.585 / 0.88, 1.0, 0.0, 0.0],
+            Shading::Parallax(p) => {
+                look.parallax = [p.height, p.steps[0], p.steps[1], p.neutral];
+            }
             Shading::Asphalt(a) => {
                 look.tint = rgb(a.tint[0], 1.0);
                 look.tint_bg = rgb(a.tint[1], 0.0);

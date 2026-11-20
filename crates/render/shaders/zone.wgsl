@@ -57,6 +57,9 @@ struct Look {
     // A cut-out draw's: the alpha under which a pixel is not drawn, and 1 in y for
     // far vegetation's normals (scene.rs, Shading::Vista).
     cut: vec4<f32>,
+    // Parallax (scene.rs, Parallax): its height (0: none), steps face on and edge
+    // on, and the blue that lies on the surface.
+    parallax: vec4<f32>,
 }
 
 @group(0) @binding(0) var colour: texture_2d<f32>;
@@ -204,7 +207,54 @@ fn albedo(c: vec4<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: Out) -> @location(0) vec4<f32> {
-    return shade(in.world, mapped(in), albedo(textureSample(colour, filtered, in.uv)), 1.0);
+    let uv = parallaxed(in, dpdx(in.uv), dpdy(in.uv));
+    let n = bent(in.normal, in.tangent, textureSample(normal_map, filtered, uv).rg);
+    return shade(in.world, n, albedo(textureSample(colour, filtered, uv)), 1.0);
+}
+
+// The colour's coordinates moved as rd_dcl_base_parallax's programs move them
+// (scene.rs, Parallax; FORMATS "Parallax"): along the eye's direction in the frame,
+// as far as a tenth of the height over the eye's slope, in steps from the top (fewer
+// face on), until a step falls under the height there (one less the normal map's
+// blue over its neutral), between that step and the last. `dx` and `dy` are the
+// coordinates' derivatives, taken where every pixel takes them. The coordinates as
+// they are without a height, a frame, or the eye in front.
+fn parallaxed(in: Out, dx: vec2<f32>, dy: vec2<f32>) -> vec2<f32> {
+    let p = look.parallax;
+    if p.x == 0.0 || in.normal.w < 0.5 || in.tangent.w == 0.0 {
+        return in.uv;
+    }
+    let n = normalize(in.normal.xyz);
+    let t = normalize(in.tangent.xyz - n * dot(n, in.tangent.xyz));
+    // The bitangent runs along v decreasing (see bent).
+    let b = sign(in.tangent.w) * cross(n, t);
+    let eye = normalize(push.eye.xyz - in.world);
+    let facing = dot(eye, n);
+    let along = vec2(dot(eye, t), -dot(eye, b));
+    if facing <= 0.0 || dot(along, along) == 0.0 {
+        return in.uv;
+    }
+    let reach = along * (p.x * 0.1 / facing);
+    let count = clamp(trunc(mix(p.z, p.y, facing)), 1.0, 64.0);
+    let step = 1.0 / count;
+    var offset = vec2(0.0);
+    var before = vec2(0.0);
+    var level = 1.0;
+    var last = 1.0;
+    for (var i = 0; i < i32(count); i++) {
+        let blue = textureSampleGrad(normal_map, filtered, in.uv + offset, dx, dy).b;
+        let height = 1.0 - (blue - p.w);
+        if level < height {
+            let w = (height - level) / (step + height - last);
+            offset = mix(offset, before, w);
+            break;
+        }
+        level -= step;
+        before = offset;
+        last = height;
+        offset += step * reach;
+    }
+    return in.uv + offset;
 }
 
 // Leaves and the like: what the texture's alpha leaves out is not drawn.
