@@ -69,6 +69,38 @@ pub enum Shading {
         opacity: f32,
         colour: Option<[f32; 3]>,
     },
+    /// The texture's colour, at coordinates moved as its normal map's blue, a
+    /// height, says the surface stands out (manholes, the grass of planters and plots).
+    Parallax(Parallax),
+}
+
+/// How `rd_dcl_base_parallax` and `…_noopacity` move a surface's coordinates (see
+/// `docs/FORMATS.md`, "Parallax"): along the eye's direction in the surface's frame,
+/// stepping down from the top until the step falls under the height its normal map's
+/// blue gives (`ParallaxNH`, the same texture as its `Normal`). Each value is its
+/// material's, or else its shader's default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Parallax {
+    /// How far the coordinates may move: a tenth of this over the eye's slope from
+    /// the surface (`Parallax_Height`).
+    pub height: f32,
+    /// How many steps, seen face on and then edge on (`Parallax_Min`, `…_Max`).
+    pub steps: [f32; 2],
+    /// The blue that lies on the surface (`Parallax_NeutralHeight`).
+    pub neutral: f32,
+}
+
+impl Parallax {
+    /// The parallax of material `m`, with the shaders' defaults for what it doesn't
+    /// set.
+    pub fn of(m: &Material) -> Self {
+        let x = |name: &str, default: f32| m.vector(name).map_or(default, |v| v[0]);
+        Self {
+            height: x("Parallax_Height", 0.2),
+            steps: [x("Parallax_Min", 16.0), x("Parallax_Max", 32.0)],
+            neutral: x("Parallax_NeutralHeight", 0.5),
+        }
+    }
 }
 
 /// A road's asphalt (see `docs/FORMATS.md`, "Road materials"): a clean and a
@@ -225,7 +257,9 @@ pub fn tangent(f: &frostbite::mesh::Frame) -> [i8; 4] {
 /// of its layers ([`asphalt_layers`]), else that texture's grey times
 /// `Tarmac_Tint_FG`, and gives way to the ground at its edges only with the shader
 /// that blends it (`…blendwithterrain`); far vegetation naming `_CA` and `_NT` is
-/// [`Shading::Vista`]; anything else takes the first colour texture it names.
+/// [`Shading::Vista`]; anything else takes the first colour texture it names,
+/// moved by [`Parallax`] under `rd_dcl_base_parallax…` when its `ParallaxNH` is its
+/// `Normal`.
 pub fn look(shader: &str, m: &Material) -> Option<([u8; 16], Shading)> {
     let rgb = |v: [f32; 4]| [v[0], v[1], v[2]];
     if shader.contains("transparentdcl") {
@@ -258,9 +292,16 @@ pub fn look(shader: &str, m: &Material) -> Option<([u8; 16], Shading)> {
     if let (Some(t), Some(_)) = (m.texture("_CA"), m.texture("_NT")) {
         return Some((t, Shading::Vista));
     }
+    // The height is read from the normal map's blue, which is the parallax's in
+    // every material near zone 495 (18 of 18).
+    let parallax = shader.starts_with("shaders/world/roads/rd_dcl_base_parallax")
+        && m.texture("ParallaxNH").is_some()
+        && m.texture("ParallaxNH") == m.texture("Normal");
     COLOUR.iter().find_map(|&(name, cutout)| {
         let shading = if cutout {
             Shading::Cutout
+        } else if parallax {
+            Shading::Parallax(Parallax::of(m))
         } else {
             Shading::Colour
         };
@@ -575,6 +616,8 @@ pub fn build(zone: &Zone, mut load: impl FnMut(&Mesh) -> frostbite::Result<Model
             let shading = match s.shading {
                 // What has no texture is drawn plain grey.
                 _ if texture.is_none() => Shading::Colour,
+                // The height is in the normal map, which needs the frame.
+                Shading::Parallax(_) if normal_map.is_none() => Shading::Colour,
                 // Asphalt without its layers or its mask's coordinates is its clean
                 // layer's grey.
                 Shading::Asphalt(a) => {
@@ -1546,6 +1589,49 @@ mod tests {
     }
 
     #[test]
+    fn manholes_move_their_colour_by_their_normal_maps_height() {
+        let shader = "shaders/world/roads/rd_dcl_base_parallax";
+        let mut manhole = material(
+            &[
+                ("Diffuse", Some(4)),
+                ("Normal", Some(5)),
+                ("ParallaxNH", Some(5)),
+            ],
+            &[("Parallax_Height", [0.15, 0.0, 0.0, 0.0])],
+        );
+        let moved = |height, steps, neutral| {
+            Some((
+                [4; 16],
+                Shading::Parallax(Parallax {
+                    height,
+                    steps,
+                    neutral,
+                }),
+            ))
+        };
+        // What the material leaves out is the shader's default.
+        assert_eq!(look(shader, &manhole), moved(0.15, [16.0, 32.0], 0.5));
+        let noopacity = "shaders/world/roads/rd_dcl_base_parallax_noopacity";
+        assert_eq!(look(noopacity, &manhole), moved(0.15, [16.0, 32.0], 0.5));
+        manhole
+            .vectors
+            .push(("Parallax_Min".into(), [8.0, 0.0, 0.0, 0.0]));
+        manhole
+            .vectors
+            .push(("Parallax_Max".into(), [8.0, 0.0, 0.0, 0.0]));
+        manhole
+            .vectors
+            .push(("Parallax_NeutralHeight".into(), [0.4, 0.0, 0.0, 0.0]));
+        assert_eq!(look(shader, &manhole), moved(0.15, [8.0, 8.0], 0.4));
+        // Under another shader, the same material is an ordinary colour…
+        let plain = Some(([4; 16], Shading::Colour));
+        assert_eq!(look("shaders/world/roads/rd_dcl_base", &manhole), plain);
+        // …and so is one whose height is not its normal map's.
+        manhole.textures[2].texture = Some([6; 16]);
+        assert_eq!(look(shader, &manhole), plain);
+    }
+
+    #[test]
     fn nothing_to_draw_has_no_bounds() {
         let scene = build(&Zone::default(), |_| Ok(Model::whole(vec![triangle()])));
         assert_eq!(scene, Scene::default());
@@ -1645,7 +1731,7 @@ mod tests {
         let mut count = [0; 5];
         for d in scene.draws.iter().filter(|d| d.lod == 0) {
             count[match d.shading {
-                Shading::Colour | Shading::Ground => 0,
+                Shading::Colour | Shading::Ground | Shading::Parallax(_) => 0,
                 Shading::Cutout | Shading::Vista => 1,
                 Shading::Grey { .. } => 2,
                 Shading::Asphalt(_) => 3,

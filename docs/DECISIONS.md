@@ -633,7 +633,8 @@ the meshes' alone), the ground's layers to follow.
   `Normal_Tiling`, `Normal02`, `backgroundNormal`, graffiti's in its second
   coordinates) and blue are left out. Why: they appear about a hundred times among
   zone 495's 1,081 materials, beside a `Normal` or in place of it, and what each does
-  needs its shader read. (Since 2026-11-19 `_NT` is drawn: "Far vegetation".)
+  needs its shader read. (Since 2026-11-19 `_NT` is drawn: "Far vegetation";
+  since 2026-11-20 `ParallaxNH`'s height: "Parallax".)
 - **Asphalt blends its two layers' normal maps as its colour**: as much of the clean
   one as its colour shows, each at its layer's tiling, flat where the ground shows
   through at its edges. The shoulder's red and green (also a normal) are left out.
@@ -1830,3 +1831,39 @@ Follows "Far vegetation" (2026-11-19), whose next step was vista structures.
   and the rest under 0.01% (the walls are barely in them); on a view of the walls
   (3640,95,3075,140,-18), 0.30% (2,732 pixels), the walls' posts from grey (99, 102,
   111 on average) to wood (66, 57, 42). Vista structures and `ParallaxNH` are next.
+
+## 2026-11-20: Parallax (decided by Claude, pending review)
+
+Follows "Shader presets" (2026-11-19), which named vista structures and `ParallaxNH`
+next.
+
+- **`ParallaxNH` before vista structures**: 18 materials on 61 placements near zone
+  495 (manholes, the grass of planters and plots), against vista structures' 2 on 2.
+  Why: the most placed of what is left, and a program to read, as the handoff asked.
+- **A move of the coordinates, not a second normal**: the programs (FORMATS
+  "Parallax") step through `ParallaxNH`'s blue, a height, and sample the colour, the
+  normal map and `SMD` where the steps end. Drawn so, step for step, as
+  `Shading::Parallax`, in `fs_main` (no new pipeline). Why: what the programs do; a
+  guessed offset (one sample, no steps) would slide the manholes' rims at a slant.
+- **The height from the normal map nfsh binds**: in all 18, `ParallaxNH` is the same
+  texture as `Normal`; a material where they differ (none seen) is drawn flat, as
+  before. Why: no new texture binding for a case that isn't there.
+- **The frame's v as nfsh's**: the programs take the direction of v increasing as
+  tangent × normal, ignoring the bitangent's sign; nfsh takes it from the bitangent
+  (`bent`), sign and mirroring included. Why: the same where the sign is positive,
+  and right under mirrored placements, where the programs' own frame would move the
+  coordinates across v the wrong way.
+- **Guards the programs don't have**: no move where the eye is behind the surface or
+  straight along its normal, and at most 64 steps (the materials ask for 8 to 32).
+  Why: nfsh must not crash or hang on a material that asks for more.
+- **Left out**: their blending (`alphaSelector` over the colour's alpha and `SMD`'s
+  blue, times `Opacity`: drawn opaque as before), `Tiling` (set by none) and
+  `Parallax` (0.009 on 4, named by no program's block).
+- **Measured** (headless, 0.69.0's build against this one, a pixel changed when a
+  channel moves more than 8): on the gallery's six zone 495 views, nothing (2
+  pixels on track-wide; the manholes are too small in them); on close views of the
+  manholes (`dcl_drv_manhole_07` from 3 m, 4179.1,81.6,2739.6,0,-28, and
+  `…_03_dark`, 4019.9,81.6,2652.2,0,-28), 9.14% and 9.56%, by 27 and 26 levels on
+  average where they change: the lids sink into their patches, the far rim's lip
+  showing, and the patches' gravel takes its relief; low over `…_07` (5 m, pitch
+  −13), 1.51%.

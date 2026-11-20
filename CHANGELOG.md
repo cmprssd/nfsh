@@ -6,6 +6,15 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.70.0] - 2026-11-20
+
+### Changed
+
+- Manholes and the grass of planters and plots (`rd_dcl_base_parallax` and `…_noopacity`, 18
+  materials near the speedway) stand out of their surface as in the game: the height
+  in their normal map's blue moves their colour and normal map towards the eye, in
+  16 to 32 steps as the game's programs take them, instead of lying flat.
+
 ## [0.69.0] - 2026-11-19
 
 ### Fixed
