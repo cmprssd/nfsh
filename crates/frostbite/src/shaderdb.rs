@@ -706,8 +706,8 @@ pub(crate) mod tests {
         assert_eq!(
             stepping.into_iter().collect::<Vec<_>>(),
             [
-                ("rd_dcl_base_parallax", 0),
-                ("rd_dcl_base_parallax_noopacity", 0)
+                ("rd_dcl_base_parallax", 7),
+                ("rd_dcl_base_parallax_noopacity", 11)
             ]
         );
     }
